@@ -734,13 +734,19 @@ func TestReset(t *testing.T) {
 	must(t, v.e.Reset(context.Background()))
 	cmds := strings.Join(v.f.commands(), "\n")
 	for _, s := range []string{
-		"systemctl stop user@1234.service user-runtime-dir@1234.service",
+		"systemctl stop user@1234.service",
 		"systemctl start user@1234.service",
 		"podman pod rm -af", "podman rm -af", "podman volume prune -f", "podman network prune -f", "podman rmi -af",
 	} {
 		if !strings.Contains(cmds, s) {
 			t.Errorf("Reset did not run %q", s)
 		}
+	}
+	// The runtime dir holds podman's socket. Stopping user-runtime-dir@
+	// empties it, and doctor or a job would find no socket while the
+	// daemon's startup reset runs.
+	if strings.Contains(cmds, "user-runtime-dir@") {
+		t.Error("Reset stopped the runner's runtime dir, which removes podman's socket")
 	}
 	if ents, _ := os.ReadDir(v.e.jobsDir()); len(ents) != 0 {
 		t.Fatalf("jobs left after reset: %v", ents)

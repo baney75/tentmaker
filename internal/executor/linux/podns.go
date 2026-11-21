@@ -58,8 +58,10 @@ func (e *Executor) startPodman(ctx context.Context, uid, gid int) error {
 		return err
 	}
 	e.stopPodns(ctx)
+	// Stop only the manager. user-runtime-dir@ stays up, so podman's socket
+	// file outlives the restart and the new manager listens on it again.
 	u := strconv.Itoa(uid)
-	if _, err := e.h.Run(ctx, Cmd{Path: "systemctl", Args: []string{"stop", "user@" + u + ".service", "user-runtime-dir@" + u + ".service"}, Timeout: 2 * time.Minute}); err != nil {
+	if _, err := e.h.Run(ctx, Cmd{Path: "systemctl", Args: []string{"stop", "user@" + u + ".service"}, Timeout: 2 * time.Minute}); err != nil {
 		return err
 	}
 	e.stopPodnet(ctx)
