@@ -347,7 +347,16 @@ func newFixture(t *testing.T) *fixture {
 		},
 		Now:        time.Now,
 		Executable: func() (string, error) { return exe, nil },
+		// Like binsafe.Problem: a path that resolves through a symlink is
+		// refused, and the prefixes are matched on the resolved path. A
+		// path that doesn't exist yet is matched as is.
 		BinaryProblem: func(p string) (string, error) {
+			if r, err := filepath.EvalSymlinks(p); err == nil {
+				if r != filepath.Clean(p) {
+					return p + " resolves through a symbolic link to " + r, nil
+				}
+				p = r
+			}
 			for pre, why := range f.userWritable {
 				if p == pre || strings.HasPrefix(p, pre+string(filepath.Separator)) {
 					return why, nil

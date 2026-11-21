@@ -527,7 +527,12 @@ are rediscovered every 30 s; a peer failing 3 calls in a row is skipped for a mi
   in one line that names the old copy to remove. With no safe folder setup refuses. `update` and
   `rollback` work only on that root-owned path, and `doctor` fails a service binary that a
   non-root user can change. A root service that runs a user-writable binary would let that user
-  run code as root (review r1 second-F7). (internal/binsafe, internal/cli)
+  run code as root (review r1 second-F7). Every check runs on the canonical path, and that same
+  resolved path is the one copied to, put in the service spec, updated and rolled back:
+  `binsafe.Problem` refuses a path that resolves through a symlink, because whoever can write the
+  folder holding the link (a user-writable `/usr/local` with `bin` pointing at a root-owned
+  folder) could repoint it after the check (review r2 partB sol-second-F7). (internal/binsafe,
+  internal/cli)
 
 Install:
 
