@@ -16,7 +16,7 @@ import (
 // ranges in step.
 const (
 	FirewallGroup = "Tentmaker"
-	RelayPort     = 7434
+	RelayPort     = 7435
 	MeshPort      = 7433
 	// netVersion changes when the rules change, so a host with older rules
 	// refuses jobs until setup runs again.

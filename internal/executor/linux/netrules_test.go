@@ -28,7 +28,7 @@ table inet tentmaker {
 		meta skuid 1234 jump runner
 	}
 	chain runner {
-		ip daddr 127.0.0.1 tcp dport 7434 accept comment "source archive relay"
+		ip daddr 127.0.0.1 tcp dport 7435 accept comment "source archive relay"
 		ip daddr { 127.0.0.53, 192.168.1.1 } udp dport 53 accept comment "DNS"
 		ip daddr { 127.0.0.53, 192.168.1.1 } tcp dport 53 accept comment "DNS"
 		ip6 daddr { 2001:db8::53 } udp dport 53 accept comment "DNS"
@@ -68,7 +68,7 @@ for t in '/usr/sbin/iptables' '/usr/sbin/ip6tables'; do
 	"$t" -w 5 -N TENTMAKER 2>/dev/null || true
 	"$t" -w 5 -F TENTMAKER
 done
-'/usr/sbin/iptables' -w 5 -A TENTMAKER -d 127.0.0.1/32 -p tcp --dport 7434 -j ACCEPT
+'/usr/sbin/iptables' -w 5 -A TENTMAKER -d 127.0.0.1/32 -p tcp --dport 7435 -j ACCEPT
 '/usr/sbin/iptables' -w 5 -A TENTMAKER -d 127.0.0.53 -p udp --dport 53 -j ACCEPT
 '/usr/sbin/iptables' -w 5 -A TENTMAKER -d 127.0.0.53 -p tcp --dport 53 -j ACCEPT
 '/usr/sbin/iptables' -w 5 -A TENTMAKER -d 192.168.1.1 -p udp --dport 53 -j ACCEPT

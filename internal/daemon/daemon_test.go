@@ -181,6 +181,7 @@ func (r *rig) launch() {
 		Secrets:     r.store,
 		Tailscale:   r.ts,
 		ControlAddr: "127.0.0.1:0",
+		RelayAddr:   "127.0.0.1:0",
 		Updater:     r.up,
 		Hostname:    func() (string, error) { return "box", nil },
 		Executable:  func() (string, error) { return "/usr/local/bin/tentmaker", nil },
@@ -547,9 +548,21 @@ func TestDaemonChecksRelay(t *testing.T) {
 	if err := json.Unmarshal(spec.Grant.Secret, &b); err != nil {
 		t.Fatal(err)
 	}
-	want := "http://" + r.d.ControlAddress() + "/v1/relay/"
+	// The relay has its own listener, apart from the control API that the
+	// job fence blocks (review r1 partB first-F1).
+	if r.d.RelayAddress() == "" || r.d.RelayAddress() == r.d.ControlAddress() {
+		t.Fatalf("relay %q shares the control API's listener %q", r.d.RelayAddress(), r.d.ControlAddress())
+	}
+	want := "http://" + r.d.RelayAddress() + "/v1/relay/"
 	if !strings.HasPrefix(b.ArchiveURL, want) || b.Header != "" {
-		t.Fatalf("archive URL %q, want the control API relay %s", b.ArchiveURL, want)
+		t.Fatalf("archive URL %q, want the relay listener %s", b.ArchiveURL, want)
+	}
+	id := strings.TrimPrefix(b.ArchiveURL, want)
+	if resp, err := http.Get("http://" + r.d.ControlAddress() + "/v1/relay/" + id); err != nil || resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("the control listener serves the relay: %v %v", resp, err)
+	}
+	if resp, err := http.Get("http://" + r.d.RelayAddress() + "/v1/status"); err != nil || resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("the relay listener serves status: %v %v", resp, err)
 	}
 	resp, err := http.Get(b.ArchiveURL)
 	if err != nil {

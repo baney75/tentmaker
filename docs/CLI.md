@@ -147,6 +147,10 @@ mode 0600 root, or SYSTEM+Administrators on Windows), created by the daemon at s
 CLI writes config itself and then calls /v1/reload. If the daemon isn't running, read-only
 commands fall back to computing what they can locally and say "service not running".
 
+The source archive relay listens apart, on 127.0.0.1:7435, and serves only GET
+/v1/relay/<id> (everything else is 404). CI jobs may reach 7435 and never 7434, so a job
+can't read status or pool data or make the daemon call the forge through /v1/doctor.
+
 ## Daemon (internal/daemon)
 
 Composes, from config: executors (executor.ForHost), budget (budget.New with power, idle,

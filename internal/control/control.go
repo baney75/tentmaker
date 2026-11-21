@@ -2,8 +2,13 @@
 // HTTP on 127.0.0.1:7434 only. GETs (status, pool, doctor) need nothing;
 // POSTs (pause, resume, reload) need the token from <state>/control.token,
 // which only root (or SYSTEM and Administrators on Windows) can read.
-// GET /v1/relay/<id> streams a running check job's source archive; the id is
-// 32 random bytes the worker minted for that job alone, so it needs no token.
+//
+// The source archive relay has its own listener, 127.0.0.1:7435, which
+// serves GET /v1/relay/<id> and nothing else: it streams a running check
+// job's source archive, and the id is 32 random bytes the worker minted for
+// that job alone, so it needs no token. CI jobs may reach 7435 and never
+// 7434, so a job can't read status or pool data or make the daemon call
+// the forge through /v1/doctor.
 package control
 
 import (
@@ -30,8 +35,13 @@ import (
 	"github.com/baney75/tentmaker/internal/httpsafe"
 )
 
-// DefaultAddr is where the daemon listens.
+// DefaultAddr is where the daemon serves the control API.
 const DefaultAddr = "127.0.0.1:7434"
+
+// DefaultRelayAddr is where the daemon serves the source archive relay. The
+// job fence allows this port and blocks DefaultAddr; keep it in step with
+// RelayPort in internal/executor/linux and internal/executor/windows.
+const DefaultRelayAddr = "127.0.0.1:7435"
 
 // TokenFile is the token's name in the state directory.
 const TokenFile = "control.token"
@@ -55,8 +65,8 @@ type Handler interface {
 	Reload(ctx context.Context) error
 }
 
-// Relayer is a Handler that also streams check jobs' source archives. An
-// unknown or expired id is core.ErrNotFound.
+// Relayer streams check jobs' source archives. An unknown or expired id is
+// core.ErrNotFound.
 type Relayer interface {
 	Relay(ctx context.Context, id string, w io.Writer) error
 }
@@ -113,20 +123,21 @@ func Listen(addr string) (net.Listener, error) {
 	return net.Listen("tcp", addr)
 }
 
-// Server serves the control API.
+// Server serves the control API or the relay.
 type Server struct {
-	h     Handler
-	token string
-	log   *slog.Logger
-	mux   *http.ServeMux
+	relayer Relayer
+	token   string
+	log     *slog.Logger
+	mux     *http.ServeMux
 }
 
-// NewServer returns a Server that requires token on POSTs.
+// NewServer returns a Server for the control API that requires token on
+// POSTs. It serves no relay; see NewRelayServer.
 func NewServer(h Handler, token string, log *slog.Logger) *Server {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	s := &Server{h: h, token: token, log: log, mux: http.NewServeMux()}
+	s := &Server{token: token, log: log, mux: http.NewServeMux()}
 	get := func(f func(ctx context.Context) (any, error)) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
 			v, err := f(r.Context())
@@ -136,7 +147,6 @@ func NewServer(h Handler, token string, log *slog.Logger) *Server {
 	s.mux.HandleFunc("GET /v1/status", get(h.Status))
 	s.mux.HandleFunc("GET /v1/pool", get(h.Pool))
 	s.mux.HandleFunc("GET /v1/doctor", get(h.Doctor))
-	s.mux.HandleFunc("GET /v1/relay/{id}", s.relay)
 	s.mux.HandleFunc("POST /v1/pause", s.auth(func(w http.ResponseWriter, r *http.Request) {
 		var req PauseRequest
 		if err := json.NewDecoder(io.LimitReader(r.Body, maxBody)).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
@@ -158,6 +168,20 @@ func NewServer(h Handler, token string, log *slog.Logger) *Server {
 	return s
 }
 
+// NewRelayServer returns a Server for the relay listener: GET
+// /v1/relay/<id> and nothing else, everything else 404.
+func NewRelayServer(r Relayer, log *slog.Logger) *Server {
+	if log == nil {
+		log = slog.New(slog.DiscardHandler)
+	}
+	s := &Server{relayer: r, log: log, mux: http.NewServeMux()}
+	s.mux.HandleFunc("GET /v1/relay/{id}", s.relay)
+	s.mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "the relay listener serves only /v1/relay/<id>"})
+	})
+	return s
+}
+
 // ServeHTTP checks the Host header (no DNS rebinding) and dispatches.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	host := r.Host
@@ -173,8 +197,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) relay(w http.ResponseWriter, r *http.Request) {
-	rl, ok := s.h.(Relayer)
-	if !ok {
+	rl := s.relayer
+	if rl == nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "no such relay"})
 		return
 	}

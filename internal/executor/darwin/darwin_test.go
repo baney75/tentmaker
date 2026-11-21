@@ -384,7 +384,7 @@ func TestStartCheckLinuxGuest(t *testing.T) {
 func TestCheckSourceCopiedIntoGuest(t *testing.T) {
 	v := newTenv(t)
 	ctx := context.Background()
-	relay := "http://127.0.0.1:7434/v1/relay/" + strings.Repeat("ab", 32)
+	relay := "http://127.0.0.1:7435/v1/relay/" + strings.Repeat("ab", 32)
 	tarball := []byte("\x1f\x8b the source")
 	v.f.fetchBody = map[string][]byte{relay: tarball}
 	var copied []byte

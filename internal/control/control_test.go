@@ -215,12 +215,72 @@ func TestClientNotRunning(t *testing.T) {
 	}
 }
 
+// startRelay serves the relay listener for h.
+func startRelay(t *testing.T, h *fakeHandler) string {
+	t.Helper()
+	ln, err := Listen("127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- NewRelayServer(h, nil).Serve(ctx, ln) }()
+	t.Cleanup(func() {
+		cancel()
+		if err := <-done; err != nil {
+			t.Errorf("serve: %v", err)
+		}
+	})
+	return ln.Addr().String()
+}
+
+// The fence lets jobs reach the relay port, so the relay listener serves
+// /v1/relay/ and nothing else, and the control listener (which jobs can't
+// reach) serves no relay. Review r1 partB first-F1: both used to share
+// 7434, so a job could read status and pool and loop /v1/doctor.
+func TestRelayListenerServesOnlyRelay(t *testing.T) {
+	h, c, tok := start(t)
+	relay := startRelay(t, h)
+	code := func(method, addr, path, token string) int {
+		req, _ := http.NewRequest(method, "http://"+addr+path, nil)
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	for _, p := range []string{"/v1/status", "/v1/pool", "/v1/doctor", "/", "/v1/relay/"} {
+		if got := code("GET", relay, p, ""); got != http.StatusNotFound {
+			t.Errorf("relay listener GET %s: %d, want 404", p, got)
+		}
+	}
+	for _, p := range []string{"/v1/pause", "/v1/resume", "/v1/reload"} {
+		if got := code("POST", relay, p, tok); got != http.StatusNotFound && got != http.StatusMethodNotAllowed {
+			t.Errorf("relay listener POST %s: %d", p, got)
+		}
+	}
+	if got := code("GET", c.Addr, "/v1/relay/"+relayOK, ""); got != http.StatusNotFound {
+		t.Errorf("control listener serves the relay: %d", got)
+	}
+	if got := code("GET", c.Addr, "/v1/status", ""); got != http.StatusOK {
+		t.Errorf("control listener status: %d", got)
+	}
+	if got := code("POST", c.Addr, "/v1/reload", tok); got != http.StatusOK {
+		t.Errorf("control listener reload: %d", got)
+	}
+}
+
 // The relay serves a running job's source on loopback with no token; any
 // id it doesn't know is 404.
 func TestRelay(t *testing.T) {
-	_, c, _ := start(t)
+	h, _, _ := start(t)
+	addr := startRelay(t, h)
 	get := func(id string) (int, string) {
-		resp, err := http.Get("http://" + c.Addr + "/v1/relay/" + id)
+		resp, err := http.Get("http://" + addr + "/v1/relay/" + id)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -239,7 +299,7 @@ func TestRelay(t *testing.T) {
 	if code, _ := get(relayBroken); code != http.StatusBadGateway {
 		t.Errorf("broken relay: %d", code)
 	}
-	req, _ := http.NewRequest("GET", "http://"+c.Addr+"/v1/relay/"+relayOK, nil)
+	req, _ := http.NewRequest("GET", "http://"+addr+"/v1/relay/"+relayOK, nil)
 	req.Host = "evil.example"
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

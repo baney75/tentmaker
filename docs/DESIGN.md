@@ -184,8 +184,8 @@ setup`), idempotent and safe to rerun.
 **Network isolation.** Linux and Windows jobs share the host's network stack, so Install fences
 the runner user off and every `Start` checks the fence first; no rules means no job (fail closed).
 Jobs may reach the internet, the DNS servers the host is configured with, and the source archive
-relay on 127.0.0.1:7434. Always blocked: the tailnet (100.64.0.0/10, fd7a:115c:a1e0::/48), link-local
-(169.254/16, fe80::/10), unique local (fc00::/7), loopback and this host's own addresses, and port
+relay on 127.0.0.1:7435. Always blocked: the tailnet (100.64.0.0/10, fd7a:115c:a1e0::/48), link-local
+(169.254/16, fe80::/10), unique local (fc00::/7), loopback and this host's own addresses (so the control API on 7434), and port
 7433 on any address. RFC 1918 (10/8, 172.16/12, 192.168/16) is blocked unless `[guards] allow_lan`.
 
 - Linux (`netrules.go`): nftables table `inet tentmaker`, an output hook that sends every packet
@@ -312,8 +312,9 @@ func New(o Options) *Client                            // implements core.Status
   A remote broker is reached over the mesh (`GET /v1/archive/<ref>`). The worker, for each check
   offer, mints a relay id (32 random bytes, hex) bound to (source, ref, runner), expiring with
   the job and dropped when the job ends or the worker restarts, and rewrites the bundle's
-  `ArchiveURL` to `http://127.0.0.1:7434/v1/relay/<id>` (the control API's address). The control
-  API serves `GET /v1/relay/<id>` on loopback without a token; an unknown or expired id is 404.
+  `ArchiveURL` to `http://127.0.0.1:7435/v1/relay/<id>` (the relay listener). The daemon serves
+  `GET /v1/relay/<id>` there, on loopback without a token, and nothing else (404); an unknown or
+  expired id is 404. The control API on 7434 serves no relay, and the job fence blocks it.
   Linux and Windows jobs run on the host and fetch that URL directly. A Tart VM can't reach the
   host, so the darwin executor downloads it on the host, pipes it in with `tart exec -i <vm> sh -c
   'cat > /tmp/tentmaker-src.tar.gz'`, and rewrites `ArchiveURL` to
@@ -467,6 +468,12 @@ section is rewritten.
 - The broker keeps each finished check's log tail under `<state>/checks` (newest 200). Before this, a failed `tentmaker/<job>` status pointed at nothing: the worker deletes the job dir and the tail was dropped after posting the status.
 - `CheckBundle.Ref` carries the branch.
 - A broker claims each check through its `Claimer` before it grants it, so two brokers with the same repo run a check once. Check jobs have no forge ID, so `Job.HeadSHA` (set on check offers) and the job name key the claim (`Job.Key`). The granting broker holds the claim, not the worker: a worker asks every broker, and a claim held by the worker let both brokers hand it the same check (found by the team test, two brokers).
+- The relay has its own loopback listener, 127.0.0.1:7435 (`control.DefaultRelayAddr`,
+  `daemon.Options.RelayAddr`, `control.NewRelayServer`), and the fence opens that port, not the
+  control API's 7434. Before, both shared 7434, so a job could read `/v1/status` and `/v1/pool`
+  and loop `/v1/doctor`, which calls the forge with its token for every repo and drains the rate
+  limit (review r1 first-F1). A host whose rules predate this keeps the old fence until `sudo
+  tentmaker setup` runs again.
 - `CheckBundle.ArchiveRef` replaces the forge URL and header the broker used to send (review finding: a check job could read the forge token from its bundle). `Header` stays in the struct only so a worker can recognize and refuse an older broker's bundle.
 - An empty `Platform.Arch` means any arch.
 - `ListDir` returns sorted entry names, and `ErrNotFound` for a missing folder.

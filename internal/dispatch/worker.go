@@ -27,7 +27,7 @@ type WorkerOptions struct {
 	Budget    core.Budgeter
 	// Sources lists the brokers to ask, local broker first, then mesh brokers.
 	Sources func() []core.WorkSource
-	// RelayAddr is the control API's host:port, which serves the archive
+	// RelayAddr is the relay listener's host:port, which serves the archive
 	// relay to check jobs (GET /v1/relay/<id>). Nil means DefaultRelayAddr;
 	// an empty answer means no relay, so check offers are declined.
 	RelayAddr func() string

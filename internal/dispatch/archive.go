@@ -30,8 +30,10 @@ const (
 	MaxArchiveBytes int64 = 2 << 30
 	// MaxArchiveFetches is how often one check's archive may be fetched.
 	MaxArchiveFetches = 3
-	// DefaultRelayAddr is the control API, which serves GET /v1/relay/<id>.
-	DefaultRelayAddr = "127.0.0.1:7434"
+	// DefaultRelayAddr is the daemon's relay listener, which serves GET
+	// /v1/relay/<id> and nothing else (control.DefaultRelayAddr). The job
+	// fence allows it and blocks the control API on 7434.
+	DefaultRelayAddr = "127.0.0.1:7435"
 )
 
 // refPattern is the shape of an archive ref and a relay id: 32 random

@@ -90,6 +90,7 @@ type Options struct {
 	Secrets     secrets.Store
 	Tailscale   mesh.Tailscale
 	ControlAddr string // default control.DefaultAddr; "-" serves no control API
+	RelayAddr   string // default control.DefaultRelayAddr; "-" serves no relay (check offers are declined)
 	Updater     Updater
 	Service     func(ctx context.Context) (service.State, error) // for doctor; nil = the daemon is the service
 	TotalMemory func() (int64, error)
@@ -140,6 +141,9 @@ func (o *Options) defaults() {
 	}
 	if o.ControlAddr == "" {
 		o.ControlAddr = control.DefaultAddr
+	}
+	if o.RelayAddr == "" {
+		o.RelayAddr = control.DefaultRelayAddr
 	}
 	if o.Updater == nil {
 		o.Updater = update.Default
@@ -278,6 +282,7 @@ type Daemon struct {
 
 	guard    updateGuard
 	ctlAddr  string
+	relAddr  string
 	restart  chan struct{}
 	exitErr  error
 	exitOnce sync.Once
@@ -323,6 +328,14 @@ func (d *Daemon) ControlAddress() string {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	return d.ctlAddr
+}
+
+// RelayAddress is where the source archive relay listens ("" until it
+// does). It is apart from the control API, which CI jobs can't reach.
+func (d *Daemon) RelayAddress() string {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.relAddr
 }
 
 // Config is the running, resolved config.
@@ -385,9 +398,12 @@ func (d *Daemon) Run(ctx context.Context) error {
 	}
 	d.log.Info("tentmaker daemon started", "version", d.o.Version, "device", d.device(), "config", d.o.ConfigPath)
 
-	var ctl *comp
+	var ctl, rel *comp
 	if d.o.ControlAddr != "-" {
 		ctl = d.startControl(runCtx)
+	}
+	if d.o.RelayAddr != "-" {
+		rel = d.startRelay(runCtx)
 	}
 	loops := startComp(runCtx, d.log, "loops", func(ctx context.Context) error {
 		var wg sync.WaitGroup
@@ -411,6 +427,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	}
 	loops.stop()
 	d.shutdown()
+	rel.stop()
 	ctl.stop()
 	return d.exitErr
 }
@@ -434,6 +451,24 @@ func (d *Daemon) startControl(ctx context.Context) *comp {
 	d.mu.Unlock()
 	srv := control.NewServer(d.Handler(), tok, d.log)
 	return startComp(ctx, d.log, "control", func(ctx context.Context) error { return srv.Serve(ctx, ln) })
+}
+
+// startRelay serves the source archive relay on its own loopback listener.
+// The job fence allows this port and blocks the control API's, so a job
+// reaches /v1/relay/<id> and nothing else.
+func (d *Daemon) startRelay(ctx context.Context) *comp {
+	ln, err := control.Listen(d.o.RelayAddr)
+	if err != nil {
+		d.setProblems("relay", []core.Problem{{Check: "relay", What: "source archive relay not served, so check jobs are declined: " + err.Error(),
+			Fix: "stop whatever uses " + d.o.RelayAddr + ", then restart the service"}})
+		d.log.Error("source archive relay not served", "error", err)
+		return nil
+	}
+	d.mu.Lock()
+	d.relAddr = ln.Addr().String()
+	d.mu.Unlock()
+	srv := control.NewRelayServer(ctlHandler{d}, d.log)
+	return startComp(ctx, d.log, "relay", func(ctx context.Context) error { return srv.Serve(ctx, ln) })
 }
 
 func (d *Daemon) setProblems(component string, ps []core.Problem) {
@@ -581,7 +616,7 @@ func (d *Daemon) apply(cfg config.Config) {
 			StateDir:  cfg.StateDir,
 			Log:       log,
 			Now:       d.o.Now,
-			RelayAddr: d.ControlAddress,
+			RelayAddr: d.RelayAddress,
 		})
 		wc := startComp(d.runCtx, log, "worker", w.Run)
 		d.mu.Lock()
@@ -1065,7 +1100,8 @@ func (h ctlHandler) Pause(ctx context.Context, reason string, dur time.Duration)
 func (h ctlHandler) Resume(ctx context.Context) error { return h.d.Resume(ctx) }
 func (h ctlHandler) Reload(ctx context.Context) error { return h.d.Reload(ctx) }
 
-// Relay streams a running check job's source archive (control.Relayer).
+// Relay streams a running check job's source archive (control.Relayer). The
+// relay listener serves it; the control API does not.
 func (h ctlHandler) Relay(ctx context.Context, id string, w io.Writer) error {
 	h.d.mu.RLock()
 	wk := h.d.worker

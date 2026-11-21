@@ -33,7 +33,7 @@ const NetChain = "TENTMAKER"
 // RelayPort is the control API's loopback port, where check jobs fetch their
 // source archive. MeshPort is the peer API's port on every device.
 const (
-	RelayPort = 7434
+	RelayPort = 7435
 	MeshPort  = 7433
 )
 
