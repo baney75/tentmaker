@@ -45,7 +45,7 @@ LAN_LINUX = ["lan-subnet-route-v4", "lan-mesh-port-lan", "lan-host-private-v4", 
 # reported, with a warning, but does not fail the run. Each names where it is
 # documented; remove it here once the gap is closed.
 KNOWN = {
-    "read-other-job": "README, Known limits: Linux and Windows jobs all run as the same user",
+    "read-other-job": "README, Security model: Linux and Windows jobs all run as the same user",
 }
 LINE = re.compile(r"^ATTACK (\S+) (BLOCKED|SUCCEEDED)\b ?(.*)$")
 
