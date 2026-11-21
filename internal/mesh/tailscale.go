@@ -50,6 +50,7 @@ type Peer struct {
 
 // Identity is who is behind a tailnet address, as `tailscale whois` reports it.
 type Identity struct {
+	ID        string       `json:"id"`   // stable node ID, the same as Peer.ID
 	Node      string       `json:"node"` // MagicDNS FQDN without the trailing dot
 	HostName  string       `json:"host_name"`
 	IPs       []netip.Addr `json:"ips"`
@@ -325,6 +326,7 @@ func ParseWhoIs(b []byte) (Identity, error) {
 		return Identity{}, errors.New("tailscale whois: no node or user in the answer")
 	}
 	id := Identity{
+		ID:        w.Node.StableID,
 		Node:      strings.TrimSuffix(w.Node.Name, "."),
 		HostName:  w.Node.Hostinfo.Hostname,
 		IPs:       parseAddrs(w.Node.Addresses),

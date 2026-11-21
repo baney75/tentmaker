@@ -69,9 +69,9 @@ func (f *fakeTS) set(fn func(f *fakeTS)) {
 }
 
 var (
-	alice  = Identity{Node: "alice-linux.example-tailnet.ts.net", HostName: "alice-linux", UserID: 1001, LoginName: "alice@example.com"}
-	bob    = Identity{Node: "bob-pc.example-tailnet.ts.net", HostName: "bob-pc", UserID: 1002, LoginName: "bob@example.com"}
-	tagged = Identity{Node: "ci-box.example-tailnet.ts.net", HostName: "ci-box", UserID: 1003, LoginName: TaggedLogin, Tags: []string{"tag:ci"}}
+	alice  = Identity{ID: "n2", Node: "alice-linux.example-tailnet.ts.net", HostName: "alice-linux", UserID: 1001, LoginName: "alice@example.com"}
+	bob    = Identity{ID: "n5", Node: "bob-pc.example-tailnet.ts.net", HostName: "bob-pc", UserID: 1002, LoginName: "bob@example.com"}
+	tagged = Identity{ID: "n6", Node: "ci-box.example-tailnet.ts.net", HostName: "ci-box", UserID: 1003, LoginName: TaggedLogin, Tags: []string{"tag:ci"}}
 )
 
 func aliceSelf(ip string) Peer {

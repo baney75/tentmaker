@@ -376,6 +376,28 @@ type WorkSource interface {
 // ErrNotFound is returned when a forge object does not exist.
 var ErrNotFound = errors.New("not found")
 
+// ErrOtherNode is a broker's answer to a work request for a device whose
+// grants another tailnet node holds. The mesh answers it with 403.
+var ErrOtherNode = errors.New("another tailnet node holds this device's grants")
+
+type callerNodeKey struct{}
+
+// WithCallerNode returns ctx carrying node, the tailnet stable node ID that
+// WhoIs authenticated for a remote caller. The mesh sets it before it calls
+// a broker's Work or FetchArchive; a broker binds each grant to the caller's
+// node and serves that grant's reports and archive only to the same node, so
+// another node that announces the same device name can't act for it.
+func WithCallerNode(ctx context.Context, node string) context.Context {
+	return context.WithValue(ctx, callerNodeKey{}, node)
+}
+
+// CallerNode is the node WithCallerNode put in ctx, or "" for an in-process
+// caller (the broker's own device).
+func CallerNode(ctx context.Context) string {
+	s, _ := ctx.Value(callerNodeKey{}).(string)
+	return s
+}
+
 func itoa(n int64) string {
 	if n == 0 {
 		return "0"
