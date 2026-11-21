@@ -56,7 +56,7 @@ func TestResetStartsPodmanNamespaceFirst(t *testing.T) {
 	}
 
 	// The unit gets a job's mounts, and no NoNewPrivileges (newuidmap).
-	args := v.e.podnsArgs(testUID, testGID)
+	args := v.e.podnsArgs(testUID, testGID, filepath.Join(v.o.Paths.Proc, strconv.Itoa(testPodnetPID), "ns", "net"))
 	if !strings.Contains(cmds[podns], strings.Join(args, " ")) {
 		t.Fatalf("podns unit:\n%s\nwant args %q", cmds[podns], args)
 	}
@@ -112,6 +112,12 @@ func TestResetRefusesPodmanNamespace(t *testing.T) {
 		{name: "host-resolv", probe: "resolv.conf is not the jobs'.\n", want: "resolv.conf is not the jobs'"},
 		{name: "no-pause", pause: "none", want: "made no podman pause process"},
 		{name: "pause-in-host-userns", pause: "self", want: "made no podman pause process"},
+		// A host-network container through the podman service would share
+		// the host's network namespace.
+		{name: "pause-in-host-netns", pause: "host-netns", want: "pause process is in the host's network namespace"},
+		{name: "manager-in-host-netns", pause: "manager-host-netns", want: "user manager is in the host's network namespace"},
+		// newuidmap took a range from somewhere the fence did not read.
+		{name: "unfenced-uid-map", pause: "uid-map", want: "podman maps uids 300000 (65536 of them)"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			v := resetEnv(t, tc.probe)
@@ -124,11 +130,98 @@ func TestResetRefusesPodmanNamespace(t *testing.T) {
 				must(t, os.MkdirAll(filepath.Join(v.o.Paths.Proc, "4444", "ns"), 0o755))
 				must(t, os.Symlink("user:[4026531837]", filepath.Join(v.o.Paths.Proc, "4444", "ns", "user")))
 				must(t, os.WriteFile(pidFile, []byte(strconv.Itoa(4444)), 0o600))
+			case "host-netns":
+				setNetns(t, v, testPausePID, "net:[4026531840]")
+			case "manager-host-netns":
+				setNetns(t, v, testManagerPID, "net:[4026531840]")
+			case "uid-map":
+				must(t, os.WriteFile(filepath.Join(v.o.Paths.Proc, strconv.Itoa(testPausePID), "uid_map"), []byte("0 1234 1\n1 300000 65536\n"), 0o644))
 			}
 			err := v.e.Reset(context.Background())
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("Reset: %v, want %q", err, tc.want)
 			}
 		})
+	}
+}
+
+// setNetns points the fake /proc/<pid>/ns/net at ns.
+func setNetns(t *testing.T, v *env, pid int, ns string) {
+	t.Helper()
+	link := filepath.Join(v.o.Paths.Proc, strconv.Itoa(pid), "ns", "net")
+	must(t, os.Remove(link))
+	must(t, os.Symlink(ns, link))
+}
+
+// A host-network container started through the podman service (DOCKER_HOST)
+// runs in podman.service's network namespace, which it gets from the
+// runner's user manager; rootless podman joins only the pause process's user
+// and mount namespaces. So Reset makes podman a network namespace of its
+// own, the way Start makes a job's, and starts both the user manager and
+// tentmaker-podns.service in it.
+func TestResetGivesPodmanItsOwnNetworkNamespace(t *testing.T) {
+	v := resetEnv(t, "")
+	must(t, v.e.Reset(context.Background()))
+	cmds := v.f.commands()
+	last := func(s string, before int) int {
+		at := -1
+		for i, c := range cmds[:before] {
+			if strings.Contains(c, s) {
+				at = i
+			}
+		}
+		return at
+	}
+	const holdUnit, upUnit = "tentmaker-podnet.service", "tentmaker-podnet-uplink.service"
+	hold, up, podns := unitIndex(v.f, holdUnit), unitIndex(v.f, upUnit), unitIndex(v.f, PodnsUnit)
+	user := last("systemctl start user@1234.service", len(cmds))
+	reload := last("systemctl daemon-reload", user)
+	stopUser := last("systemctl stop user@1234.service", hold+1)
+	if !(stopUser >= 0 && stopUser < hold && hold < up && up < reload && reload < user && user < podns) {
+		t.Fatalf("order: stop user@ %d, holder %d, uplink %d, daemon-reload %d, start user@ %d, podns %d:\n%s",
+			stopUser, hold, up, reload, user, podns, strings.Join(cmds, "\n"))
+	}
+
+	// The holder and its pasta are a job's: the same unshare and pasta
+	// argv, so the same per-uid rules match everything it sends out.
+	holdArgs := strings.Join(findUnit(t, v.f, holdUnit).Args, " ")
+	for _, s := range []string{"--uid=1234", "--slice=" + Slice, "AmbientCapabilities=CAP_SYS_ADMIN",
+		v.o.Paths.Unshare + " --user --map-root-user --net -- sleep infinity"} {
+		if !strings.Contains(holdArgs, s) {
+			t.Errorf("podman's namespace holder lacks %q: %s", s, holdArgs)
+		}
+	}
+	upArgs := strings.Join(findUnit(t, v.f, upUnit).Args, " ")
+	if !strings.HasSuffix(upArgs, v.o.Paths.Pasta+" "+strings.Join(PastaArgs(testPodnetPID), " ")) || !strings.Contains(upArgs, "--uid=1234") {
+		t.Errorf("podman's uplink: %s", upArgs)
+	}
+
+	// The user manager (podman.service) and the pause process enter it.
+	ns := filepath.Join(v.o.Paths.Proc, strconv.Itoa(testPodnetPID), "ns", "net")
+	drop, err := os.ReadFile(filepath.Join(v.o.Paths.SystemdRunning, "user@1234.service.d", "60-tentmaker-netns.conf"))
+	if err != nil || !strings.Contains(string(drop), "[Service]\nNetworkNamespacePath="+ns+"\n") {
+		t.Errorf("the user manager's runtime drop-in: %q, %v", drop, err)
+	}
+	if args := strings.Join(findUnit(t, v.f, PodnsUnit).Args, " "); !strings.Contains(args, "-p NetworkNamespacePath="+ns) {
+		t.Errorf("%s does not enter podman's namespace: %s", PodnsUnit, args)
+	}
+}
+
+// Doctor says so when the user manager or the pause process sits in the
+// host's network namespace (after a reboot, before the first reset).
+func TestPreflightReportsPodmanInHostNetns(t *testing.T) {
+	for _, pid := range []int{testManagerPID, testPausePID} {
+		v := newEnv(t)
+		v.installed(t)
+		setNetns(t, v, pid, "net:[4026531840]")
+		found := false
+		for _, p := range v.e.Preflight(context.Background()) {
+			if p.Check == "podman network" && strings.Contains(p.What, "in the host's network namespace") {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("pid %d in the host's namespace: Preflight said %+v", pid, v.e.Preflight(context.Background()))
+		}
 	}
 }

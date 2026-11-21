@@ -50,6 +50,13 @@ const testNetnsPID = 4242
 // testPausePID is podman's fake pause process.
 const testPausePID = 4343
 
+// testPodnetPID holds the fake network namespace podman's namespaces and
+// the runner's user manager (testManagerPID) share.
+const testPodnetPID, testManagerPID = 4545, 4646
+
+// testPodnetNS is that namespace; the host's is net:[4026531840].
+const testPodnetNS = "net:[4026533100]"
+
 func (f *fakeHost) Run(ctx context.Context, c Cmd) (Result, error) {
 	f.mu.Lock()
 	f.cmds = append(f.cmds, c)
@@ -140,6 +147,10 @@ func (f *fakeHost) firewallLocked(c Cmd) (Result, bool, error) {
 			pid = testNetnsPID
 		}
 		return Result{Stdout: strconv.Itoa(pid) + "\n"}, true, nil
+	case c.Path == "systemctl" && len(c.Args) == 4 && a == "show --property=MainPID --value tentmaker-podnet.service":
+		return Result{Stdout: strconv.Itoa(testPodnetPID) + "\n"}, true, nil
+	case c.Path == "systemctl" && len(c.Args) == 4 && a == "show --property=MainPID --value user@"+strconv.Itoa(testUID)+".service":
+		return Result{Stdout: strconv.Itoa(testManagerPID) + "\n"}, true, nil
 	case c.Path == "systemctl" && len(c.Args) == 2 && c.Args[0] == "enable":
 		if f.enabled == nil {
 			f.enabled = map[string]bool{}
@@ -266,8 +277,10 @@ func newEnv(t *testing.T) *env {
 	}
 	must(t, os.WriteFile(p.ResolvConf, []byte("# managed\nnameserver 127.0.0.53\noptions edns0\n"), 0o644))
 	must(t, os.WriteFile(p.ResolvedConf, []byte("nameserver 192.0.2.53\nnameserver 127.0.0.1\n"), 0o644))
-	// The host's network namespace and the fake holder's.
-	for pid, ns := range map[string]string{"self": "net:[4026531840]", strconv.Itoa(testNetnsPID): "net:[4026532999]"} {
+	// The host's network namespace, the fake job holder's, and podman's,
+	// which its holder, the user manager and the pause process share.
+	for pid, ns := range map[string]string{"self": "net:[4026531840]", strconv.Itoa(testNetnsPID): "net:[4026532999]",
+		strconv.Itoa(testPodnetPID): testPodnetNS, strconv.Itoa(testManagerPID): testPodnetNS, strconv.Itoa(testPausePID): testPodnetNS} {
 		must(t, os.MkdirAll(filepath.Join(p.Proc, pid, "ns"), 0o755))
 		must(t, os.Symlink(ns, filepath.Join(p.Proc, pid, "ns", "net")))
 	}
@@ -277,6 +290,9 @@ func newEnv(t *testing.T) *env {
 		must(t, os.MkdirAll(filepath.Join(p.Proc, pid, "ns"), 0o755))
 		must(t, os.Symlink(ns, filepath.Join(p.Proc, pid, "ns", "user")))
 	}
+	// Its uid map: the runner's uid and the subordinate range installed()
+	// writes.
+	must(t, os.WriteFile(filepath.Join(p.Proc, strconv.Itoa(testPausePID), "uid_map"), []byte("         0       1234          1\n         1     100000      65536\n"), 0o644))
 	must(t, os.MkdirAll(filepath.Join(p.RunUser, strconv.Itoa(testUID), "libpod", "tmp"), 0o700))
 	must(t, os.WriteFile(filepath.Join(p.RunUser, strconv.Itoa(testUID), "libpod", "tmp", "pause.pid"), []byte(strconv.Itoa(testPausePID)), 0o600))
 	o := Options{
@@ -310,8 +326,9 @@ func (v *env) installed(t *testing.T) {
 	must(t, os.Symlink(tpl, filepath.Join(v.dir, "opt", "runner")))
 	must(t, os.MkdirAll(v.e.jobsDir(), 0o750))
 	must(t, os.MkdirAll(v.e.secretDir(), 0o700))
-	// The network rules, written and loaded.
-	rules := NftRules(v.e.policy(testUID))
+	// The runner's subordinate uids and the network rules, written and loaded.
+	must(t, os.WriteFile(v.o.Paths.Subuid, []byte(User+":100000:65536\n"), 0o644))
+	rules := NftRules(policyOf(t, v.e))
 	must(t, os.MkdirAll(v.o.Paths.Lib, 0o755))
 	must(t, os.WriteFile(v.e.nftRules(), []byte(rules), 0o644))
 	v.f.mu.Lock()
@@ -717,13 +734,19 @@ func TestReset(t *testing.T) {
 	must(t, v.e.Reset(context.Background()))
 	cmds := strings.Join(v.f.commands(), "\n")
 	for _, s := range []string{
-		"systemctl stop user@1234.service user-runtime-dir@1234.service",
+		"systemctl stop user@1234.service",
 		"systemctl start user@1234.service",
 		"podman pod rm -af", "podman rm -af", "podman volume prune -f", "podman network prune -f", "podman rmi -af",
 	} {
 		if !strings.Contains(cmds, s) {
 			t.Errorf("Reset did not run %q", s)
 		}
+	}
+	// The runtime dir holds podman's socket. Stopping user-runtime-dir@
+	// empties it, and doctor or a job would find no socket while the
+	// daemon's startup reset runs.
+	if strings.Contains(cmds, "user-runtime-dir@") {
+		t.Error("Reset stopped the runner's runtime dir, which removes podman's socket")
 	}
 	if ents, _ := os.ReadDir(v.e.jobsDir()); len(ents) != 0 {
 		t.Fatalf("jobs left after reset: %v", ents)
@@ -859,4 +882,11 @@ func TestCheckResultOutOfMemory(t *testing.T) {
 	if !strings.Contains(strings.Join(v.f.commands()[n:], "\n"), "systemctl reset-failed "+unitName("chk-oom")) {
 		t.Error("Clean left the failed unit loaded")
 	}
+}
+
+func policyOf(t *testing.T, e *Executor) NetPolicy {
+	t.Helper()
+	p, err := e.policy(testUID)
+	must(t, err)
+	return p
 }

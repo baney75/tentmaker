@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -20,6 +21,78 @@ import (
 // so no image would pull. Reset starts this unit before podman runs at all,
 // with the mounts a job's unit gets, so the pause process is born there.
 const PodnsUnit = "tentmaker-podns.service"
+
+// Podman's namespaces get a network namespace of their own, held and linked
+// out the way a job's is (netns.go): PodnetUnit holds it, PodnetUplinkUnit is
+// its pasta. The runner's user manager runs in it, and so podman.service and
+// every container it starts: a container on the host network (docker run
+// --network=host through DOCKER_HOST) gets this namespace, not the host's.
+// Rootless podman joins only the pause process's user and mount namespaces,
+// never its network namespace, so PodnsUnit alone would not move
+// podman.service; the manager needs NetworkNamespacePath= too. Its
+// containers can then neither reach the abstract Unix sockets of host
+// services nor listen on the host's addresses, and everything they send
+// still leaves through pasta as the runner, where the per-uid rules match
+// it. The namespace is one per device: every job's containers that the
+// service starts share it.
+const (
+	PodnetUnit       = "tentmaker-podnet.service"
+	PodnetUplinkUnit = "tentmaker-podnet-uplink.service"
+)
+
+// managerDropIn is the runtime drop-in that puts the runner's user manager
+// in podman's network namespace. It lives under /run, so it never outlives
+// the holder's pid across a reboot.
+func (e *Executor) managerDropIn(uid int) string {
+	return filepath.Join(e.p.SystemdRunning, "user@"+strconv.Itoa(uid)+".service.d", "60-tentmaker-netns.conf")
+}
+
+// startPodman stops the runner's user manager and every podman process,
+// makes podman's network namespace afresh, and starts the user manager and
+// then PodnsUnit in it. Install and Reset run it before any podman command.
+func (e *Executor) startPodman(ctx context.Context, uid, gid int) error {
+	if err := e.netnsTools(); err != nil {
+		return err
+	}
+	if err := e.writeJobResolvConf(); err != nil {
+		return err
+	}
+	e.stopPodns(ctx)
+	// Stop only the manager. user-runtime-dir@ stays up, so podman's socket
+	// file outlives the restart and the new manager listens on it again.
+	u := strconv.Itoa(uid)
+	if _, err := e.h.Run(ctx, Cmd{Path: "systemctl", Args: []string{"stop", "user@" + u + ".service"}, Timeout: 2 * time.Minute}); err != nil {
+		return err
+	}
+	e.stopPodnet(ctx)
+	ns, err := e.startNetUnits(ctx, PodnetUnit, PodnetUplinkUnit, uid, gid)
+	if err != nil {
+		e.stopPodnet(context.WithoutCancel(ctx))
+		return fmt.Errorf("%v; podman runs only in a network namespace of its own", err)
+	}
+	drop := e.managerDropIn(uid)
+	if err := os.MkdirAll(filepath.Dir(drop), 0o755); err != nil {
+		return err
+	}
+	text := "# Written by tentmaker. The CI user's manager, podman.service and its\n" +
+		"# containers run in podman's network namespace, not the host's.\n" +
+		"[Service]\nNetworkNamespacePath=" + ns + "\n"
+	if err := writeRoot(e.h, drop, []byte(text), 0o644); err != nil {
+		return err
+	}
+	if _, err := e.h.Run(ctx, Cmd{Path: "systemctl", Args: []string{"daemon-reload"}, Timeout: time.Minute}); err != nil {
+		return err
+	}
+	if _, err := e.h.Run(ctx, Cmd{Path: "systemctl", Args: []string{"start", "user@" + u + ".service"}, Timeout: 2 * time.Minute}); err != nil {
+		return err
+	}
+	return e.startPodns(ctx, uid, gid, ns)
+}
+
+// stopPodnet stops podman's network namespace and its uplink.
+func (e *Executor) stopPodnet(ctx context.Context) {
+	e.stopUnits(ctx, PodnetUplinkUnit, PodnetUnit)
+}
 
 // podmanConf is the runner's containers.conf. Setup writes it, owned by
 // root. The runner's podman (Reset, PodnsUnit, podman.service) reads it from
@@ -63,14 +136,15 @@ func (e *Executor) jobMounts(uid int, home string) []string {
 	return props
 }
 
-// podnsArgs is the systemd-run argv for PodnsUnit. It has no
-// NoNewPrivileges: podman needs the setuid newuidmap to map the subordinate
-// ids. It runs only podman, never job code.
-func (e *Executor) podnsArgs(uid, gid int) []string {
+// podnsArgs is the systemd-run argv for PodnsUnit, in the network namespace
+// at netns. It has no NoNewPrivileges: podman needs the setuid newuidmap to
+// map the subordinate ids. It runs only podman, never job code.
+func (e *Executor) podnsArgs(uid, gid int, netns string) []string {
 	args := []string{"--quiet", "--no-ask-password",
 		"--unit=" + PodnsUnit, "--slice=" + Slice,
 		"--uid=" + strconv.Itoa(uid), "--gid=" + strconv.Itoa(gid),
-		"-p", "Type=exec"}
+		"-p", "Type=exec",
+		"-p", "NetworkNamespacePath=" + netns}
 	for _, p := range e.jobMounts(uid, e.root) {
 		args = append(args, "-p", p)
 	}
@@ -81,29 +155,22 @@ func (e *Executor) podnsArgs(uid, gid int) []string {
 	return append(args, "--", "podman", "unshare", "sleep", "infinity")
 }
 
-// stopPodns stops PodnsUnit and with it the pause process. A unit that isn't
-// loaded makes stop fail; that is fine.
-func (e *Executor) stopPodns(ctx context.Context) {
-	e.h.Run(ctx, Cmd{Path: "systemctl", Args: []string{"stop", PodnsUnit}, Timeout: 30 * time.Second})
-	e.h.Run(ctx, Cmd{Path: "systemctl", Args: []string{"reset-failed", PodnsUnit}, Timeout: 30 * time.Second})
-}
+// stopPodns stops PodnsUnit and with it the pause process.
+func (e *Executor) stopPodns(ctx context.Context) { e.stopUnits(ctx, PodnsUnit) }
 
-// startPodns starts PodnsUnit and waits until its pause process has left the
-// host's user namespace. Until then, a podman command would make its own
-// pause process outside the unit.
-func (e *Executor) startPodns(ctx context.Context, uid, gid int) error {
-	if err := e.writeJobResolvConf(); err != nil {
-		return err
-	}
+// startPodns starts PodnsUnit in the network namespace at netns and waits
+// until its pause process has left the host's user namespace. Until then, a
+// podman command would make its own pause process outside the unit.
+func (e *Executor) startPodns(ctx context.Context, uid, gid int, netns string) error {
 	e.stopPodns(ctx)
-	if _, err := e.h.Run(ctx, Cmd{Path: "systemd-run", Args: e.podnsArgs(uid, gid), Timeout: time.Minute}); err != nil {
+	if _, err := e.h.Run(ctx, Cmd{Path: "systemd-run", Args: e.podnsArgs(uid, gid, netns), Timeout: time.Minute}); err != nil {
 		return fmt.Errorf("start %s: %v", PodnsUnit, err)
 	}
 	host, err := os.Readlink(filepath.Join(e.p.Proc, "self", "ns", "user"))
 	if err != nil {
 		return fmt.Errorf("read this host's user namespace: %v", err)
 	}
-	pidFile := filepath.Join(e.runtimeDir(uid), "libpod", "tmp", "pause.pid")
+	pidFile := e.pausePIDFile(uid)
 	for i := 0; i < 300; i++ {
 		if b, err := os.ReadFile(pidFile); err == nil {
 			if pid, _ := strconv.Atoi(strings.TrimSpace(string(b))); pid > 0 {
@@ -121,9 +188,93 @@ func (e *Executor) startPodns(ctx context.Context, uid, gid int) error {
 	return fmt.Errorf("%s made no podman pause process in 30s%s", PodnsUnit, e.unitLog(ctx, PodnsUnit))
 }
 
-// podnsProblem runs a podman command and says what in podman's namespaces a
-// job should not see, or "" when they match a job's.
+func (e *Executor) pausePIDFile(uid int) string {
+	return filepath.Join(e.runtimeDir(uid), "libpod", "tmp", "pause.pid")
+}
+
+// podnetProblem says why podman's processes are in the host's network
+// namespace, or "" when they are not. Strict (Reset), a missing pause
+// process or user manager is a problem too; Preflight leaves those to its
+// podman socket check.
+func (e *Executor) podnetProblem(ctx context.Context, uid int, strict bool) string {
+	host, err := os.Readlink(filepath.Join(e.p.Proc, "self", "ns", "net"))
+	if err != nil {
+		return "read this host's network namespace: " + err.Error()
+	}
+	inHost := func(pid int) (bool, error) {
+		ns, err := os.Readlink(filepath.Join(e.p.Proc, strconv.Itoa(pid), "ns", "net"))
+		return ns == host, err
+	}
+	b, err := os.ReadFile(e.pausePIDFile(uid))
+	pause, _ := strconv.Atoi(strings.TrimSpace(string(b)))
+	switch same, nsErr := inHost(pause); {
+	case err != nil || pause <= 0 || nsErr != nil:
+		if strict {
+			return "podman has no pause process"
+		}
+	case same:
+		return "podman's pause process is in the host's network namespace, so a host-network container would be too"
+	}
+	unit := "user@" + strconv.Itoa(uid) + ".service"
+	mgr, err := e.mainPID(ctx, unit)
+	if err != nil {
+		return err.Error()
+	}
+	switch same, nsErr := inHost(mgr); {
+	case mgr <= 0 || nsErr != nil:
+		if strict {
+			return "the runner's user manager is not running"
+		}
+	case same:
+		return "the runner's user manager is in the host's network namespace, so podman.service and its host-network containers would be too"
+	}
+	return ""
+}
+
+// uidMapProblem says which uids podman's pause process maps that the
+// network rules don't name, or "" when it maps only the runner's uid and
+// subordinate uids. newuidmap may read ranges from elsewhere than
+// /etc/subuid (an nsswitch subid source); then the fence would miss them.
+func (e *Executor) uidMapProblem(uid int) string {
+	p, err := e.policy(uid)
+	if err != nil {
+		return err.Error()
+	}
+	b, _ := os.ReadFile(e.pausePIDFile(uid))
+	m, err := os.ReadFile(filepath.Join(e.p.Proc, strings.TrimSpace(string(b)), "uid_map"))
+	if err != nil {
+		return "read podman's uid map: " + err.Error()
+	}
+	covered := func(first, last int) bool {
+		if first == uid && last == uid {
+			return true
+		}
+		return slices.ContainsFunc(p.SubUIDs, func(r IDRange) bool { return first >= r.First && last <= r.Last })
+	}
+	for _, line := range strings.Split(string(m), "\n") {
+		f := strings.Fields(line)
+		if len(f) != 3 {
+			continue
+		}
+		out, err1 := strconv.Atoi(f[1])
+		n, err2 := strconv.Atoi(f[2])
+		if err1 != nil || err2 != nil || n <= 0 || !covered(out, out+n-1) {
+			return "podman maps uids " + f[1] + " (" + f[2] + " of them), which the network rules for CI jobs don't name"
+		}
+	}
+	return ""
+}
+
+// podnsProblem says what in podman's namespaces a job should not see, or ""
+// when they match a job's: its network namespace, then, through a podman
+// command, its mounts.
 func (e *Executor) podnsProblem(ctx context.Context, uid int) string {
+	if p := e.podnetProblem(ctx, uid, true); p != "" {
+		return p
+	}
+	if p := e.uidMapProblem(uid); p != "" {
+		return p
+	}
 	want, err := os.ReadFile(e.jobResolvConf())
 	if err != nil {
 		return "read the jobs' resolv.conf: " + err.Error()

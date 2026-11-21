@@ -60,7 +60,7 @@ func (e *Executor) Preflight(ctx context.Context) []core.Problem {
 		add("user", err.Error(), setup)
 	} else {
 		for _, f := range []string{e.p.Subuid, e.p.Subgid} {
-			if n := subIDs(f, User); n < subIDCount {
+			if n := subIDs(f, User, uid); n < subIDCount {
 				add("subordinate ids", fmt.Sprintf("%s gives %s %d ids; rootless podman needs %d", f, User, n, subIDCount), setup)
 			}
 		}
@@ -75,6 +75,9 @@ func (e *Executor) Preflight(ctx context.Context) []core.Problem {
 		}
 		if _, err := os.Stat(filepath.Join(e.runtimeDir(uid), "podman", "podman.sock")); err != nil {
 			add("podman socket", "the rootless podman socket of "+User+" is not up", setup)
+		}
+		if p := e.podnetProblem(ctx, uid, false); p != "" {
+			add("podman network", p, "sudo systemctl restart tentmaker (its reset moves podman into a network namespace of its own)")
 		}
 		for _, p := range e.netProblems(ctx, uid) {
 			add("network", p, setup)
@@ -144,22 +147,12 @@ func (e *Executor) openHomes() []string {
 	return out
 }
 
-// subIDs returns how many subordinate ids file gives name.
-func subIDs(file, name string) int {
-	f, err := os.Open(file)
-	if err != nil {
-		return 0
-	}
-	defer f.Close()
+// subIDs returns how many subordinate ids file gives name, by name or uid.
+func subIDs(file, name string, uid int) int {
+	rs, _ := subIDRanges(file, name, uid)
 	total := 0
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		p := strings.Split(strings.TrimSpace(sc.Text()), ":")
-		if len(p) == 3 && p[0] == name {
-			if n, err := strconv.Atoi(p[2]); err == nil {
-				total += n
-			}
-		}
+	for _, r := range rs {
+		total += r.Last - r.First + 1
 	}
 	return total
 }
@@ -246,7 +239,7 @@ func Install(ctx context.Context, o Options) error {
 		return fmt.Errorf("read the groups of %s: %v", User, err)
 	}
 	for _, s := range []struct{ file, flag string }{{e.p.Subuid, "--add-subuids"}, {e.p.Subgid, "--add-subgids"}} {
-		if subIDs(s.file, User) >= subIDCount {
+		if subIDs(s.file, User, uid) >= subIDCount {
 			continue
 		}
 		next, err := nextSubID(s.file)
@@ -390,9 +383,10 @@ func Install(ctx context.Context, o Options) error {
 	if err := run(Cmd{Path: "loginctl", Args: []string{"enable-linger", User}}); err != nil {
 		return err
 	}
-	// Restart the manager so the slice drop-in and environment.d apply.
-	u := strconv.Itoa(uid)
-	if err := run(Cmd{Path: "systemctl", Args: []string{"restart", "user@" + u + ".service"}}); err != nil {
+	// Restart the manager so the slice drop-in and environment.d apply, in
+	// podman's network namespace, and make podman's namespaces before any
+	// podman command does.
+	if err := e.startPodman(ctx, uid, gid); err != nil {
 		return err
 	}
 	bus := filepath.Join(e.runtimeDir(uid), "bus")
@@ -519,6 +513,7 @@ func Uninstall(ctx context.Context, o Options, purge bool) error {
 	// A pattern only matches loaded units, so this is a no-op when none run.
 	h.Run(ctx, Cmd{Path: "systemctl", Args: []string{"stop", UnitPrefix + "*.service"}, Timeout: 2 * time.Minute})
 	e.stopPodns(ctx)
+	e.stopPodnet(ctx)
 	if _, err := os.Stat(filepath.Join(e.p.Systemd, "tentmaker-rshared.service")); err == nil {
 		h.Run(ctx, Cmd{Path: "systemctl", Args: []string{"disable", "--now", "tentmaker-rshared.service"}})
 		note(rmIfExists(filepath.Join(e.p.Systemd, "tentmaker-rshared.service")))
@@ -528,6 +523,8 @@ func Uninstall(ctx context.Context, o Options, purge bool) error {
 		dropDir := filepath.Join(e.p.Systemd, "user@"+strconv.Itoa(uid)+".service.d")
 		note(rmIfExists(filepath.Join(dropDir, "50-tentmaker.conf")))
 		os.Remove(dropDir) // only if empty
+		note(rmIfExists(e.managerDropIn(uid)))
+		os.Remove(filepath.Dir(e.managerDropIn(uid)))
 	}
 	note(rmIfExists(filepath.Join(e.p.Systemd, Slice)))
 	for _, err := range e.uninstallNet(ctx) {

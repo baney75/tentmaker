@@ -80,13 +80,24 @@ func TestInstall(t *testing.T) {
 		"tar -xzf " + filepath.Join(v.dir, "cache", "dist", "actions-runner-linux-x64-9.9.9.tar.gz") + " -C " + filepath.Join(v.dir, "opt", "actions-runner-x64-9.9.9.part") + " --no-same-owner",
 		"systemctl daemon-reload",
 		"loginctl enable-linger tentmaker-runner",
-		"systemctl restart user@1234.service",
+		"systemctl stop user@1234.service",
+		"--unit=" + PodnetUnit,
+		"systemctl start user@1234.service",
+		"--unit=" + PodnsUnit,
 		"systemctl --user restart podman.socket",
 		"podman info",
 	} {
 		if !strings.Contains(cmds, s) {
 			t.Errorf("Install did not run %q", s)
 		}
+	}
+	// The manager restarts in podman's network namespace, and podman's
+	// namespaces exist before the first podman command.
+	if i, j := unitIndex(v.f, PodnsUnit), strings.Index(cmds, "podman info"); i < 0 || j < strings.Index(cmds, "--unit="+PodnsUnit) {
+		t.Errorf("podman info ran before %s", PodnsUnit)
+	}
+	if b, err := os.ReadFile(v.e.managerDropIn(testUID)); err != nil || !strings.Contains(string(b), "NetworkNamespacePath=") {
+		t.Errorf("Install left no manager drop-in: %q %v", b, err)
 	}
 	read := func(p string) string {
 		b, err := os.ReadFile(p)
@@ -241,7 +252,7 @@ func TestUninstall(t *testing.T) {
 	must(t, os.Mkdir(filepath.Join(v.dir, "state", "linux", "jobs", "job-left"), 0o700))
 
 	must(t, Uninstall(ctx, v.o, false))
-	for _, p := range []string{"lib", "systemd/tentmaker.slice", "systemd/user@1234.service.d", "state/linux/jobs/job-left"} {
+	for _, p := range []string{"lib", "systemd/tentmaker.slice", "systemd/user@1234.service.d", "run-systemd/user@1234.service.d", "state/linux/jobs/job-left"} {
 		if _, err := os.Lstat(filepath.Join(v.dir, p)); !errors.Is(err, os.ErrNotExist) {
 			t.Errorf("%s survived uninstall", p)
 		}
@@ -255,7 +266,7 @@ func TestUninstall(t *testing.T) {
 
 	must(t, Uninstall(ctx, v.o, true))
 	cmds := strings.Join(v.f.commands(), "\n")
-	for _, s := range []string{"systemctl stop tentmaker-job-*.service", "systemctl stop tentmaker-podns.service", "loginctl disable-linger tentmaker-runner", "userdel tentmaker-runner"} {
+	for _, s := range []string{"systemctl stop tentmaker-job-*.service", "systemctl stop tentmaker-podns.service", "systemctl stop " + PodnetUplinkUnit, "systemctl stop " + PodnetUnit, "loginctl disable-linger tentmaker-runner", "userdel tentmaker-runner"} {
 		if !strings.Contains(cmds, s) {
 			t.Errorf("purge did not run %q", s)
 		}

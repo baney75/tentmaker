@@ -225,23 +225,42 @@ physical LAN only, never what the tailnet routes.
   A job owns its namespace's user namespace, so it can reconfigure its own namespace; everything
   still leaves through pasta as the runner.
 - Linux podman namespace (`podns.go`): rootless podman runs every command, a job's included, in
-  the user and mount namespaces of its pause process, not the caller's. `Reset` starts
-  `tentmaker-podns.service` (the runner, `podman unshare sleep infinity`, the job unit's mounts:
-  its resolv.conf and every `InaccessiblePaths`; no `NoNewPrivileges`, which newuidmap needs)
-  before any podman command, after restarting the user manager, and waits until
-  `$XDG_RUNTIME_DIR/libpod/tmp/pause.pid` names a process outside the host's user namespace. So the
-  pause process is born with a job's view: no user bus or manager socket (a process started
-  through them would run outside the job's unit and network namespace), no tailscaled socket, and
-  DNS servers the job's namespace can reach. `Reset` then checks that view through `podman
-  unshare` and fails on any difference. Without the bus the systemd cgroup manager cannot work
+  the user and mount namespaces of its pause process, not the caller's. It never joins the pause
+  process's network namespace: a host-network container (`docker run --network=host` through
+  `DOCKER_HOST`) runs in podman.service's, which it gets from the runner's user manager. So podman
+  gets a network namespace of its own, made the way a job's is: `tentmaker-podnet.service` (the
+  holder) and `tentmaker-podnet-uplink.service` (pasta, the same argv as a job's, so the per-uid
+  rules match all it sends and only the relay is forwarded to the host). `Install` and `Reset`
+  stop the user manager and its runtime dir, start those two, write the runtime drop-in
+  `/run/systemd/system/user@<uid>.service.d/60-tentmaker-netns.conf` with
+  `NetworkNamespacePath=/proc/<holder>/ns/net` (under `/run`, so no pid outlives a reboot), run
+  `daemon-reload` and start the user manager in it. Then, before any podman command, they start
+  `tentmaker-podns.service` (the runner, `podman unshare sleep infinity`, the same
+  `NetworkNamespacePath`, the job unit's mounts: its resolv.conf and every `InaccessiblePaths`; no
+  `NoNewPrivileges`, which newuidmap needs) and wait until `$XDG_RUNTIME_DIR/libpod/tmp/pause.pid`
+  names a process outside the host's user namespace. So the pause process is born with a job's
+  view: no user bus or manager socket (a process started through them would run outside the job's
+  unit and network namespace), no tailscaled socket, and DNS servers the job's namespace can
+  reach. A host-network container can then reach no host service's abstract Unix socket and
+  listen on none of the host's addresses. This namespace is one per device, not one per job: the
+  containers every job starts through the service share it (and its loopback), as they share
+  the service. A job's own `podman` CLI keeps the job's namespace. `Reset` fails unless the pause
+  process and the user manager are both outside the host's network namespace
+  (`/proc/<pid>/ns/net` differs from the daemon's), then checks the mounts through `podman
+  unshare` and fails on any difference. Doctor (`Preflight`) reports either one in the host's
+  namespace, as after a reboot until the daemon's first reset. Without the bus the systemd cgroup manager cannot work
   (crun would ask the system bus, which refuses), so setup writes the runner's
   `~/.config/containers/containers.conf` (root-owned) with `cgroup_manager = "cgroupfs"`, and jobs
   load it through `CONTAINERS_CONF_OVERRIDE`. A job's containers then stay in the job's cgroup.
 - Linux (`netrules.go`): nftables table `inet tentmaker`, an output hook that sends every packet
   with `meta skuid { <runner uid>, <its subuid ranges> }` to a `runner` chain (accept relay and DNS,
-  then reject). The subordinate uids matter: a rootless container on the host network that runs as
-  a non-root user opens its sockets as one of them (through the podman service, which runs in the
-  host's namespace). `oifname "lo"` covers the host's own addresses. Always rejected besides the ranges above: RFC 1918, CGNAT and ULA out a Tailscale
+  then reject). The subordinate uids are a second wall: a rootless container on the host network
+  that runs as a non-root user opens its sockets as one of them, and none should share the host's
+  namespace (the podman namespace above). The ranges are the runner's `/etc/subuid` entries keyed
+  by its name or its numeric uid (newuidmap takes either). With none, or a file that can't be
+  read, no rules load: setup fails, `Start` refuses the job and doctor says why. `Reset` also
+  fails when the pause process's `/proc/<pid>/uid_map` maps a uid outside the runner's uid and
+  those ranges (newuidmap can take ranges from an nsswitch `subid` source the rules never read). `oifname "lo"` covers the host's own addresses. Always rejected besides the ranges above: RFC 1918, CGNAT and ULA out a Tailscale
   interface (other devices' subnet routes; public destinations stay open for an exit node), IPv4
   multicast and broadcast (224/4, 255.255.255.255) and ff00::/8. Tailscale interfaces are
   `tailscale0` plus any interface holding a tailnet IPv6 address (`/proc/net/if_inet6`); the

@@ -309,6 +309,27 @@ if pod_err=$(timeout 180 podman pull -q "$img" 2>&1 >/dev/null); then
 		done
 		return 1
 	}
+	# A host-network container must not share the host's network namespace,
+	# through the job's podman or the service: there it could reach a host
+	# service's abstract Unix socket, which no firewall or file permission
+	# guards, and listen on the host's own addresses. 192.0.2.77 and
+	# 100.64.77.1 are on the host only; pasta copies neither.
+	bind_host() { # bind_host ADDR:PORT: a host-network container listened there
+		local how
+		for how in podman "podman --remote --url ${DOCKER_HOST:-unix:///nonexistent}"; do
+			if timeout 30 $how run --rm --network host "$img" httpd -p "$1" >/dev/null 2>&1; then
+				echo "$how"
+				return 0
+			fi
+		done
+		return 1
+	}
+	if how=$(bind_host 127.0.0.1:18783); then echo "CONTROL podman-hostnet-bind OK ($how)"; else echo "CONTROL podman-hostnet-bind FAILED"; fi
+	got=""
+	for a in 192.0.2.77:18783 100.64.77.1:18783; do
+		if how=$(bind_host "$a"); then got="listened on $a ($how)"; break; fi
+	done
+	if [ -n "$got" ]; then say podman-hostnet-bind-host-addr SUCCEEDED "$got"; else say podman-hostnet-bind-host-addr BLOCKED; fi
 	for u in 0 1000:1000; do
 		name=podman-hostnet-root
 		[ "$u" = 0 ] || name=podman-hostnet-subuid
@@ -356,6 +377,21 @@ if pod_err=$(timeout 180 podman pull -q "$img" 2>&1 >/dev/null); then
 		done
 		unset IFS
 		if [ -n "$got" ]; then say podman-hostnet-image-user SUCCEEDED "$got"; else say podman-hostnet-image-user BLOCKED; fi
+		# The harness's abstract socket decoy, as root and as the image's user.
+		got=""
+		IFS='|'
+		for how in $ways; do
+			unset IFS
+			for u in 0 100; do
+				if timeout 30 $how run --rm --network host --user "$u" "$curl_img" -fsS -o /dev/null --max-time 5 \
+					--abstract-unix-socket tentmaker-abuse-decoy http://decoy/ >/dev/null 2>&1; then
+					got="as uid $u ($how)"
+					break 2
+				fi
+			done
+		done
+		unset IFS
+		if [ -n "$got" ]; then say podman-hostnet-abstract-socket SUCCEEDED "$got"; else say podman-hostnet-abstract-socket BLOCKED; fi
 	else
 		echo "CONTROL podman-curl FAILED (could not pull $curl_img)"
 	fi
