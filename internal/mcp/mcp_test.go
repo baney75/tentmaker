@@ -274,11 +274,11 @@ func TestFullSession(t *testing.T) {
 		t.Fatalf("set_budget: %+v, call %q", r, fc.last())
 	}
 	s.tool(7, "add_repo", map[string]any{"repo": "o/r"})
-	if fc.last() != "add_repo o/r github runner false" {
+	if fc.last() != "add_repo o/r github  false" {
 		t.Errorf("add_repo defaults: %q", fc.last())
 	}
 	s.tool(8, "add_repo", map[string]any{"repo": "group/sub/r", "forge": "gitlab", "allow_public": true})
-	if fc.last() != "add_repo group/sub/r gitlab checks true" {
+	if fc.last() != "add_repo group/sub/r gitlab  true" {
 		t.Errorf("add_repo gitlab: %q", fc.last())
 	}
 	s.tool(9, "pause", map[string]any{"reason": "video call"})

@@ -162,22 +162,15 @@ var tools = []tool{
 		Props: []prop{
 			{Name: "repo", Type: "string", Required: true, Description: "Repository as owner/name.", Check: repoName},
 			{Name: "forge", Type: "string", Enum: []string{"github", "forgejo", "gitlab"}, Default: "github", Description: "Forge that hosts the repository."},
-			{Name: "mode", Type: "string", Enum: []string{"runner", "checks"}, Description: "runner (default) or checks (default for gitlab)."},
+			{Name: "mode", Type: "string", Enum: []string{"runner", "checks"}, Description: "runner (default for github) or checks (the default, and the only mode, for gitlab and forgejo)."},
 			{Name: "allow_public", Type: "boolean", Default: false, Description: "Allow a public repository. Leave false unless the owner asked for it."},
 		},
 		Idempotent: true, OpenWorld: true,
 		run: func(ctx context.Context, c Controller, a args) (any, error) {
-			mode := a.str("mode")
-			if mode == "" {
-				mode = "runner"
-				if a.str("forge") == "gitlab" {
-					mode = "checks"
-				}
-			}
-			if a.str("forge") == "gitlab" && mode != "checks" {
-				return nil, fmt.Errorf(`GitLab repos run in mode "checks"`)
-			}
-			return ok(c.AddRepo(ctx, a.str("repo"), a.str("forge"), mode, a.flag("allow_public")))
+			// An empty mode lets the controller pick the forge's default, the
+			// same rule the CLI uses; filling in "runner" here broke every
+			// Forgejo add (review r1 partB first-F3).
+			return ok(c.AddRepo(ctx, a.str("repo"), a.str("forge"), a.str("mode"), a.flag("allow_public")))
 		},
 	},
 	{
