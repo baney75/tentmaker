@@ -55,10 +55,10 @@ const (
 	fwpmProviderFlagPersistent     = 0x1
 	fwpmSublayerFlagPersistent     = 0x1
 
-	fwpEFilterNotFound   = 0x80320003
-	fwpEProviderNotFound = 0x80320005
-	fwpESublayerNotFound = 0x80320007
-	fwpEAlreadyExists    = 0x80320009
+	fwpEFilterNotFound   uint32 = 0x80320003
+	fwpEProviderNotFound uint32 = 0x80320005
+	fwpESublayerNotFound uint32 = 0x80320007
+	fwpEAlreadyExists    uint32 = 0x80320009
 
 	// wfpTxnTimeout bounds how long a transaction waits for the engine.
 	wfpTxnTimeoutMS = 30000
@@ -147,8 +147,16 @@ type fwpmSublayer0 struct {
 	Weight       uint16
 }
 
-func wfpErr(what string, r uintptr) error {
-	return fmt.Errorf("%s: %w (0x%08x)", what, win.Errno(r), uint32(r))
+// wfpCall calls p and returns its DWORD result. Only the low 32 bits of
+// the register hold it on 64-bit Windows; the rest are undefined, and a
+// live run saw FWP_E_FILTER_NOT_FOUND come back with them set.
+func wfpCall(p *win.LazyProc, a ...uintptr) uint32 {
+	r, _, _ := p.Call(a...)
+	return uint32(r)
+}
+
+func wfpErr(what string, r uint32) error {
+	return fmt.Errorf("%s: %w (0x%08x)", what, win.Errno(r), r)
 }
 
 // wfpSession is an open engine handle.
@@ -167,7 +175,7 @@ func wfpOpen() (*wfpSession, error) {
 	}
 	s := &fwpmSession0{TxnWaitTimeoutInMSec: wfpTxnTimeoutMS}
 	var h win.Handle
-	r, _, _ := procFwpmEngineOpen0.Call(0, rpcCAuthnDefault, 0, uintptr(unsafe.Pointer(s)), uintptr(unsafe.Pointer(&h)))
+	r := wfpCall(procFwpmEngineOpen0, 0, rpcCAuthnDefault, 0, uintptr(unsafe.Pointer(s)), uintptr(unsafe.Pointer(&h)))
 	if r != 0 {
 		return nil, wfpErr("open the WFP engine", r)
 	}
@@ -178,14 +186,14 @@ func (s *wfpSession) close() { procFwpmEngineClose0.Call(uintptr(s.h)) }
 
 // tx runs f in one transaction: all of it takes effect, or none.
 func (s *wfpSession) tx(f func() error) error {
-	if r, _, _ := procFwpmTransactionBegin0.Call(uintptr(s.h), 0); r != 0 {
+	if r := wfpCall(procFwpmTransactionBegin0, uintptr(s.h), 0); r != 0 {
 		return wfpErr("begin a WFP transaction", r)
 	}
 	if err := f(); err != nil {
 		procFwpmTransactionAbort0.Call(uintptr(s.h))
 		return err
 	}
-	if r, _, _ := procFwpmTransactionCommit.Call(uintptr(s.h)); r != 0 {
+	if r := wfpCall(procFwpmTransactionCommit, uintptr(s.h)); r != 0 {
 		return wfpErr("commit the WFP transaction", r)
 	}
 	return nil
@@ -195,7 +203,7 @@ func (s *wfpSession) addProvider() error {
 	key := win.GUID(WFPProvider)
 	p := &fwpmProvider0{ProviderKey: key, Flags: fwpmProviderFlagPersistent,
 		DisplayData: fwpmDisplayData0{Name: u16("Tentmaker"), Description: u16("Tentmaker keeps CI jobs off this host.")}}
-	r, _, _ := procFwpmProviderAdd0.Call(uintptr(s.h), uintptr(unsafe.Pointer(p)), 0)
+	r := wfpCall(procFwpmProviderAdd0, uintptr(s.h), uintptr(unsafe.Pointer(p)), 0)
 	runtime.KeepAlive(p)
 	if r != 0 && r != fwpEAlreadyExists {
 		return wfpErr("add the Tentmaker WFP provider", r)
@@ -207,7 +215,7 @@ func (s *wfpSession) addSublayer() error {
 	prov := win.GUID(WFPProvider)
 	l := &fwpmSublayer0{SubLayerKey: win.GUID(WFPSublayer), Flags: fwpmSublayerFlagPersistent, ProviderKey: &prov, Weight: WFPSublayerWeight,
 		DisplayData: fwpmDisplayData0{Name: u16("Tentmaker"), Description: u16("Tentmaker's filters for CI jobs, weighed before Windows Firewall's.")}}
-	r, _, _ := procFwpmSubLayerAdd0.Call(uintptr(s.h), uintptr(unsafe.Pointer(l)), 0)
+	r := wfpCall(procFwpmSubLayerAdd0, uintptr(s.h), uintptr(unsafe.Pointer(l)), 0)
 	runtime.KeepAlive(l)
 	if r != 0 && r != fwpEAlreadyExists {
 		return wfpErr("add the Tentmaker WFP sublayer", r)
@@ -217,7 +225,7 @@ func (s *wfpSession) addSublayer() error {
 
 func (s *wfpSession) deleteFilter(k GUID) error {
 	key := win.GUID(k)
-	r, _, _ := procFwpmFilterDelete0.Call(uintptr(s.h), uintptr(unsafe.Pointer(&key)))
+	r := wfpCall(procFwpmFilterDelete0, uintptr(s.h), uintptr(unsafe.Pointer(&key)))
 	if r != 0 && r != fwpEFilterNotFound {
 		return wfpErr("delete WFP filter "+k.String(), r)
 	}
@@ -282,7 +290,7 @@ func (s *wfpSession) addFilter(f WFPFilter) error {
 		flt.Flags |= fwpmFilterFlagClearActionRight
 	}
 	var id uint64
-	r, _, _ := procFwpmFilterAdd0.Call(uintptr(s.h), uintptr(unsafe.Pointer(flt)), 0, uintptr(unsafe.Pointer(&id)))
+	r := wfpCall(procFwpmFilterAdd0, uintptr(s.h), uintptr(unsafe.Pointer(flt)), 0, uintptr(unsafe.Pointer(&id)))
 	runtime.KeepAlive(flt)
 	runtime.KeepAlive(conds)
 	if r != 0 {
@@ -330,7 +338,7 @@ func (*OSAPI) WFPInstalled() ([]WFPState, error) {
 	for _, k := range WFPKeys() {
 		key := win.GUID(k)
 		var f *fwpmFilter0
-		r, _, _ := procFwpmFilterGetByKey0.Call(uintptr(s.h), uintptr(unsafe.Pointer(&key)), uintptr(unsafe.Pointer(&f)))
+		r := wfpCall(procFwpmFilterGetByKey0, uintptr(s.h), uintptr(unsafe.Pointer(&key)), uintptr(unsafe.Pointer(&f)))
 		if r == fwpEFilterNotFound {
 			continue
 		}
@@ -368,10 +376,10 @@ func (*OSAPI) RemoveWFP() error {
 			}
 		}
 		sub, prov := win.GUID(WFPSublayer), win.GUID(WFPProvider)
-		if r, _, _ := procFwpmSubLayerDelete0.Call(uintptr(s.h), uintptr(unsafe.Pointer(&sub))); r != 0 && r != fwpESublayerNotFound {
+		if r := wfpCall(procFwpmSubLayerDelete0, uintptr(s.h), uintptr(unsafe.Pointer(&sub))); r != 0 && r != fwpESublayerNotFound {
 			return wfpErr("delete the Tentmaker WFP sublayer", r)
 		}
-		if r, _, _ := procFwpmProviderDelete0.Call(uintptr(s.h), uintptr(unsafe.Pointer(&prov))); r != 0 && r != fwpEProviderNotFound {
+		if r := wfpCall(procFwpmProviderDelete0, uintptr(s.h), uintptr(unsafe.Pointer(&prov))); r != 0 && r != fwpEProviderNotFound {
 			return wfpErr("delete the Tentmaker WFP provider", r)
 		}
 		return nil
