@@ -1,0 +1,42 @@
+# The workflow team.yml pushes to its throwaway tm-team-* branches, where two
+# Tentmaker brokers run it in checks mode and post tentmaker/linux and
+# tentmaker/windows. team.yml rewrites the env values per branch.
+#
+# GitHub's own runners never run it: team.yml pushes those branches with the
+# GITHUB_TOKEN, and pushes made with it start no workflow. If one ever does,
+# each step sees GITHUB_ACTIONS=true and no TENTMAKER=1 and exits at once.
+name: tentmaker-team
+
+on:
+  push:
+    branches: ["tm-team-*"]
+
+permissions:
+  contents: read
+
+env:
+  TM_MARK: "template"
+  TM_LINUX_SLEEP: "1"
+  TM_WINDOWS_SLEEP: "1"
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - run: |
+          if [ "${TENTMAKER:-}" != 1 ]; then echo "not under Tentmaker; nothing to do"; exit 0; fi
+          echo "tentmaker-team linux mark=$TM_MARK sleep=$TM_LINUX_SLEEP RUNNER_OS=$RUNNER_OS"
+          sleep "$TM_LINUX_SLEEP"
+          echo "tentmaker-team linux done"
+
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - shell: pwsh
+        run: |
+          if ($env:TENTMAKER -ne '1') { Write-Output 'not under Tentmaker; nothing to do'; exit 0 }
+          Write-Output "tentmaker-team windows mark=$env:TM_MARK sleep=$env:TM_WINDOWS_SLEEP RUNNER_OS=$env:RUNNER_OS"
+          Start-Sleep -Seconds ([int]$env:TM_WINDOWS_SLEEP)
+          Write-Output 'tentmaker-team windows done'
