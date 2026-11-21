@@ -47,9 +47,9 @@ check "slow ends in failure ($st)" test "${st%% *}" = failure
 check "slow says it timed out ($st)" grep -q "timed out at step nap" <<<"$st"
 sleep 15
 if [ "$OS" = linux ]; then
-	# The runner user's own service manager (and podman's socket service)
-	# are not job processes.
-	left=$(ps -u tentmaker-runner -o pid=,args= 2>/dev/null | grep -Ev 'systemd --user|\(sd-pam\)|podman system service|catatonit' || true)
+	# The runner user's own service manager, its session bus (setup waits
+	# for that bus) and podman's socket service are not job processes.
+	left=$(ps -u tentmaker-runner -o pid=,args= 2>/dev/null | grep -Ev 'systemd --user|\(sd-pam\)|dbus-daemon --session|dbus-broker|podman system service|catatonit' || true)
 	units=$(systemctl list-units --no-legend --state=active 'tentmaker-job*' 2>/dev/null || true)
 else
 	left=$(ps1 Runner-Procs)

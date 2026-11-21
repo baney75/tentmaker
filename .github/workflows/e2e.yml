@@ -12,8 +12,10 @@ on:
   pull_request:
   workflow_dispatch:
 
+# contents: write makes the throwaway commit and branch the real check job
+# tests (tm-e2e/<run>.<attempt>/<os>) and deletes them after.
 permissions:
-  contents: read
+  contents: write
   statuses: write
   pull-requests: read
 
@@ -26,7 +28,6 @@ env:
   TM_PORT: "8765"
   # The commit Tentmaker tests: the PR head on pull_request, else the pushed commit.
   TM_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-  TM_BRANCH: ${{ github.head_ref || github.ref_name }}
   # Fork PRs get a read-only token and Tentmaker refuses forks anyway.
   TM_SMOKE: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
 
@@ -166,21 +167,30 @@ jobs:
         run: |
           ctx=tentmaker/smoke
           start=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          # Tentmaker never reruns a context a commit already has a status
+          # for, and an earlier run may have tested $TM_SHA. A new commit
+          # with its tree, on a throwaway branch, is one no run has seen.
+          # Commits made with GITHUB_TOKEN trigger no workflows.
+          tree=$(timeout 30 gh api "repos/$REPO/git/commits/$TM_SHA" --jq .tree.sha)
+          sha=$(timeout 30 gh api "repos/$REPO/git/commits" -f "tree=$tree" -f "parents[]=$TM_SHA" \
+            -f "message=tentmaker e2e $GITHUB_RUN_ID.$GITHUB_RUN_ATTEMPT ($RUNNER_OS) of $TM_SHA" --jq .sha)
+          branch="tm-e2e/$GITHUB_RUN_ID.$GITHUB_RUN_ATTEMPT/linux"
+          timeout 30 gh api "repos/$REPO/git/refs" -f "ref=refs/heads/$branch" -f "sha=$sha" >/dev/null
+          echo "TM_E2E_BRANCH=$branch" >>"$GITHUB_ENV"
           printf %s "$GITHUB_TOKEN" | sudo tentmaker connect github --token-stdin --json | tee "$RUNNER_TEMP/connect.json"
           jq -e '.ok == true' "$RUNNER_TEMP/connect.json" >/dev/null || { echo "::error::connect failed"; exit 1; }
-          sudo tentmaker repo add "$REPO" --mode checks --allow-public --workflow .github/workflows/tentmaker-smoke.yml --branch "$TM_BRANCH" --json | tee "$RUNNER_TEMP/repo.json"
+          # An author with no PRs keeps this run off other PRs' heads.
+          sudo tentmaker repo add "$REPO" --mode checks --allow-public --workflow .github/workflows/tentmaker-smoke.yml --branch "$branch" --author tentmaker-e2e-nobody --json | tee "$RUNNER_TEMP/repo.json"
           jq -e '.ok == true' "$RUNNER_TEMP/repo.json" >/dev/null || { echo "::error::repo add failed"; exit 1; }
-          echo "waiting for $ctx on $TM_SHA (branch $TM_BRANCH)"
+          echo "waiting for $ctx on $sha (branch $branch, a copy of $TM_SHA)"
           deadline=$((SECONDS + 360))
           while :; do
-            st=$(timeout 30 gh api "repos/$REPO/commits/$TM_SHA/statuses?per_page=100" \
-              --jq "[.[] | select(.context == \"$ctx\")][0] | if . == null then \"none\" else \"\(.state) \(.created_at) \(.description)\" end") || st="api-error"
+            # Only a status set during this run counts.
+            st=$(timeout 30 gh api "repos/$REPO/commits/$sha/statuses?per_page=100" \
+              --jq "[.[] | select(.context == \"$ctx\" and .created_at >= \"$start\")][0] | if . == null then \"none\" else \"\(.state) \(.created_at) \(.description)\" end") || st="api-error"
             echo "$(date -u +%T) $ctx: $st"
             case $st in
-              success*)
-                created=$(printf '%s' "$st" | cut -d' ' -f2)
-                if [[ "$created" < "$start" ]]; then echo "::error::$ctx was set before this run ($created < $start)"; exit 1; fi
-                break ;;
+              success*) break ;;
               failure* | error*) echo "::error::$ctx is $st"; exit 1 ;;
             esac
             if [ "$SECONDS" -ge "$deadline" ]; then echo "::error::$ctx did not succeed within 6 minutes"; exit 1; fi
@@ -188,7 +198,7 @@ jobs:
           done
           # The job ran under Tentmaker, not GitHub's runner: the broker keeps
           # the check's log, and it shows the env Tentmaker set.
-          log="/var/lib/tentmaker/checks/${REPO/\//_}-${TM_SHA:0:12}-smoke.log"
+          log="/var/lib/tentmaker/checks/${REPO/\//_}-${sha:0:12}-smoke.log"
           sudo cat "$log" || { echo "::error::no check log at $log"; exit 1; }
           sudo grep -q '^state: success' "$log" || { echo "::error::$log does not record success"; exit 1; }
           sudo grep -q 'TENTMAKER=1 GITHUB_ACTIONS=unset' "$log" ||
@@ -208,6 +218,13 @@ jobs:
           echo "== state files"; sudo find "$state" -maxdepth 4 -not -path '*/runner/*' 2>/dev/null | head -200 || true
           sudo find "$state" \( -name log.txt -o -name result.json -o -name 'broker*.json' -o -name state.json \) -type f 2>/dev/null |
             while read -r f; do echo "== $f"; sudo tail -c 20000 "$f"; echo; done || true
+
+      - name: delete the throwaway branch
+        if: always() && env.TM_E2E_BRANCH != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: timeout 30 gh api -X DELETE "repos/$REPO/git/refs/heads/$TM_E2E_BRANCH" || echo "::warning::could not delete $TM_E2E_BRANCH"
 
       - name: uninstall --purge
         if: ${{ !cancelled() && steps.setup.outcome != 'skipped' }}
@@ -355,28 +372,43 @@ jobs:
         run: |
           $ctx = 'tentmaker/smoke-windows'
           $start = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
+          $headers = @{ Authorization = "Bearer $env:GITHUB_TOKEN"; Accept = 'application/vnd.github+json'; 'User-Agent' = 'tentmaker-e2e' }
+          $api = "https://api.github.com/repos/$env:REPO"
+          # Tentmaker never reruns a context a commit already has a status
+          # for, and an earlier run may have tested TM_SHA. A new commit
+          # with its tree, on a throwaway branch, is one no run has seen.
+          # Commits made with GITHUB_TOKEN trigger no workflows.
+          $tree = (Invoke-RestMethod -TimeoutSec 30 -Headers $headers "$api/git/commits/$env:TM_SHA").tree.sha
+          $body = @{ tree = $tree; parents = @($env:TM_SHA); message = "tentmaker e2e $env:GITHUB_RUN_ID.$env:GITHUB_RUN_ATTEMPT ($env:RUNNER_OS) of $env:TM_SHA" } | ConvertTo-Json
+          $sha = (Invoke-RestMethod -TimeoutSec 30 -Method Post -Headers $headers -ContentType 'application/json' -Body $body "$api/git/commits").sha
+          if (-not $sha) { Write-Output "::error::could not make the throwaway commit"; exit 1 }
+          $branch = "tm-e2e/$env:GITHUB_RUN_ID.$env:GITHUB_RUN_ATTEMPT/windows"
+          $body = @{ ref = "refs/heads/$branch"; sha = $sha } | ConvertTo-Json
+          Invoke-RestMethod -TimeoutSec 30 -Method Post -Headers $headers -ContentType 'application/json' -Body $body "$api/git/refs" | Out-Null
+          Add-Content -Path $env:GITHUB_ENV -Value "TM_E2E_BRANCH=$branch"
           $c = ($env:GITHUB_TOKEN | tentmaker connect github --token-stdin --json) -join "`n"
           Write-Output $c
           if (-not ($c | ConvertFrom-Json).ok) { Write-Output "::error::connect failed"; exit 1 }
-          $r = (tentmaker repo add $env:REPO --mode checks --allow-public --workflow .github/workflows/tentmaker-smoke.yml --branch $env:TM_BRANCH --json) -join "`n"
+          # An author with no PRs keeps this run off other PRs' heads.
+          $r = (tentmaker repo add $env:REPO --mode checks --allow-public --workflow .github/workflows/tentmaker-smoke.yml --branch $branch --author tentmaker-e2e-nobody --json) -join "`n"
           Write-Output $r
           if (-not ($r | ConvertFrom-Json).ok) { Write-Output "::error::repo add failed"; exit 1 }
-          Write-Output "waiting for $ctx on $env:TM_SHA (branch $env:TM_BRANCH)"
-          $headers = @{ Authorization = "Bearer $env:GITHUB_TOKEN"; Accept = 'application/vnd.github+json'; 'User-Agent' = 'tentmaker-e2e' }
+          Write-Output "waiting for $ctx on $sha (branch $branch, a copy of $env:TM_SHA)"
           $deadline = [DateTime]::UtcNow.AddMinutes(6)
           while ($true) {
             $st = $null
             try {
-              $all = Invoke-RestMethod -TimeoutSec 30 -Headers $headers "https://api.github.com/repos/$env:REPO/commits/$env:TM_SHA/statuses?per_page=100"
-              $st = @($all | Where-Object { $_.context -eq $ctx })[0]
+              $all = Invoke-RestMethod -TimeoutSec 30 -Headers $headers "$api/commits/$sha/statuses?per_page=100"
+              # Only a status set during this run counts.
+              $st = @($all | Where-Object {
+                  $_.context -eq $ctx -and
+                  [string]::CompareOrdinal(([DateTime]$_.created_at).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ'), $start) -ge 0
+                })[0]
             } catch { Write-Output "api error: $($_.Exception.Message)" }
             if ($st) {
               $created = ([DateTime]$st.created_at).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
               Write-Output "$([DateTime]::UtcNow.ToString('HH:mm:ss')) ${ctx}: $($st.state) $created $($st.description)"
-              if ($st.state -eq 'success') {
-                if ([string]::CompareOrdinal($created, $start) -lt 0) { Write-Output "::error::$ctx was set before this run"; exit 1 }
-                break
-              }
+              if ($st.state -eq 'success') { break }
               if ($st.state -in @('failure', 'error')) { Write-Output "::error::$ctx is $($st.state): $($st.description)"; exit 1 }
             } else {
               Write-Output "$([DateTime]::UtcNow.ToString('HH:mm:ss')) ${ctx}: none"
@@ -386,7 +418,7 @@ jobs:
           }
           # The job ran under Tentmaker, not GitHub's runner: the broker keeps
           # the check's log, and it shows the env Tentmaker set.
-          $log = "$env:ProgramData\Tentmaker\state\checks\$($env:REPO -replace '/', '_')-$($env:TM_SHA.Substring(0, 12))-smoke-windows.log"
+          $log = "$env:ProgramData\Tentmaker\state\checks\$($env:REPO -replace '/', '_')-$($sha.Substring(0, 12))-smoke-windows.log"
           if (-not (Test-Path $log)) { Write-Output "::error::no check log at $log"; exit 1 }
           Get-Content $log
           if (-not (Select-String -Path $log -Pattern '^state: success' -Quiet)) { Write-Output "::error::$log does not record success"; exit 1 }
@@ -403,6 +435,16 @@ jobs:
           Get-ChildItem -Recurse -File "$env:ProgramData\Tentmaker" -Include log.txt, result.json, state.json, 'broker*.json' -ErrorAction SilentlyContinue |
             ForEach-Object { Write-Output "== $($_.FullName)"; Get-Content -Tail 300 $_.FullName }
           exit 0
+
+      - name: delete the throwaway branch
+        if: always() && env.TM_E2E_BRANCH != ''
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          $headers = @{ Authorization = "Bearer $env:GITHUB_TOKEN"; Accept = 'application/vnd.github+json'; 'User-Agent' = 'tentmaker-e2e' }
+          try { Invoke-RestMethod -TimeoutSec 30 -Method Delete -Headers $headers "https://api.github.com/repos/$env:REPO/git/refs/heads/$env:TM_E2E_BRANCH" | Out-Null }
+          catch { Write-Output "::warning::could not delete $env:TM_E2E_BRANCH" }
 
       - name: uninstall --purge
         if: ${{ !cancelled() && steps.setup.outcome != 'skipped' }}

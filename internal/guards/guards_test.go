@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io/fs"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -267,8 +268,9 @@ func TestCPUBusy(t *testing.T) {
 }
 
 func TestFreeDiskAt(t *testing.T) {
+	// freeDiskAt cleans with filepath, so on Windows it asks for \var\lib.
 	statfs := func(p string) (int64, error) {
-		switch p {
+		switch filepath.ToSlash(p) {
 		case "/var/lib":
 			return 42, nil
 		case "/denied":
@@ -310,7 +312,7 @@ func TestProcProbe(t *testing.T) {
 	if l, err := p.LoadPerCPU(ctx); err != nil || l != 0.75 {
 		t.Errorf("LoadPerCPU = %v, %v", l, err)
 	}
-	if n, err := p.FreeDisk(ctx, ""); err != nil || n != 7 || asked != "/var/lib/tentmaker" {
+	if n, err := p.FreeDisk(ctx, ""); err != nil || n != 7 || filepath.ToSlash(asked) != "/var/lib/tentmaker" {
 		t.Errorf("FreeDisk = %d, %v at %q", n, err, asked)
 	}
 	procs, err := p.Processes(ctx)

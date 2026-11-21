@@ -4,7 +4,10 @@
 #
 # Targets: install start to the first tentmaker/hello success under 3
 # minutes (the build is not counted: a user downloads it); push to pending
-# p95 under 30 s over 5 pushes made after the poller has gone idle.
+# p95 under 40 s over 5 pushes made after the poller has gone idle. Idle,
+# the broker polls every 30 s (docs/DESIGN.md), and reading the workflow,
+# the grant and the status post add a few seconds, so 30 s is the poll
+# alone; 40 s still fails a slower poll.
 # shellcheck source=test/scenarios/lib.sh
 . "$(dirname "$0")/lib.sh"
 scn_begin quickstart
@@ -58,5 +61,5 @@ p50=$(pct 50 "${lat[@]}")
 p95=$(pct 95 "${lat[@]}")
 measure push_to_pending_p50_s "$p50"
 measure push_to_pending_p95_s "$p95"
-check "push to pending p95 under 30 s (p95 ${p95}s)" test "$p95" -lt 30
+check "push to pending p95 under 40 s (p95 ${p95}s)" test "$p95" -lt 40
 measure rate_left "$(rate_left)"

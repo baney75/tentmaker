@@ -12,6 +12,11 @@
 # GITHUB_TOKEN; read only from the environment, never put in argv), RUN_ID,
 # RUN_ATTEMPT, RUNNER_TEMP, RUNNER_OS. Optional: SCN_PORT (fake release server).
 #
+# Nothing waits forever: every call that can hang has a timeout, every wait
+# loop has a deadline, and the workflow runs each script under `timeout`.
+# Its TERM is recorded as a failure, so a hang ends with a message and the
+# metrics file.
+#
 # Commits under test are throwaway: the harness writes the scenario's
 # workflow to .tm-scn/wf.yml in a new commit on top of the checked-out commit
 # and pushes it to tm-scn/<run_id>.<attempt>/<scenario>-<os>/<n>. Pushes made
@@ -51,6 +56,7 @@ mkdir -p "$W"
 METRICS=$SCN_ROOT/metrics
 WF_PATH=.tm-scn/wf.yml
 SCN=""
+SCN_BG=() # background helpers scn_finish stops
 
 # ---------------------------------------------------------------- logging, metrics
 
@@ -76,6 +82,7 @@ scn_begin() {
 	SCN_T0=$(now_ms)
 	mkdir -p "$METRICS"
 	trap scn_finish EXIT
+	trap 'soft_fail "the scenario ran past its time limit (killed by timeout)"; exit 124' TERM
 	log "scenario $SCN on $OS ($(uname -sr)), $(nproc 2>/dev/null || echo '?') CPUs"
 	if [ "$OS" = linux ]; then
 		df -h / /var/lib 2>/dev/null | sed 's/^/  /' >&2 || true
@@ -114,7 +121,9 @@ check() {
 scn_finish() {
 	local rc=$?
 	set +e
-	trap - EXIT
+	trap - EXIT TERM
+	local p
+	for p in "${SCN_BG[@]}"; do kill "$p" 2>/dev/null; done
 	local pass=false
 	if [ "$rc" = 0 ] && [ ! -s "$FAILS" ]; then pass=true; fi
 	measure total_s "$(secs_since "$SCN_T0")"
@@ -136,13 +145,13 @@ scn_finish() {
 
 # tm ARGS: tentmaker as root (Linux) or Administrator (the Windows runner).
 tm() {
-	if [ "$OS" = linux ]; then sudo tentmaker "$@"; else tentmaker "$@"; fi
+	if [ "$OS" = linux ]; then timeout 300 sudo tentmaker "$@"; else timeout 300 tentmaker "$@"; fi
 }
 # tm_env NAME=VALUE ARGS: tm with one more environment variable (a test hook).
 tm_env() {
 	local kv=$1
 	shift
-	if [ "$OS" = linux ]; then sudo env "$kv" tentmaker "$@"; else env "$kv" tentmaker "$@"; fi
+	if [ "$OS" = linux ]; then timeout 300 sudo env "$kv" tentmaker "$@"; else timeout 300 env "$kv" tentmaker "$@"; fi
 }
 tm_status() { timeout 30 tentmaker status --json | tr -d '\r'; }
 # rcat FILE: read a root-only file.
@@ -188,7 +197,8 @@ serve_release() {
 	cp "$SCN_ROOT/scripts/install.sh" "$SCN_ROOT/scripts/install.ps1" "$SRV/"
 	local root=$SRV
 	[ "$OS" = windows ] && root=$(cygpath -w "$SRV")
-	"$PYTHON" "$SCN_LIB/fake_release.py" "$root" "$PORT" >"$W/release-server.log" 2>&1 &
+	"$PYTHON" "$SCN_LIB/fake_release.py" "$root" "$PORT" >"$W/release-server.log" 2>&1 </dev/null &
+	SCN_BG+=($!)
 	for _ in $(seq 1 50); do
 		if curl -fsS --max-time 2 -o /dev/null "http://127.0.0.1:$PORT/healthz"; then
 			log "release server on 127.0.0.1:$PORT"
@@ -210,7 +220,7 @@ publish() {
 tm_install() {
 	if [ "$OS" = linux ]; then
 		curl -fsSL --max-time 60 "http://127.0.0.1:$PORT/install.sh" |
-			sudo env TENTMAKER_DOWNLOAD_BASE="http://127.0.0.1:$PORT" sh
+			timeout 300 sudo env TENTMAKER_DOWNLOAD_BASE="http://127.0.0.1:$PORT" sh
 		# The runner image leaves homes world-readable; setup refuses that
 		# and prints this fix.
 		for h in /home/*; do sudo chmod o-rwx "$h"; done
@@ -277,8 +287,8 @@ set_daemon_env() {
 			local kv
 			for kv in "$@"; do echo "Environment=$kv"; done
 		} | sudo tee /etc/systemd/system/tentmaker.service.d/50-scenario.conf >/dev/null
-		sudo systemctl daemon-reload
-		sudo systemctl restart tentmaker
+		timeout 60 sudo systemctl daemon-reload
+		timeout 120 sudo systemctl restart tentmaker
 	else
 		ps1 Set-DaemonEnv "$*"
 	fi
@@ -293,7 +303,7 @@ ps1() {
 	shift
 	local qargs="" a
 	for a in "$@"; do qargs="$qargs '${a//\'/\'\'}'"; done
-	pwsh -NoProfile -NonInteractive -Command ". '$(cygpath -w "$SCN_LIB/lib.ps1")'; $f$qargs" | tr -d '\r'
+	timeout 300 pwsh -NoProfile -NonInteractive -Command ". '$(cygpath -w "$SCN_LIB/lib.ps1")'; $f$qargs" | tr -d '\r'
 }
 
 # ---------------------------------------------------------------- git
@@ -514,7 +524,7 @@ scn_up() {
 	tm_setup "$@"
 	measure setup_s "$(secs_since "$t")"
 	tm_connect
-	measure_s version "$(tentmaker version --json | jqr -r .version)"
+	measure_s version "$(timeout 30 tentmaker version --json | jqr -r .version)"
 	measure free_disk_gib "$(free_gib)"
 	measure_j budget "$(tm_status | jqr -c '{profile: .decision.profile, slots: .decision.slots, limit: .decision.limit, admit: .decision.admit, why: .why}')"
 }

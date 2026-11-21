@@ -450,7 +450,12 @@ func (r *runner) exec(ctx context.Context, i int, shell, script, dir, pathList s
 	case "sh":
 		args = []string{"-e", filepath.ToSlash(file)}
 	case "pwsh":
-		args = []string{"-NoLogo", "-NoProfile", "-NonInteractive", "-Command", ". '" + strings.ReplaceAll(file, "'", "''") + "'"}
+		// GitHub's wrapper is `-command ". '{0}'"`, which turns any failing
+		// script into exit 1: `exit 3` in a dot-sourced script only ends the
+		// script. The tail carries the script's own code out, and pass or
+		// fail stays what GitHub's wrapper decides.
+		args = []string{"-NoLogo", "-NoProfile", "-NonInteractive", "-Command",
+			". '" + strings.ReplaceAll(file, "'", "''") + "'; if (-not $?) { if ($LASTEXITCODE) { exit $LASTEXITCODE }; exit 1 }"}
 	default:
 		shell = "bash"
 		args = []string{"--noprofile", "--norc", "-eo", "pipefail", filepath.ToSlash(file)}

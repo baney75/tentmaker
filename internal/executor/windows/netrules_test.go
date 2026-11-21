@@ -19,7 +19,7 @@ $u = 'D:(A;;CC;;;S-1-5-21-1-2-3-1001)'
 $d = 'Written by tentmaker setup (net-v1, user S-1-5-21-1-2-3-1001, allow_lan=false). CI jobs never reach the tailnet, the LAN, loopback, link-local or the mesh port.'
 New-NetFirewallRule -Name 'Tentmaker-Block-Mesh-TCP' -DisplayName 'Tentmaker: CI jobs never reach the mesh port (TCP)' -Group 'Tentmaker' -Description $d -Direction Outbound -Action Block -LocalUser $u -Profile Any -Enabled True -Protocol TCP -RemotePort @('7433') | Out-Null
 New-NetFirewallRule -Name 'Tentmaker-Block-Mesh-UDP' -DisplayName 'Tentmaker: CI jobs never reach the mesh port (UDP)' -Group 'Tentmaker' -Description $d -Direction Outbound -Action Block -LocalUser $u -Profile Any -Enabled True -Protocol UDP -RemotePort @('7433') | Out-Null
-New-NetFirewallRule -Name 'Tentmaker-Block-Ranges' -DisplayName 'Tentmaker: CI jobs never reach the tailnet, the LAN, link-local or loopback' -Group 'Tentmaker' -Description $d -Direction Outbound -Action Block -LocalUser $u -Profile Any -Enabled True -RemoteAddress @('100.64.0.0-100.100.100.99', '100.100.100.101-100.127.255.255', 'fd7a:115c:a1e0::/48', '0.0.0.0/8', '127.0.0.0', '127.0.0.2-127.255.255.255', '169.254.0.0/16', '::1/128', 'fc00::/7', 'fe80::/10', '10.0.0.0/8', '172.16.0.0/12', '192.168.0.0-192.168.1.0', '192.168.1.2-192.168.255.255') | Out-Null
+New-NetFirewallRule -Name 'Tentmaker-Block-Ranges' -DisplayName 'Tentmaker: CI jobs never reach the tailnet, the LAN, link-local or loopback' -Group 'Tentmaker' -Description $d -Direction Outbound -Action Block -LocalUser $u -Profile Any -Enabled True -RemoteAddress @('100.64.0.0-100.100.100.99', '100.100.100.101-100.127.255.255', 'fd7a:115c:a1e0::/48', '0.0.0.0/8', '127.0.0.0', '127.0.0.2-127.255.255.255', '169.254.0.0/16', 'fc00::/7', 'fe80::/10', '10.0.0.0/8', '172.16.0.0/12', '192.168.0.0-192.168.1.0', '192.168.1.2-192.168.255.255') | Out-Null
 New-NetFirewallRule -Name 'Tentmaker-Block-Host0-TCP' -DisplayName 'Tentmaker: CI jobs reach 127.0.0.1 only on allowed ports (TCP)' -Group 'Tentmaker' -Description $d -Direction Outbound -Action Block -LocalUser $u -Profile Any -Enabled True -Protocol TCP -RemoteAddress @('127.0.0.1') -RemotePort @('1-7434', '7436-65535') | Out-Null
 New-NetFirewallRule -Name 'Tentmaker-Block-Host0-UDP' -DisplayName 'Tentmaker: CI jobs reach 127.0.0.1 only on allowed ports (UDP)' -Group 'Tentmaker' -Description $d -Direction Outbound -Action Block -LocalUser $u -Profile Any -Enabled True -Protocol UDP -RemoteAddress @('127.0.0.1') | Out-Null
 New-NetFirewallRule -Name 'Tentmaker-Block-Host1-TCP' -DisplayName 'Tentmaker: CI jobs reach 192.168.1.1 only on allowed ports (TCP)' -Group 'Tentmaker' -Description $d -Direction Outbound -Action Block -LocalUser $u -Profile Any -Enabled True -Protocol TCP -RemoteAddress @('192.168.1.1') -RemotePort @('1-52', '54-65535') | Out-Null
@@ -46,6 +46,36 @@ New-NetFirewallRule -Name 'Tentmaker-Allow-DNS-TCP' -DisplayName 'Tentmaker: CI 
 	for _, r := range []string{"'100.64.0.0-100.100.100.99'", "'fd7a:115c:a1e0::/48'", "'169.254.0.0/16'", "'fc00::/7'", "-RemotePort @('7433')", "allow_lan=true"} {
 		if !strings.Contains(got, r) {
 			t.Errorf("allow_lan dropped %s", r)
+		}
+	}
+}
+
+// New-NetFirewallRule refuses the whole rule when -RemoteAddress names an
+// IPv6 loopback, unspecified or multicast address ("An unspecified,
+// multicast, broadcast, or loopback IPv6 address was specified"), which
+// failed setup on every Windows host.
+func TestFirewallRulesUseAddressesWindowsAccepts(t *testing.T) {
+	p := NetPolicy{SID: testSID, Resolvers: []netip.Addr{
+		netip.MustParseAddr("168.63.129.16"), netip.MustParseAddr("::1"), netip.MustParseAddr("fd7a:115c:a1e0::53"),
+	}}
+	for _, lan := range []bool{false, true} {
+		p.AllowLAN = lan
+		for _, r := range FirewallRules(p) {
+			for _, a := range r.RemoteAddress {
+				for _, end := range strings.Split(a, "-") {
+					addr, err := netip.ParseAddr(end)
+					if err != nil {
+						pf, perr := netip.ParsePrefix(end)
+						if perr != nil {
+							t.Fatalf("%s: %q is not an address, prefix or range", r.Name, a)
+						}
+						addr = pf.Addr()
+					}
+					if addr.Is6() && (addr.IsLoopback() || addr.IsUnspecified() || addr.IsMulticast()) {
+						t.Errorf("%s (allow_lan=%v) names %s, which Windows Firewall refuses", r.Name, lan, a)
+					}
+				}
+			}
 		}
 	}
 }
@@ -171,5 +201,85 @@ func TestNoFirewallRulesNoJob(t *testing.T) {
 				t.Errorf("Preflight did not report %q: %+v", c.want, v.e.Preflight(ctx))
 			}
 		})
+	}
+}
+
+// New-NetFirewallRule refuses an unspecified, multicast or loopback IPv6
+// address in -RemoteAddress ("An unspecified, multicast, broadcast, or
+// loopback IPv6 address was specified."), and setup fails with it.
+func TestFirewallRulesAvoidRefusedIPv6(t *testing.T) {
+	refused := func(a netip.Addr) bool {
+		return a.Is6() && !a.Is4In6() && (a.IsLoopback() || a.IsUnspecified() || a.IsMulticast())
+	}
+	var rules []FirewallRule
+	for _, rs := range [][]string{{"168.63.129.16"}, {"::1", "fec0:0:0:ffff::1", "127.0.0.53"}} {
+		p := NetPolicy{SID: testSID}
+		for _, r := range rs {
+			p.Resolvers = append(p.Resolvers, netip.MustParseAddr(r))
+		}
+		rules = append(rules, FirewallRules(p)...)
+	}
+	for _, r := range rules {
+		for _, s := range r.RemoteAddress {
+			var ends []netip.Addr
+			switch {
+			case strings.Contains(s, "/"):
+				pf := netip.MustParsePrefix(s)
+				ends = append(ends, pf.Masked().Addr())
+				if pf.Addr().Is6() && (pf.Contains(netip.IPv6Loopback()) || pf.Contains(netip.IPv6Unspecified())) {
+					ends = append(ends, netip.IPv6Loopback())
+				}
+			case strings.Contains(s, "-"):
+				a, b, _ := strings.Cut(s, "-")
+				lo, hi := netip.MustParseAddr(a), netip.MustParseAddr(b)
+				ends = append(ends, lo, hi)
+				if lo.Is6() && lo.Compare(netip.IPv6Loopback()) <= 0 && hi.Compare(netip.IPv6Loopback()) >= 0 {
+					ends = append(ends, netip.IPv6Loopback())
+				}
+			default:
+				ends = append(ends, netip.MustParseAddr(s))
+			}
+			for _, a := range ends {
+				if refused(a) {
+					t.Errorf("rule %s has %s, which Windows Firewall refuses", r.Name, s)
+				}
+			}
+		}
+	}
+}
+
+// Windows Firewall refuses a rule whose remote address is an IPv6
+// loopback, unspecified or multicast address ("An unspecified, multicast,
+// broadcast, or loopback IPv6 address was specified"), and setup then
+// fails. No rule may carry one, even when Windows lists ::1 as a resolver.
+func TestFirewallRulesWindowsAccepts(t *testing.T) {
+	bad := func(a netip.Addr) bool {
+		return a.Is6() && (a.IsLoopback() || a.IsUnspecified() || a.IsMulticast())
+	}
+	for _, lan := range []bool{false, true} {
+		p := NetPolicy{SID: testSID, AllowLAN: lan, Resolvers: []netip.Addr{
+			netip.MustParseAddr("168.63.129.16"), netip.MustParseAddr("::1"), netip.MustParseAddr("::"),
+			netip.MustParseAddr("fec0:0:0:ffff::1"), netip.MustParseAddr("fd7a:115c:a1e0::53"),
+		}}
+		for _, r := range FirewallRules(p) {
+			for _, s := range r.RemoteAddress {
+				var ends []netip.Addr
+				if pr, err := netip.ParsePrefix(s); err == nil {
+					ends = []netip.Addr{pr.Masked().Addr(), lastAddr(pr)}
+					if pr.Addr().Is6() && (pr.Contains(netip.IPv6Loopback()) || pr.Contains(netip.IPv6Unspecified())) {
+						t.Errorf("allow_lan=%t: rule %s covers ::1 or :: with %s", lan, r.Name, s)
+					}
+				} else if lo, hi, ok := strings.Cut(s, "-"); ok {
+					ends = []netip.Addr{netip.MustParseAddr(lo), netip.MustParseAddr(hi)}
+				} else {
+					ends = []netip.Addr{netip.MustParseAddr(s)}
+				}
+				for _, a := range ends {
+					if bad(a) {
+						t.Errorf("allow_lan=%t: rule %s has %s, which Windows Firewall refuses", lan, r.Name, s)
+					}
+				}
+			}
+		}
 	}
 }

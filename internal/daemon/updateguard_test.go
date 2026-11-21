@@ -66,14 +66,14 @@ func TestUpdateGuardDecisions(t *testing.T) {
 	}
 
 	// A malformed marker counts as none.
-	mfs.files["/state/"+pendingFile] = []byte("{nope")
+	mfs.files[g.path(pendingFile)] = []byte("{nope")
 	if _, ok := g.pending(); ok {
 		t.Error("a malformed marker was read")
 	}
 	if err := g.clearPending(); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := mfs.files["/state/"+pendingFile]; ok {
+	if _, ok := mfs.files[g.path(pendingFile)]; ok {
 		t.Error("marker not cleared")
 	}
 
