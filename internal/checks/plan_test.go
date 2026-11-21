@@ -112,7 +112,7 @@ func TestPlanRustCI(t *testing.T) {
 
 func TestPlanNodeMatrix(t *testing.T) {
 	jobs, skips := plan(t, "node-matrix.yml", "github")
-	if got := ids(jobs); !reflect.DeepEqual(got, []string{"test"}) {
+	if got := ids(jobs); !reflect.DeepEqual(got, []string{"test", "wide", "wide", "wide"}) {
 		t.Fatalf("jobs = %v", got)
 	}
 	j := jobs[0]
@@ -125,8 +125,13 @@ func TestPlanNodeMatrix(t *testing.T) {
 	if j.Steps[2].Run != "npm test -- --runner=Linux-20" {
 		t.Fatalf("run = %q", j.Steps[2].Run)
 	}
-	if r := skipFor(t, skips, "wide"); !strings.Contains(r, "3 combinations") {
-		t.Fatalf("wide: %s", r)
+	// Every combination is its own job with its own status, as on GitHub.
+	var wide []string
+	for _, j := range jobs[1:] {
+		wide = append(wide, j.Name)
+	}
+	if !reflect.DeepEqual(wide, []string{"wide (18)", "wide (20)", "wide (22)"}) {
+		t.Fatalf("wide = %v", wide)
 	}
 	if r := skipFor(t, skips, "included"); !strings.Contains(r, "${{ matrix.missing }}") {
 		t.Fatalf("included: %s", r)
@@ -409,5 +414,59 @@ func TestGitLabDuration(t *testing.T) {
 	}
 	if _, ok := gitlabDuration("soon"); ok {
 		t.Error("soon parsed")
+	}
+}
+
+// A matrix job runs once per combination. Each needs its own status
+// context, so a fixed name gets the combination's values, as GitHub shows
+// it; a combination checks mode can't run is skipped on its own.
+func TestPlanMatrixCombinations(t *testing.T) {
+	src := []byte(`on: push
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - run: go test ./...
+  fixed:
+    name: Unit tests
+    strategy:
+      matrix:
+        go: ["1.24", "1.25"]
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo ${{ matrix.go }}
+  mixed:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, plan9-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - run: echo hi
+`)
+	jobs, skips, err := Plan("ci.yml", src, "github")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, j := range jobs {
+		got = append(got, Context(j)+" "+j.Platform.OS)
+	}
+	want := []string{
+		"tentmaker/test (ubuntu-latest) linux", "tentmaker/test (macos-latest) macos", "tentmaker/test (windows-latest) windows",
+		"tentmaker/Unit tests (1.24) linux", "tentmaker/Unit tests (1.25) linux",
+		"tentmaker/mixed (ubuntu-latest) linux",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("jobs\n got %q\nwant %q", got, want)
+	}
+	if jobs[4].Steps[0].Run != "echo 1.25" {
+		t.Fatalf("step = %q", jobs[4].Steps[0].Run)
+	}
+	if r := skipFor(t, skips, "mixed (plan9-latest)"); r == "" {
+		t.Fatal("no reason")
 	}
 }
