@@ -221,7 +221,7 @@ func TestRunMissingToolSaysHowToFixIt(t *testing.T) {
 	if res.State != "failure" || !strings.HasPrefix(res.Description, "failed at step Set up go") {
 		t.Fatalf("res = %+v", res)
 	}
-	for _, want := range []string{"go 9.99.x is not installed on this device", "Fix: put go 9.99.x on PATH", filepath.Join(tools, "go-9.99.x", "bin", "go"), "TENTMAKER_TOOLS"} {
+	for _, want := range []string{"go 9.99.x is not installed on this device", "Fix: put go 9.99.x on PATH", filepath.Join(tools, "go-9.99.x", "bin", "go")} {
 		if !strings.Contains(log, want) {
 			t.Errorf("log lacks %q:\n%s", want, log)
 		}

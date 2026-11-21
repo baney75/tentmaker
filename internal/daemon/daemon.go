@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -41,6 +42,25 @@ const (
 // ErrRestart is what Run returns after a self-update: the service manager
 // restarts the new binary.
 var ErrRestart = errors.New("updated; restarting into the new binary")
+
+// EnvUpdateEvery is a test hook: how often auto-update checks the channel
+// (a Go duration, at least 10 s), so an end-to-end test can watch an update
+// and its rollback without waiting 6 hours.
+const EnvUpdateEvery = "TENTMAKER_UPDATE_EVERY"
+
+// UpdateEveryFromEnv reads EnvUpdateEvery; 0 means unset or unreadable.
+func UpdateEveryFromEnv(getenv func(string) string) time.Duration {
+	d, err := time.ParseDuration(strings.TrimSpace(getenv(EnvUpdateEvery)))
+	if err != nil || d <= 0 {
+		return 0
+	}
+	return max(d, 10*time.Second)
+}
+
+// failStart is set only in a build made with -tags tentmaker_badstart: the
+// daemon exits with it right after the update guard, as a bad release
+// would, so the end-to-end test can prove the rollback.
+var failStart string
 
 // Updater is what the auto-update loop needs from internal/update.
 type Updater interface {
@@ -346,6 +366,10 @@ func (d *Daemon) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if failStart != "" {
+		d.log.Error("exiting at start", "why", failStart)
+		return errors.New(failStart)
+	}
 
 	cfg, err := d.load()
 	if err != nil {
@@ -427,6 +451,18 @@ func keyOf(v ...any) string {
 	return string(b)
 }
 
+// planner is checks.Plan for the broker. A skipped job gets no commit
+// status, so its reason goes to the log; the broker plans each commit once.
+func planner(log *slog.Logger) func(path string, src []byte, forge string) ([]core.CheckJob, error) {
+	return func(path string, src []byte, forge string) ([]core.CheckJob, error) {
+		jobs, skipped, err := checks.Plan(path, src, forge)
+		for _, s := range skipped {
+			log.Info("check job skipped", "workflow", path, "job", s.Job, "why", s.Reason)
+		}
+		return jobs, err
+	}
+}
+
 // apply builds or rebuilds the components whose inputs changed. Running
 // jobs are never stopped: a worker rebuild leaves its sandboxes running and
 // the new worker adopts them from state.json.
@@ -469,15 +505,12 @@ func (d *Daemon) apply(cfg config.Config) {
 				Config:       cfg,
 				Forges:       forges.Forges,
 				StatusForges: forges.StatusForges,
-				Planner: func(path string, src []byte, forge string) ([]core.CheckJob, error) {
-					jobs, _, err := checks.Plan(path, src, forge)
-					return jobs, err
-				},
-				Claimer:  claimerProxy{d},
-				HTTP:     d.o.ArchiveHTTP,
-				StateDir: cfg.StateDir,
-				Log:      log,
-				Now:      d.o.Now,
+				Planner:      planner(log),
+				Claimer:      claimerProxy{d},
+				HTTP:         d.o.ArchiveHTTP,
+				StateDir:     cfg.StateDir,
+				Log:          log,
+				Now:          d.o.Now,
 			})
 			bc = startComp(d.runCtx, log, "broker", b.Run)
 			log.Info("broker started", "forges", forges.Tokens, "repos", len(cfg.Repos))

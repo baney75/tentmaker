@@ -404,6 +404,11 @@ func TestStartCheck(t *testing.T) {
 	if st, err := os.Stat(filepath.Join(jd, "out")); err != nil || !st.IsDir() {
 		t.Fatal("no out dir")
 	}
+	// Setup actions find toolchains in <state>/tools, the folder doctor
+	// and the docs name; the job's own env says where it is.
+	if args := strings.Join(c.Args, " "); !strings.Contains(args, "--setenv=TENTMAKER_TOOLS="+filepath.Join(v.dir, "state", "tools")+" ") {
+		t.Fatalf("a check job is not told the tools folder: %s", args)
+	}
 	assertNoSecret(t, v.f, v.logs)
 }
 

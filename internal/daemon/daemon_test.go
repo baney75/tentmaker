@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -557,5 +558,73 @@ func TestDaemonChecksRelay(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != 200 || string(body) != "tarball of /baney75/app/archive/"+sha+".tar.gz" {
 		t.Fatalf("relay: %d %q", resp.StatusCode, body)
+	}
+}
+
+// The tentmaker_badstart test build exits at start, like a bad release
+// would; the update guard runs first, so it still rolls back.
+func TestDaemonBadStartBuildStillRollsBack(t *testing.T) {
+	old := failStart
+	failStart = "bad build"
+	t.Cleanup(func() { failStart = old })
+
+	r := newRig(t, func(c *config.Config) { c.Mesh.Enabled = false })
+	r.launch()
+	select {
+	case err := <-r.done:
+		if err == nil || errors.Is(err, ErrRestart) || !strings.Contains(err.Error(), "bad build") {
+			t.Fatalf("run returned %v, want the bad build's exit", err)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("the bad build kept running")
+	}
+
+	r = newRig(t, func(c *config.Config) { c.Mesh.Enabled = false })
+	writeMarker(t, r, 3*time.Minute, "1.2.3")
+	r.launch()
+	select {
+	case err := <-r.done:
+		if !errors.Is(err, ErrRestart) {
+			t.Fatalf("run returned %v, want the rollback restart", err)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("no rollback restart")
+	}
+	if b, _ := os.ReadFile(filepath.Join(r.paths.State, "update-bad.json")); !strings.Contains(string(b), `"1.2.3"`) {
+		t.Errorf("bad version not recorded: %s", b)
+	}
+}
+
+func TestUpdateEveryFromEnv(t *testing.T) {
+	for in, want := range map[string]time.Duration{
+		"": 0, "junk": 0, "-5s": 0, "20s": 20 * time.Second, "1s": 10 * time.Second, "2h": 2 * time.Hour,
+	} {
+		got := UpdateEveryFromEnv(func(k string) string {
+			if k == EnvUpdateEvery {
+				return in
+			}
+			return ""
+		})
+		if got != want {
+			t.Errorf("%q: got %s, want %s", in, got, want)
+		}
+	}
+}
+
+// A job checks mode skips gets no status, so the log has to say why;
+// otherwise the user sees nothing at all.
+func TestPlannerLogsSkippedJobs(t *testing.T) {
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, nil))
+	src := []byte("on: push\njobs:\n  db:\n    runs-on: ubuntu-latest\n    services:\n      pg:\n        image: postgres\n    steps:\n      - run: echo hi\n  ok:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n")
+	jobs, err := planner(log)(".tm-scn/f.yml", src, "github")
+	if err != nil || len(jobs) != 1 || jobs[0].Name != "ok" {
+		t.Fatalf("jobs %+v err %v", jobs, err)
+	}
+	out := buf.String()
+	for _, want := range []string{"check job skipped", "job=db", "service containers (services:)", ".tm-scn/f.yml"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("log lacks %q:\n%s", want, out)
+		}
 	}
 }

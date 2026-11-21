@@ -144,7 +144,9 @@ sudo tentmaker repo add group/app --forge gitlab
 
 In v0.1 every Forgejo, Gitea and GitLab repo runs in checks mode. GitHub repos can use it too, which helps when hosted Actions won't start for a repo.
 
-Checks mode runs pushes to the default branch and same-repo pull requests from the authors you list (the repo owner by default). It never runs forks. It understands `run` steps, `env`, `working-directory`, `continue-on-error`, `timeout-minutes`, `actions/checkout`, and the common setup actions, which it maps to tools already installed on the device. It skips a job with any other `uses:`, `services`, `container`, a job-level `if` or a matrix with more than one combination, and a skipped job gets no status. The full list is in [docs/DESIGN.md](docs/DESIGN.md#checks-mode-internalchecks-internalforgegitlab).
+Checks mode runs pushes to the default branch and same-repo pull requests from the authors you list (the repo owner by default). It never runs forks. It understands `run` steps, `env`, `working-directory`, `continue-on-error`, `timeout-minutes`, `actions/checkout`, and the common setup actions, which it maps to tools already installed on the device. A matrix job runs once per combination, each with its own status. It skips a job with any other `uses:`, `services`, `container` or a job-level `if`; a skipped job gets no status, and `tentmaker logs` says why ("check job skipped").
+
+Checks mode doesn't download toolchains. A setup action such as `actions/setup-go` uses a matching version on the device's `PATH` or one unpacked under the tools folder, `/var/lib/tentmaker/tools/<tool>-<version>/` (Windows: `%ProgramData%\Tentmaker\state\tools\<tool>-<version>\`). For example, as root: `cp -a "$(go env GOROOT)" /var/lib/tentmaker/tools/go-1.25.5`. The folder name only orders candidates; the binary's own version decides. The full list is in [docs/DESIGN.md](docs/DESIGN.md#checks-mode-internalchecks-internalforgegitlab).
 
 ## The budget
 

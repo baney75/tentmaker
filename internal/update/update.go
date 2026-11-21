@@ -128,6 +128,18 @@ func defaultHTTP() *http.Client {
 // Default is the Updater the package-level functions use.
 var Default = New(Options{})
 
+// EnvAPIBase is a test hook, like the installers' TENTMAKER_DOWNLOAD_BASE:
+// it replaces https://api.github.com as the release API, so an end-to-end
+// test can serve its own builds. The release JSON names the asset URLs, and
+// every asset is still checked against the release's SHA256SUMS.
+const EnvAPIBase = "TENTMAKER_UPDATE_API"
+
+// FromEnv is the Updater the command line and the daemon use: the defaults,
+// plus the EnvAPIBase test hook when getenv has it.
+func FromEnv(getenv func(string) string) *Updater {
+	return New(Options{APIBase: strings.TrimSpace(getenv(EnvAPIBase))})
+}
+
 // Check finds the newest release on channel and reports whether it is newer
 // than current.
 func Check(ctx context.Context, channel, current string) (Release, bool, error) {

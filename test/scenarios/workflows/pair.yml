@@ -1,0 +1,18 @@
+# Two 45 second jobs the chaos scenario restarts the service under.
+name: tm-scn-pair
+on: [push, pull_request]
+jobs:
+  one:
+    runs-on: @RUNS_ON@
+    timeout-minutes: 5
+    steps:
+      - name: one
+        shell: @SHELL@
+        run: sleep 45
+  two:
+    runs-on: @RUNS_ON@
+    timeout-minutes: 5
+    steps:
+      - name: two
+        shell: @SHELL@
+        run: sleep 45

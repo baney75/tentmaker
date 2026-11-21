@@ -143,9 +143,13 @@ func (e *Executor) jobDir(name string) string { return filepath.Join(e.jobsDir()
 func (e *Executor) libDir() string            { return filepath.Join(e.o.StateDir, "lib") }
 func (e *Executor) runnerRoot() string        { return filepath.Join(e.o.StateDir, "runner") }
 func (e *Executor) secretDir() string         { return filepath.Join(e.o.StateDir, "secret") }
-func (e *Executor) passwordPath() string      { return filepath.Join(e.secretDir(), "runner.pw") }
-func (e *Executor) distDir() string           { return filepath.Join(e.o.CacheDir, "dist") }
-func (e *Executor) script() string            { return filepath.Join(e.libDir(), "job-runner.ps1") }
+
+// toolsDir is where check jobs' setup actions find toolchains
+// (<state>\tools\<tool>-<version>\): Administrators write, the runner reads.
+func (e *Executor) toolsDir() string     { return filepath.Join(e.o.StateDir, "tools") }
+func (e *Executor) passwordPath() string { return filepath.Join(e.secretDir(), "runner.pw") }
+func (e *Executor) distDir() string      { return filepath.Join(e.o.CacheDir, "dist") }
+func (e *Executor) script() string       { return filepath.Join(e.libDir(), "job-runner.ps1") }
 func (e *Executor) guestBinary() string {
 	return filepath.Join(e.libDir(), "tentmaker-windows-"+e.arch+".exe")
 }
@@ -507,6 +511,9 @@ func (e *Executor) jobEnv(spec core.ExecSpec) []string {
 	)
 	if spec.TestWorkers > 0 {
 		env = append(env, "TENTMAKER_JOBS="+strconv.Itoa(spec.TestWorkers))
+	}
+	if spec.Kind == core.KindCheck {
+		env = append(env, "TENTMAKER_TOOLS="+e.toolsDir())
 	}
 	return env
 }

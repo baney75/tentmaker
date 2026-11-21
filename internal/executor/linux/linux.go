@@ -196,6 +196,10 @@ func (e *Executor) baselinePath() string       { return filepath.Join(e.priv, "u
 func (e *Executor) template() string           { return filepath.Join(e.p.Opt, "runner") }
 func (e *Executor) jobScript() string          { return filepath.Join(e.p.Lib, "job-runner") }
 func (e *Executor) shimDir() string            { return filepath.Join(e.p.Lib, "bin") }
+
+// toolsDir is where check jobs' setup actions find toolchains
+// (<state>/tools/<tool>-<version>/): root-owned, readable by the runner.
+func (e *Executor) toolsDir() string { return filepath.Join(e.o.StateDir, "tools") }
 func (e *Executor) guestBinary() string {
 	return filepath.Join(e.p.Lib, "guest", "tentmaker-linux-"+e.arch)
 }
@@ -357,6 +361,9 @@ func (e *Executor) jobEnv(spec core.ExecSpec, uid int) []string {
 	}
 	if spec.TestWorkers > 0 {
 		env = append(env, "TENTMAKER_JOBS="+strconv.Itoa(spec.TestWorkers))
+	}
+	if spec.Kind == core.KindCheck {
+		env = append(env, "TENTMAKER_TOOLS="+e.toolsDir())
 	}
 	return env
 }

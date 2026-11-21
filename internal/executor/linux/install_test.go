@@ -108,6 +108,10 @@ func TestInstall(t *testing.T) {
 			t.Errorf("%s: mode %o owner %v", p, st.Mode().Perm(), v.f.chowns[p])
 		}
 	}
+	// The tools folder for check jobs: root's, readable by the runner.
+	if st, err := os.Stat(filepath.Join(v.dir, "state", "tools")); err != nil || !st.IsDir() || st.Mode().Perm() != 0o755 {
+		t.Errorf("tools folder: %v %v", st, err)
+	}
 	if read(filepath.Join(v.dir, "systemd", "tentmaker.slice")) != sliceUnit {
 		t.Error("slice unit")
 	}

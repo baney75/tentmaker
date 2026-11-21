@@ -509,3 +509,31 @@ func TestParseVersionOutput(t *testing.T) {
 		t.Error("garbage accepted")
 	}
 }
+
+// TENTMAKER_UPDATE_API points the updater at a fake release server, the
+// way TENTMAKER_DOWNLOAD_BASE does for the installers.
+func TestFromEnvUsesTheTestReleaseServer(t *testing.T) {
+	dev := &fakeRelease{TagName: "dev", Name: "0.0.1-scn.B", Prerelease: true,
+		Assets: []map[string]string{{"name": SumsName, "browser_download_url": "http://x/SHA256SUMS"}}}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/baney75/tentmaker/releases/tags/dev" {
+			http.NotFound(w, r)
+			return
+		}
+		json.NewEncoder(w).Encode(dev)
+	}))
+	t.Cleanup(srv.Close)
+	u := FromEnv(func(k string) string {
+		if k == EnvAPIBase {
+			return srv.URL
+		}
+		return ""
+	})
+	rel, newer, err := u.Check(context.Background(), Dev, "0.0.1-scn.A")
+	if err != nil || !newer || rel.Version != "0.0.1-scn.B" {
+		t.Fatalf("got %+v newer=%v err=%v", rel, newer, err)
+	}
+	if def := FromEnv(func(string) string { return "" }); def.o.APIBase != "https://api.github.com" || def.o.Repo != "baney75/tentmaker" {
+		t.Fatalf("without the hook: %s %s", def.o.APIBase, def.o.Repo)
+	}
+}

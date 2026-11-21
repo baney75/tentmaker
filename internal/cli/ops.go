@@ -702,6 +702,7 @@ func (a *app) cmdDaemon(args []string) (any, error) {
 		Executable:  a.env.Executable,
 		Now:         a.env.Now,
 		ReloadOnHUP: true,
+		UpdateEvery: daemon.UpdateEveryFromEnv(a.env.Getenv),
 	}
 	run := func(ctx context.Context) error { return a.env.RunDaemon(ctx, o) }
 	if a.env.GOOS == "windows" && service.IsWindowsService() {

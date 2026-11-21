@@ -77,12 +77,13 @@ func planActions(path string, src []byte, forgejo bool) ([]core.CheckJob, []Skip
 			skips = append(skips, Skip{label, "the workflow sets defaults:, which checks mode can't reproduce"})
 			continue
 		}
-		job, reason := planActionsJob(path, id, j, root.get("env"), forgejo)
+		planned, skipped, reason := planActionsJob(path, id, j, root.get("env"), forgejo)
 		if reason != "" {
 			skips = append(skips, Skip{label, reason})
 			continue
 		}
-		out = append(out, job)
+		out = append(out, planned...)
+		skips = append(skips, skipped...)
 	}
 	return out, skips, nil
 }
@@ -110,10 +111,80 @@ var jobKeysIgnored = map[string]bool{
 	"continue-on-error": true,
 }
 
-func planActionsJob(path, id string, j, wfEnv *val, forgejo bool) (core.CheckJob, string) {
+// maxCombos caps one job's matrix, as GitHub does.
+const maxCombos = 256
+
+// planActionsJob plans one workflow job: one check job per matrix
+// combination, each with its own status, as GitHub runs them. A
+// combination checks mode can't run is skipped on its own; reason is set
+// when the whole job can't run.
+func planActionsJob(path, id string, j, wfEnv *val, forgejo bool) (jobs []core.CheckJob, skips []Skip, reason string) {
 	if !j.isMap() {
-		return core.CheckJob{}, "the job is not a mapping"
+		return nil, nil, "the job is not a mapping"
 	}
+	for _, k := range j.keys {
+		if !jobKeysIgnored[k] {
+			_, reason := planCombo(path, id, j, wfEnv, forgejo, nil, false)
+			return nil, nil, reason
+		}
+	}
+	st := j.get("strategy")
+	if st == nil {
+		job, reason := planCombo(path, id, j, wfEnv, forgejo, nil, false)
+		if reason != "" {
+			return nil, nil, reason
+		}
+		return []core.CheckJob{job}, nil, ""
+	}
+	if st.isScalar() {
+		return nil, nil, "can't evaluate the strategy " + st.s
+	}
+	m := st.get("matrix")
+	if m == nil {
+		job, reason := planCombo(path, id, j, wfEnv, forgejo, nil, false)
+		if reason != "" {
+			return nil, nil, reason
+		}
+		return []core.CheckJob{job}, nil, ""
+	}
+	combos, err := matrixCombos(m)
+	if err != nil {
+		return nil, nil, err.Error()
+	}
+	switch {
+	case len(combos) == 0:
+		return nil, nil, "the matrix has no combinations"
+	case len(combos) > maxCombos:
+		return nil, nil, fmt.Sprintf("the matrix has %d combinations; GitHub allows at most %d", len(combos), maxCombos)
+	}
+	multi := len(combos) > 1
+	for _, c := range combos {
+		job, reason := planCombo(path, id, j, wfEnv, forgejo, c, multi)
+		if reason != "" {
+			if !multi {
+				return nil, nil, reason
+			}
+			skips = append(skips, Skip{id + " (" + comboValues(c) + ")", reason})
+			continue
+		}
+		jobs = append(jobs, job)
+	}
+	return jobs, skips, ""
+}
+
+// comboValues is a combination's values as GitHub shows them: "20, ubuntu-latest".
+func comboValues(c *val) string {
+	parts := make([]string, len(c.keys))
+	for i, k := range c.keys {
+		parts[i] = c.m[k].text()
+	}
+	return strings.Join(parts, ", ")
+}
+
+// planCombo plans one job for one matrix combination (nil: no matrix).
+// multi says the job has several combinations, so a name that doesn't
+// change with the matrix gets the combination's values to stay unique.
+func planCombo(path, id string, j, wfEnv *val, forgejo bool, combo *val, multi bool) (core.CheckJob, string) {
 	for _, k := range j.keys {
 		if jobKeysIgnored[k] {
 			continue
@@ -136,24 +207,7 @@ func planActionsJob(path, id string, j, wfEnv *val, forgejo bool) (core.CheckJob
 		}
 	}
 
-	ctx := exprCtx{forgejo: forgejo}
-	var combo *val
-	if st := j.get("strategy"); st != nil {
-		if st.isScalar() {
-			return core.CheckJob{}, "can't evaluate the strategy " + st.s
-		}
-		if m := st.get("matrix"); m != nil {
-			combos, err := matrixCombos(m)
-			if err != nil {
-				return core.CheckJob{}, err.Error()
-			}
-			if len(combos) != 1 {
-				return core.CheckJob{}, fmt.Sprintf("the matrix has %d combinations; checks mode runs only a single one", len(combos))
-			}
-			combo = combos[0]
-			ctx.matrix = combo
-		}
-	}
+	ctx := exprCtx{forgejo: forgejo, matrix: combo}
 
 	platform, reason := runsOn(j.get("runs-on"), ctx, forgejo)
 	if reason != "" {
@@ -168,12 +222,11 @@ func planActionsJob(path, id string, j, wfEnv *val, forgejo bool) (core.CheckJob
 			return core.CheckJob{}, "name: " + err.Error()
 		}
 		name = r
-	} else if combo != nil && len(combo.keys) > 0 {
-		parts := make([]string, len(combo.keys))
-		for i, k := range combo.keys {
-			parts[i] = combo.m[k].text()
+		if multi && !strings.Contains(n.str(), "${{") {
+			name += " (" + comboValues(combo) + ")"
 		}
-		name = id + " (" + strings.Join(parts, ", ") + ")"
+	} else if combo != nil && len(combo.keys) > 0 {
+		name = id + " (" + comboValues(combo) + ")"
 	}
 
 	env := map[string]string{}
