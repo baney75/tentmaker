@@ -153,11 +153,13 @@ func hostOS(ctx context.Context, ts Tailscale, host string) string {
 
 // installScript is the POSIX sh run on the remote device. The installer is
 // downloaded to a file first so a failed download fails the install
-// instead of piping nothing into sh.
+// instead of piping nothing into sh. The installer runs as root and runs
+// setup itself (--yes, setup flags after --): run as a normal user it would
+// put the binary in ~/.local/bin, where `sudo tentmaker` can't find it.
 func installScript(channel string, flags []string) string {
-	setup := "tentmaker setup --yes --json"
+	install := `sh "$f" --channel ` + shellQuote(channel) + " --yes -- --json"
 	if len(flags) > 0 {
-		setup += " " + strings.Join(flags, " ")
+		install += " " + strings.Join(flags, " ")
 	}
 	return strings.Join([]string{
 		"set -eu",
@@ -165,8 +167,7 @@ func installScript(channel string, flags []string) string {
 		`f=$(mktemp)`,
 		`trap 'rm -f "$f"' EXIT`,
 		"curl -fsSL --max-time 300 " + installURL + ` -o "$f"`,
-		`sh "$f" --channel ` + shellQuote(channel),
-		`if [ "$(id -u)" -eq 0 ]; then ` + setup + "; else sudo -n " + setup + "; fi",
+		`if [ "$(id -u)" -eq 0 ]; then ` + install + "; else sudo -n " + install + "; fi",
 	}, "\n")
 }
 

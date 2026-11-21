@@ -22,8 +22,7 @@ exec 2>&1
 f=$(mktemp)
 trap 'rm -f "$f"' EXIT
 curl -fsSL --max-time 300 https://raw.githubusercontent.com/baney75/tentmaker/main/scripts/install.sh -o "$f"
-sh "$f" --channel 'dev'
-if [ "$(id -u)" -eq 0 ]; then tentmaker setup --yes --json --pool 'home' --memory '4GiB' --boost-memory '12GiB' --repo 'alice/app' --repo 'alice/site.io'; else sudo -n tentmaker setup --yes --json --pool 'home' --memory '4GiB' --boost-memory '12GiB' --repo 'alice/app' --repo 'alice/site.io'; fi`
+if [ "$(id -u)" -eq 0 ]; then sh "$f" --channel 'dev' --yes -- --json --pool 'home' --memory '4GiB' --boost-memory '12GiB' --repo 'alice/app' --repo 'alice/site.io'; else sudo -n sh "$f" --channel 'dev' --yes -- --json --pool 'home' --memory '4GiB' --boost-memory '12GiB' --repo 'alice/app' --repo 'alice/site.io'; fi`
 
 func TestRemoteInstallArgv(t *testing.T) {
 	fr := &fakeRunner{out: map[string][]byte{}}
@@ -49,7 +48,9 @@ func TestRemoteInstallDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 	script := fr.calls[0][6]
-	if !strings.Contains(script, `--channel '\''stable'\''`) || !strings.Contains(script, "tentmaker setup --yes --json; else") {
+	// The installer itself runs as root (so the binary lands on root's
+	// PATH) and runs setup; nothing calls a bare `tentmaker` after it.
+	if !strings.Contains(script, `sudo -n sh "$f" --channel '\''stable'\'' --yes -- --json; fi`) || strings.Contains(script, "tentmaker setup") {
 		t.Fatalf("script: %s", script)
 	}
 	if fr.calls[0][2] != "root@100.64.0.2" {

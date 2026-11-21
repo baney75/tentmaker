@@ -406,7 +406,7 @@ section is rewritten.
 - Tagged devices are served only when `members` contains `tagged-devices`.
 - Every endpoint but `/v1/hello` needs a matching `Tentmaker-Pool` header.
 - `Claim` walks devices in name order, so exactly one racing broker wins.
-- `RemoteInstall` saves install.sh to a temp file and runs it with `sudo -n`.
+- `RemoteInstall` saves install.sh to a temp file and runs the installer itself as root (`sudo -n sh "$f" --channel <c> --yes -- <setup flags>`, or plain `sh` when already root), so install.sh puts the binary on root's PATH and runs setup. It used to run install.sh as the login user and then `sudo -n tentmaker setup`, which failed when the binary landed in `~/.local/bin`.
 - `Run` restarts its listener when the tailnet IPs change.
 
 **dispatch**
