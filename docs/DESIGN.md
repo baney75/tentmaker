@@ -271,30 +271,17 @@ physical LAN only, never what the tailnet routes.
   - Windows Firewall does not filter traffic to the host itself: a live run reached decoys on
     127.0.0.1, ::1 and the host's own addresses through loaded, enabled block rules. So Tentmaker
     adds persistent WFP filters (`API.SetWFP`, fwpuclnt.dll through `x/sys/windows`, no cgo) in its
-    own provider and a sublayer of weight 0xffff. The loopback fence sits at
-    `FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V4` and `_V6`, where WFP knows both ends of a connection to
-    this host: `FWPM_CONDITION_ALE_REMOTE_USER_ID` is the connecting socket's user and
-    `FWPM_CONDITION_ALE_USER_ID` the listener's. Every accept filter matches the remote user against
-    the runner SID's SDDL and the `FWP_CONDITION_FLAG_IS_LOOPBACK` flag, which Windows sets on
-    traffic to any of its own addresses. Permits: a listener that is the runner SID too (weight
-    15: a job's own servers on 127.0.0.1, ::1 or a host address, TCP and UDP, as httptest or a test
-    database use), the relay (TCP, local 127.0.0.1:7435, weight 14), and port 53 on the configured
-    DNS servers (weight 13). Then a block of all the rest, weight 1, with
-    `FWPM_FILTER_FLAG_CLEAR_ACTION_RIGHT`, so no host service, the mesh port or the control API
-    answers a job. The highest weight that matches decides within the sublayer, and a permit here
-    only lets other sublayers decide. A connect-layer filter can't tell a job's listener from the
-    host's (`ALE_USER_ID` there is the connector, and `FWP_MATCH_NOT_EQUAL` isn't valid on a
-    security descriptor), which is why the fence moved to accept. Two hard blocks at
-    `FWPM_LAYER_ALE_AUTH_CONNECT_V4` and `_V6` take multicast and broadcast to any host
-    (224.0.0.0/4 and 255.255.255.255 as `FWP_V4_ADDR_MASK`, ff00::/8 as `FWP_V6_ADDR_MASK`),
-    which the firewall rules don't, and which a live run reached. The abuse suite proves both
-    halves live: the host's loopback services (127.0.0.1, ::1, wildcard listeners, the mesh port,
-    the host's own addresses, UDP on loopback) stay closed, and a job's own TCP and UDP servers on
-    127.0.0.1 and ::1 answer it (`CONTROL own-loopback-*`). The filters have fixed keys; `SetWFP`
+    own provider and a sublayer of weight 0xffff, at `FWPM_LAYER_ALE_AUTH_CONNECT_V4` and `_V6`.
+    Every filter matches `FWPM_CONDITION_ALE_USER_ID` (the same SDDL) and the
+    `FWP_CONDITION_FLAG_IS_LOOPBACK` flag, which Windows sets on traffic to any of its own
+    addresses: permit TCP 127.0.0.1:7435 (the relay) and port 53 to the configured DNS servers,
+    then block the rest with `FWPM_FILTER_FLAG_CLEAR_ACTION_RIGHT`. Two more hard blocks drop the
+    loopback flag and take multicast and broadcast to any host (224.0.0.0/4 and 255.255.255.255
+    as `FWP_V4_ADDR_MASK`, ff00::/8 as `FWP_V6_ADDR_MASK`), which the firewall rules don't, and
+    which a live run reached. A live run proved the loopback blocks (127.0.0.1, ::1, wildcard
+    listeners, the mesh port, the host's own addresses). The filters have fixed keys; `SetWFP`
     deletes every Tentmaker key and adds the wanted filters in one transaction, and
-    reads them back by key. Each filter's description spells out all of its conditions and its
-    layer; a filter at the wrong layer is another set and refuses the job. Older filters (the
-    connect-layer loopback block) read as stale, so `Start` rewrites them on upgrade.
+    reads them back by key. Each filter's description spells out all of its conditions.
   - `checkNet` reads the profiles, the group's rules and the DNS servers (`Get-DnsClientServerAddress`,
     the command setup used) in one PowerShell call, plus the WFP filters. A firewall profile that
     is off, no rules, no filters, or a rule or filter for another SID, `allow_lan` or version

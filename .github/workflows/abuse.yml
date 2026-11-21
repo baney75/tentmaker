@@ -542,7 +542,7 @@ jobs:
           $py = (Get-Command python).Source
           $decoy = (Resolve-Path scripts\abuse\decoy.py).Path
           $log = Join-Path $env:RUNNER_TEMP 'decoy.log'
-          $specs = "100.64.77.1:8080 10.77.0.1:8080 [fd7a:115c:a1e0::77]:8080 100.100.100.100:80 udp:100.100.100.100:53 0.0.0.0:8767 [::]:8767 0.0.0.0:7433 [::]:7433 127.0.0.1:8766 [::1]:8766 udp:127.0.0.1:8768 udp:[::1]:8768 mcast:239.77.77.77:7777 $meta"
+          $specs = "100.64.77.1:8080 10.77.0.1:8080 [fd7a:115c:a1e0::77]:8080 100.100.100.100:80 udp:100.100.100.100:53 0.0.0.0:8767 [::]:8767 0.0.0.0:7433 [::]:7433 127.0.0.1:8766 [::1]:8766 mcast:239.77.77.77:7777 $meta"
           $arg = "/c `"`"$py`" `"$decoy`" $specs > `"$log`" 2>&1`""
           $act = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\cmd.exe" -Argument $arg
           Register-ScheduledTask -TaskName tmdecoy -Action $act -User SYSTEM -RunLevel Highest -Force | Out-Null
@@ -562,7 +562,7 @@ jobs:
             if (-not $ok) { Write-Output "::error::decoy $u does not answer"; Get-Content $log -ErrorAction SilentlyContinue; exit 1 }
             Write-Output "decoy up: $u"
           }
-          foreach ($u in @(@('100.100.100.100', '53'), @('127.0.0.1', '8768'), @('::1', '8768'), @('239.77.77.77', '7777'))) {
+          foreach ($u in @(@('100.100.100.100', '53'), @('239.77.77.77', '7777'))) {
             python scripts\abuse\udpask.py $u[0] $u[1]
             if ($LASTEXITCODE -ne 0) { Write-Output "::error::udp decoy $($u -join ':') does not answer"; Get-Content $log -ErrorAction SilentlyContinue; exit 1 }
           }

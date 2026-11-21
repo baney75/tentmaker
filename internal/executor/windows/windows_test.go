@@ -216,7 +216,7 @@ func (f *fakeAPI) SetWFP(fs []WFPFilter) error {
 	}
 	clear(f.wfp)
 	for _, x := range fs {
-		f.wfp[x.Key] = WFPState{Key: x.Key, Description: x.Description(), Accept: x.Accept, V6: x.V6, Permit: x.Permit, Block: !x.Permit,
+		f.wfp[x.Key] = WFPState{Key: x.Key, Description: x.Description(), V6: x.V6, Permit: x.Permit, Block: !x.Permit,
 			Persistent: true, Hard: !x.Permit, Sublayer: true}
 	}
 	return nil

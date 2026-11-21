@@ -11,29 +11,20 @@ import (
 // is let through even when a block rule names that address (a live attack
 // run proved it). So Tentmaker adds its own Windows Filtering Platform
 // filters for that traffic, in a sublayer of its own that is weighed before
-// Windows Firewall's.
+// Windows Firewall's:
 //
-// A job must not reach the host's own services, but it must reach its own:
-// a test that starts a server on 127.0.0.1 or ::1 (httptest, a test
-// database, a Gradle or Bazel daemon, a Playwright driver) and connects to
-// it, as on GitHub's runners. The connect side can't tell the two apart (it
-// doesn't know who listens), so the fence is on the listening side, at the
-// ALE receive/accept layers (IPv4 and IPv6), for loopback traffic
-// (FWP_CONDITION_FLAG_IS_LOOPBACK; traffic to any of the host's own
-// addresses is loopback traffic) whose remote user, the one who connected,
-// is the runner user (FWPM_CONDITION_ALE_REMOTE_USER_ID):
-//
-//   - permit it when the listening socket is the runner user's too
-//     (FWPM_CONDITION_ALE_USER_ID): the job's own listeners,
+//   - at the ALE connect layers (IPv4 and IPv6), for sockets of the runner
+//     user (FWPM_CONDITION_ALE_USER_ID) whose traffic Windows marks as
+//     loopback (FWP_CONDITION_FLAG_IS_LOOPBACK; traffic to any of the
+//     host's own addresses is loopback traffic),
 //   - permit the source relay (TCP 127.0.0.1:RelayPort) and DNS (port 53)
-//     on the configured DNS servers, then
+//     to the configured DNS servers, then
 //   - block everything else, with FWPM_FILTER_FLAG_CLEAR_ACTION_RIGHT so no
 //     later sublayer can permit it again.
 //
-// Two more hard blocks, at the ALE connect layers and not limited to
-// loopback traffic, take multicast and broadcast (224.0.0.0/4,
-// 255.255.255.255, ff00::/8) from runner sockets: Windows Firewall rules
-// don't, and a live run saw a job's datagram to 239.77.77.77 answered.
+// Two more hard blocks, not limited to loopback traffic, take multicast and
+// broadcast (224.0.0.0/4, 255.255.255.255, ff00::/8): Windows Firewall
+// rules don't, and a live run saw a job's datagram to 239.77.77.77 answered.
 //
 // Every object is persistent, so the filters are in force from boot,
 // before the service starts. Other traffic to other hosts is not loopback
@@ -84,32 +75,21 @@ func WFPKeys() []GUID {
 	return out
 }
 
-// WFPFilter is one filter at the ALE connect layers or, when Accept, at
-// the ALE receive/accept layers. Every filter matches only traffic of user
-// SID, and only loopback traffic (traffic to this host) unless AnyHost.
+// WFPFilter is one filter at the ALE connect layer. Every filter matches
+// only sockets of user SID, and only loopback traffic (traffic to this
+// host) unless AnyHost.
 type WFPFilter struct {
-	Key  GUID
-	Name string
-	// Accept puts the filter where a listening socket accepts a connection
-	// or a first datagram; else it is where a socket connects or sends.
-	Accept  bool
-	V6      bool
-	Permit  bool // else block, which no later sublayer may override
-	AnyHost bool // traffic to any host, not only loopback traffic
-	Weight  uint8
-	// SID is the runner user. At connect it is the user of the socket that
-	// connects (FWPM_CONDITION_ALE_USER_ID); at accept it is the remote
-	// user, the one who connected (FWPM_CONDITION_ALE_REMOTE_USER_ID).
-	SID string
-	// ToRunner (Accept only): the listening socket's user is SID too.
-	ToRunner bool
-	Protocol uint8 // 6 TCP, 17 UDP, 0 any
-	// The listening end: the remote end at connect, the local end at
-	// accept. Port 0 is any port; no DstAddrs and no DstPrefixes is any
-	// address, else any of them.
-	DstPort     uint16
-	DstAddrs    []netip.Addr
-	DstPrefixes []netip.Prefix
+	Key            GUID
+	Name           string
+	V6             bool
+	Permit         bool // else block, which no later sublayer may override
+	AnyHost        bool // traffic to any host, not only loopback traffic
+	Weight         uint8
+	SID            string
+	Protocol       uint8          // 6 TCP, 17 UDP, 0 any
+	RemotePort     uint16         // 0 any
+	RemoteAddrs    []netip.Addr   // any of them or of RemotePrefixes; none
+	RemotePrefixes []netip.Prefix // of either means any address
 }
 
 // Multicast and broadcast destinations, blocked for jobs on every host.
@@ -133,25 +113,18 @@ func (f WFPFilter) Description() string {
 	if f.AnyHost {
 		scope = "any host"
 	}
-	layer := "connect"
-	if f.Accept {
-		layer = "accept"
-	}
-	s := fmt.Sprintf("tentmaker %s user %s: %s %s %s %s weight %d", wfpVersion, f.SID, act, layer, fam, scope, f.Weight)
-	if f.ToRunner {
-		s += " listener the same user"
-	}
+	s := fmt.Sprintf("tentmaker %s user %s: %s %s %s weight %d", wfpVersion, f.SID, act, fam, scope, f.Weight)
 	if f.Protocol != 0 {
 		s += fmt.Sprintf(" proto %d", f.Protocol)
 	}
-	if f.DstPort != 0 {
-		s += fmt.Sprintf(" port %d", f.DstPort)
+	if f.RemotePort != 0 {
+		s += fmt.Sprintf(" port %d", f.RemotePort)
 	}
 	var to []string
-	for _, a := range f.DstAddrs {
+	for _, a := range f.RemoteAddrs {
 		to = append(to, a.String())
 	}
-	for _, p := range f.DstPrefixes {
+	for _, p := range f.RemotePrefixes {
 		to = append(to, p.String())
 	}
 	if len(to) > 0 {
@@ -170,13 +143,8 @@ func WFPFilters(sid string, resolvers []netip.Addr) []WFPFilter {
 			v6 = append(v6, r)
 		}
 	}
-	var fs []WFPFilter
-	for i, v6 := range []bool{false, true} {
-		fs = append(fs, WFPFilter{Key: wfpFilterKey(i), Name: "Tentmaker: CI jobs reach their own listeners on this host",
-			Accept: true, V6: v6, Permit: true, Weight: 15, SID: sid, ToRunner: true})
-	}
-	fs = append(fs, WFPFilter{Key: wfpFilterKey(2), Name: "Tentmaker: CI jobs reach the source archive relay",
-		Accept: true, Permit: true, Weight: 14, SID: sid, Protocol: 6, DstPort: RelayPort, DstAddrs: []netip.Addr{Loopback}})
+	fs := []WFPFilter{{Key: wfpFilterKey(0), Name: "Tentmaker: CI jobs reach the source archive relay",
+		Permit: true, Weight: 15, SID: sid, Protocol: 6, RemotePort: RelayPort, RemoteAddrs: []netip.Addr{Loopback}}}
 	for i, fam := range []struct {
 		v6 bool
 		rs []netip.Addr
@@ -185,17 +153,17 @@ func WFPFilters(sid string, resolvers []netip.Addr) []WFPFilter {
 			continue
 		}
 		for j, proto := range []uint8{17, 6} {
-			fs = append(fs, WFPFilter{Key: wfpFilterKey(3 + 2*i + j), Name: "Tentmaker: CI jobs reach DNS servers on this host",
-				Accept: true, V6: fam.v6, Permit: true, Weight: 13, SID: sid, Protocol: proto, DstPort: 53, DstAddrs: fam.rs})
+			fs = append(fs, WFPFilter{Key: wfpFilterKey(1 + 2*i + j), Name: "Tentmaker: CI jobs reach DNS servers on this host",
+				V6: fam.v6, Permit: true, Weight: 14, SID: sid, Protocol: proto, RemotePort: 53, RemoteAddrs: fam.rs})
 		}
+	}
+	for i, v6 := range []bool{false, true} {
+		fs = append(fs, WFPFilter{Key: wfpFilterKey(5 + i), Name: "Tentmaker: CI jobs never reach this host",
+			V6: v6, Weight: 1, SID: sid})
 	}
 	for i, ps := range [][]netip.Prefix{MulticastV4, MulticastV6} {
 		fs = append(fs, WFPFilter{Key: wfpFilterKey(7 + i), Name: "Tentmaker: CI jobs send no multicast or broadcast",
-			V6: i == 1, AnyHost: true, Weight: 1, SID: sid, DstPrefixes: ps})
-	}
-	for i, v6 := range []bool{false, true} {
-		fs = append(fs, WFPFilter{Key: wfpFilterKey(9 + i), Name: "Tentmaker: CI jobs never reach this host's services",
-			Accept: true, V6: v6, Weight: 1, SID: sid})
+			V6: i == 1, AnyHost: true, Weight: 1, SID: sid, RemotePrefixes: ps})
 	}
 	return fs
 }
@@ -204,9 +172,8 @@ func WFPFilters(sid string, resolvers []netip.Addr) []WFPFilter {
 type WFPState struct {
 	Key         GUID
 	Description string
-	Accept      bool // at an ALE receive/accept layer; false is a connect layer
-	V6          bool // at the IPv6 layer; false is IPv4
-	OtherLayer  bool // at none of the four ALE layers Tentmaker uses
+	V6          bool // at the IPv6 connect layer; false is IPv4
+	OtherLayer  bool // at neither connect layer
 	Permit      bool
 	Block       bool
 	Persistent  bool
@@ -242,7 +209,7 @@ func checkWFP(want []WFPFilter, have []WFPState) error {
 		switch {
 		case !ok:
 			stale = append(stale, "missing "+w.Description())
-		case h.Description != w.Description(), h.OtherLayer, h.Accept != w.Accept, h.V6 != w.V6, !h.Sublayer, !h.Persistent,
+		case h.Description != w.Description(), h.OtherLayer, h.V6 != w.V6, !h.Sublayer, !h.Persistent,
 			w.Permit && !h.Permit, !w.Permit && (!h.Block || !h.Hard):
 			stale = append(stale, fmt.Sprintf("%s is not %s", h.Key, w.Description()))
 		}

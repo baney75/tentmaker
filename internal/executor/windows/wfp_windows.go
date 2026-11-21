@@ -67,32 +67,14 @@ const (
 )
 
 var (
-	fwpmLayerALEAuthConnectV4    = win.GUID{Data1: 0xc38d57d1, Data2: 0x05a7, Data3: 0x4c33, Data4: [8]byte{0x90, 0x4f, 0x7f, 0xbc, 0xee, 0xe6, 0x0e, 0x82}}
-	fwpmLayerALEAuthConnectV6    = win.GUID{Data1: 0x4a72393b, Data2: 0x319f, Data3: 0x44bc, Data4: [8]byte{0x84, 0xc3, 0xba, 0x54, 0xdc, 0xb3, 0xb6, 0xb4}}
-	fwpmLayerALEAuthRecvAcceptV4 = win.GUID{Data1: 0xe1cd9fe7, Data2: 0xf4b5, Data3: 0x4273, Data4: [8]byte{0x96, 0xc0, 0x59, 0x2e, 0x48, 0x7b, 0x86, 0x50}}
-	fwpmLayerALEAuthRecvAcceptV6 = win.GUID{Data1: 0xa3b42c97, Data2: 0x9f04, Data3: 0x4672, Data4: [8]byte{0xb8, 0x7e, 0xce, 0xe9, 0xc4, 0x83, 0x25, 0x7f}}
-	fwpmConditionALEUserID       = win.GUID{Data1: 0xaf043a0a, Data2: 0xb34d, Data3: 0x4f86, Data4: [8]byte{0x97, 0x9c, 0xc9, 0x03, 0x71, 0xaf, 0x6e, 0x66}}
-	fwpmConditionALERemoteUserID = win.GUID{Data1: 0xf63073b7, Data2: 0x0189, Data3: 0x4ab0, Data4: [8]byte{0x95, 0xa4, 0x61, 0x23, 0xcb, 0xfa, 0xb8, 0x62}}
-	fwpmConditionFlags           = win.GUID{Data1: 0x632ce23b, Data2: 0x5167, Data3: 0x435c, Data4: [8]byte{0x86, 0xd7, 0xe9, 0x03, 0x68, 0x4a, 0xa8, 0x0c}}
-	fwpmConditionRemoteAddr      = win.GUID{Data1: 0xb235ae9a, Data2: 0x1d64, Data3: 0x49b8, Data4: [8]byte{0xa4, 0x4c, 0x5f, 0xf3, 0xd9, 0x09, 0x50, 0x45}}
-	fwpmConditionRemotePort      = win.GUID{Data1: 0xc35a604d, Data2: 0xd22b, Data3: 0x4e1a, Data4: [8]byte{0x91, 0xb4, 0x68, 0xf6, 0x74, 0xee, 0x67, 0x4b}}
-	fwpmConditionLocalAddr       = win.GUID{Data1: 0xd9ee00de, Data2: 0xc1ef, Data3: 0x4617, Data4: [8]byte{0xbf, 0xe3, 0xff, 0xd8, 0xf5, 0xa0, 0x89, 0x57}}
-	fwpmConditionLocalPort       = win.GUID{Data1: 0x0c1ba1af, Data2: 0x5765, Data3: 0x453f, Data4: [8]byte{0xaf, 0x22, 0xa8, 0xf7, 0x91, 0xac, 0x77, 0x5b}}
-	fwpmConditionIPProtocol      = win.GUID{Data1: 0x3971ef2b, Data2: 0x623e, Data3: 0x4f9a, Data4: [8]byte{0x8c, 0xb1, 0x6e, 0x79, 0xb8, 0x06, 0xb9, 0xa7}}
+	fwpmLayerALEAuthConnectV4 = win.GUID{Data1: 0xc38d57d1, Data2: 0x05a7, Data3: 0x4c33, Data4: [8]byte{0x90, 0x4f, 0x7f, 0xbc, 0xee, 0xe6, 0x0e, 0x82}}
+	fwpmLayerALEAuthConnectV6 = win.GUID{Data1: 0x4a72393b, Data2: 0x319f, Data3: 0x44bc, Data4: [8]byte{0x84, 0xc3, 0xba, 0x54, 0xdc, 0xb3, 0xb6, 0xb4}}
+	fwpmConditionALEUserID    = win.GUID{Data1: 0xaf043a0a, Data2: 0xb34d, Data3: 0x4f86, Data4: [8]byte{0x97, 0x9c, 0xc9, 0x03, 0x71, 0xaf, 0x6e, 0x66}}
+	fwpmConditionFlags        = win.GUID{Data1: 0x632ce23b, Data2: 0x5167, Data3: 0x435c, Data4: [8]byte{0x86, 0xd7, 0xe9, 0x03, 0x68, 0x4a, 0xa8, 0x0c}}
+	fwpmConditionRemoteAddr   = win.GUID{Data1: 0xb235ae9a, Data2: 0x1d64, Data3: 0x49b8, Data4: [8]byte{0xa4, 0x4c, 0x5f, 0xf3, 0xd9, 0x09, 0x50, 0x45}}
+	fwpmConditionRemotePort   = win.GUID{Data1: 0xc35a604d, Data2: 0xd22b, Data3: 0x4e1a, Data4: [8]byte{0x91, 0xb4, 0x68, 0xf6, 0x74, 0xee, 0x67, 0x4b}}
+	fwpmConditionIPProtocol   = win.GUID{Data1: 0x3971ef2b, Data2: 0x623e, Data3: 0x4f9a, Data4: [8]byte{0x8c, 0xb1, 0x6e, 0x79, 0xb8, 0x06, 0xb9, 0xa7}}
 )
-
-// wfpLayer is the ALE layer of a filter.
-func wfpLayer(accept, v6 bool) win.GUID {
-	switch {
-	case accept && v6:
-		return fwpmLayerALEAuthRecvAcceptV6
-	case accept:
-		return fwpmLayerALEAuthRecvAcceptV4
-	case v6:
-		return fwpmLayerALEAuthConnectV6
-	}
-	return fwpmLayerALEAuthConnectV4
-}
 
 // FWP_VALUE0 and FWP_CONDITION_VALUE0: a type and a pointer-sized union.
 type fwpValue0 struct {
@@ -275,18 +257,8 @@ func (s *wfpSession) addFilter(f WFPFilter) error {
 	pin.Pin(sd)
 	blob := &fwpByteBlob{Size: sd.Length(), Data: (*byte)(unsafe.Pointer(sd))}
 	pin.Pin(blob)
-	user := fwpValue0{Type: fwpSecurityDescriptor, Value: uintptr(unsafe.Pointer(blob))}
-	// At connect the runner is the socket's own user; at accept it is the
-	// remote user, and the listener's user is ALE_USER_ID.
-	userField, portField, addrField := fwpmConditionALEUserID, fwpmConditionRemotePort, fwpmConditionRemoteAddr
-	if f.Accept {
-		userField, portField, addrField = fwpmConditionALERemoteUserID, fwpmConditionLocalPort, fwpmConditionLocalAddr
-	} else if f.ToRunner {
-		return fmt.Errorf("WFP filter %s: a listener condition at the connect layer", f.Key)
-	}
-	conds := []fwpmFilterCondition0{{FieldKey: userField, MatchType: fwpMatchEqual, Value: user}}
-	if f.ToRunner {
-		conds = append(conds, fwpmFilterCondition0{FieldKey: fwpmConditionALEUserID, MatchType: fwpMatchEqual, Value: user})
+	conds := []fwpmFilterCondition0{
+		{FieldKey: fwpmConditionALEUserID, MatchType: fwpMatchEqual, Value: fwpValue0{Type: fwpSecurityDescriptor, Value: uintptr(unsafe.Pointer(blob))}},
 	}
 	if !f.AnyHost {
 		conds = append(conds, fwpmFilterCondition0{FieldKey: fwpmConditionFlags, MatchType: fwpMatchFlagsAllSet, Value: fwpValue0{Type: fwpUint32, Value: fwpConditionFlagIsLoopback}})
@@ -294,25 +266,25 @@ func (s *wfpSession) addFilter(f WFPFilter) error {
 	if f.Protocol != 0 {
 		conds = append(conds, fwpmFilterCondition0{FieldKey: fwpmConditionIPProtocol, MatchType: fwpMatchEqual, Value: fwpValue0{Type: fwpUint8, Value: uintptr(f.Protocol)}})
 	}
-	if f.DstPort != 0 {
-		conds = append(conds, fwpmFilterCondition0{FieldKey: portField, MatchType: fwpMatchEqual, Value: fwpValue0{Type: fwpUint16, Value: uintptr(f.DstPort)}})
+	if f.RemotePort != 0 {
+		conds = append(conds, fwpmFilterCondition0{FieldKey: fwpmConditionRemotePort, MatchType: fwpMatchEqual, Value: fwpValue0{Type: fwpUint16, Value: uintptr(f.RemotePort)}})
 	}
 	// Conditions on one field match any of their values.
-	for _, a := range f.DstAddrs {
+	for _, a := range f.RemoteAddrs {
 		if f.V6 != a.Is6() {
 			return fmt.Errorf("WFP filter %s: %s is the wrong family", f.Key, a)
 		}
 		if a.Is4() {
 			b := a.As4()
-			conds = append(conds, fwpmFilterCondition0{FieldKey: addrField, MatchType: fwpMatchEqual, Value: fwpValue0{Type: fwpUint32, Value: uintptr(binary.BigEndian.Uint32(b[:]))}})
+			conds = append(conds, fwpmFilterCondition0{FieldKey: fwpmConditionRemoteAddr, MatchType: fwpMatchEqual, Value: fwpValue0{Type: fwpUint32, Value: uintptr(binary.BigEndian.Uint32(b[:]))}})
 			continue
 		}
 		b := new([16]byte)
 		*b = a.As16()
 		pin.Pin(b)
-		conds = append(conds, fwpmFilterCondition0{FieldKey: addrField, MatchType: fwpMatchEqual, Value: fwpValue0{Type: fwpByteArray16, Value: uintptr(unsafe.Pointer(b))}})
+		conds = append(conds, fwpmFilterCondition0{FieldKey: fwpmConditionRemoteAddr, MatchType: fwpMatchEqual, Value: fwpValue0{Type: fwpByteArray16, Value: uintptr(unsafe.Pointer(b))}})
 	}
-	for _, p := range f.DstPrefixes {
+	for _, p := range f.RemotePrefixes {
 		p = p.Masked()
 		if f.V6 != p.Addr().Is6() {
 			return fmt.Errorf("WFP filter %s: %s is the wrong family", f.Key, p)
@@ -321,12 +293,12 @@ func (s *wfpSession) addFilter(f WFPFilter) error {
 			b := p.Addr().As4()
 			m := &fwpV4AddrAndMask{Addr: binary.BigEndian.Uint32(b[:]), Mask: ^uint32(0) << (32 - p.Bits())}
 			pin.Pin(m)
-			conds = append(conds, fwpmFilterCondition0{FieldKey: addrField, MatchType: fwpMatchEqual, Value: fwpValue0{Type: fwpV4AddrMask, Value: uintptr(unsafe.Pointer(m))}})
+			conds = append(conds, fwpmFilterCondition0{FieldKey: fwpmConditionRemoteAddr, MatchType: fwpMatchEqual, Value: fwpValue0{Type: fwpV4AddrMask, Value: uintptr(unsafe.Pointer(m))}})
 			continue
 		}
 		m := &fwpV6AddrAndMask{Addr: p.Addr().As16(), PrefixLength: uint8(p.Bits())}
 		pin.Pin(m)
-		conds = append(conds, fwpmFilterCondition0{FieldKey: addrField, MatchType: fwpMatchEqual, Value: fwpValue0{Type: fwpV6AddrMask, Value: uintptr(unsafe.Pointer(m))}})
+		conds = append(conds, fwpmFilterCondition0{FieldKey: fwpmConditionRemoteAddr, MatchType: fwpMatchEqual, Value: fwpValue0{Type: fwpV6AddrMask, Value: uintptr(unsafe.Pointer(m))}})
 	}
 	prov := win.GUID(WFPProvider)
 	flt := &fwpmFilter0{
@@ -334,12 +306,15 @@ func (s *wfpSession) addFilter(f WFPFilter) error {
 		DisplayData:         fwpmDisplayData0{Name: u16(f.Name), Description: u16(f.Description())},
 		Flags:               fwpmFilterFlagPersistent,
 		ProviderKey:         &prov,
-		LayerKey:            wfpLayer(f.Accept, f.V6),
+		LayerKey:            fwpmLayerALEAuthConnectV4,
 		SubLayerKey:         win.GUID(WFPSublayer),
 		Weight:              fwpValue0{Type: fwpUint8, Value: uintptr(f.Weight)},
 		NumFilterConditions: uint32(len(conds)),
 		FilterCondition:     &conds[0],
 		Action:              fwpmAction0{Type: fwpActionPermit},
+	}
+	if f.V6 {
+		flt.LayerKey = fwpmLayerALEAuthConnectV6
 	}
 	if !f.Permit {
 		flt.Action.Type = fwpActionBlock
@@ -404,15 +379,13 @@ func (*OSAPI) WFPInstalled() ([]WFPState, error) {
 		st := WFPState{
 			Key:         k,
 			Description: win.UTF16PtrToString(f.DisplayData.Description),
-			Accept:      f.LayerKey == fwpmLayerALEAuthRecvAcceptV4 || f.LayerKey == fwpmLayerALEAuthRecvAcceptV6,
-			V6:          f.LayerKey == fwpmLayerALEAuthConnectV6 || f.LayerKey == fwpmLayerALEAuthRecvAcceptV6,
-			OtherLayer: f.LayerKey != fwpmLayerALEAuthConnectV4 && f.LayerKey != fwpmLayerALEAuthConnectV6 &&
-				f.LayerKey != fwpmLayerALEAuthRecvAcceptV4 && f.LayerKey != fwpmLayerALEAuthRecvAcceptV6,
-			Permit:     f.Action.Type == fwpActionPermit,
-			Block:      f.Action.Type == fwpActionBlock,
-			Persistent: f.Flags&fwpmFilterFlagPersistent != 0,
-			Hard:       f.Flags&fwpmFilterFlagClearActionRight != 0,
-			Sublayer:   f.SubLayerKey == win.GUID(WFPSublayer),
+			V6:          f.LayerKey == fwpmLayerALEAuthConnectV6,
+			OtherLayer:  f.LayerKey != fwpmLayerALEAuthConnectV4 && f.LayerKey != fwpmLayerALEAuthConnectV6,
+			Permit:      f.Action.Type == fwpActionPermit,
+			Block:       f.Action.Type == fwpActionBlock,
+			Persistent:  f.Flags&fwpmFilterFlagPersistent != 0,
+			Hard:        f.Flags&fwpmFilterFlagClearActionRight != 0,
+			Sublayer:    f.SubLayerKey == win.GUID(WFPSublayer),
 		}
 		procFwpmFreeMemory0.Call(uintptr(unsafe.Pointer(&f)))
 		out = append(out, st)
