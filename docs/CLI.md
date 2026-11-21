@@ -99,6 +99,7 @@ Running setup again is safe: it keeps existing values unless a flag overrides th
 | config | /etc/tentmaker/config.toml | /Library/Application Support/Tentmaker/config.toml | %ProgramData%\Tentmaker\config.toml |
 | secrets | /etc/tentmaker/secrets | /Library/Application Support/Tentmaker/secrets | %ProgramData%\Tentmaker\secrets |
 | state | /var/lib/tentmaker | /Library/Application Support/Tentmaker/state | %ProgramData%\Tentmaker\state |
+| check logs | /var/lib/tentmaker/checks | /Library/Application Support/Tentmaker/state/checks | %ProgramData%\Tentmaker\state\checks |
 | cache | /var/cache/tentmaker | /Library/Caches/Tentmaker | %ProgramData%\Tentmaker\cache |
 | logs | journald (unit tentmaker) | /Library/Logs/Tentmaker/tentmaker.log | %ProgramData%\Tentmaker\logs\tentmaker.log |
 | service | systemd unit tentmaker.service | launchd /Library/LaunchDaemons/dev.tentmaker.daemon.plist | Windows service "Tentmaker" |

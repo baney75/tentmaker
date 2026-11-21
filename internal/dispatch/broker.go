@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -225,6 +226,7 @@ func (b *Broker) Work(ctx context.Context, req core.WorkRequest) (core.WorkRespo
 	now := b.now()
 	var resp core.WorkResponse
 	var picks []*grantRec
+	var logs []checkLog
 
 	b.mu.Lock()
 	dev := b.device(req.Device)
@@ -253,6 +255,7 @@ func (b *Broker) Work(ctx context.Context, req core.WorkRequest) (core.WorkRespo
 		b.queuePost(rec, state, desc, now)
 		b.log.Info("check finished", "runner", rec.Name, "device", rec.Device, "repo", rec.Repo,
 			"sha", rec.SHA, "context", rec.Context, "state", state, "duration", r.Duration)
+		logs = append(logs, newCheckLog(rec, state, desc, r.LogTail))
 		delete(b.grants, rec.Name)
 	}
 
@@ -328,6 +331,7 @@ func (b *Broker) Work(ctx context.Context, req core.WorkRequest) (core.WorkRespo
 	}
 	b.mu.Unlock()
 
+	b.saveCheckLogs(logs)
 	if len(picks) > 0 {
 		for _, rec := range picks {
 			if offer, ok := b.realize(ctx, req, rec, now); ok {
@@ -1676,3 +1680,62 @@ func containsFold(list []string, v string) bool {
 }
 
 func short(sha string) string { return truncate(sha, 12) }
+
+// ---------------------------------------------------------------- check logs
+
+// MaxCheckLogs is how many finished check logs a broker keeps under
+// <state>/checks; the oldest go first.
+const MaxCheckLogs = 200
+
+type checkLog struct {
+	name string
+	data []byte
+}
+
+var unsafeLogName = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
+
+// newCheckLog is a finished check's log tail with a short header, named
+// <owner>_<repo>-<sha12>-<job>.log so a commit status leads to its file.
+func newCheckLog(rec *grantRec, state, desc, tail string) checkLog {
+	job := strings.TrimPrefix(rec.Context, "tentmaker/")
+	name := unsafeLogName.ReplaceAllString(rec.Repo, "_") + "-" + unsafeLogName.ReplaceAllString(short(rec.SHA), "_") + "-" + unsafeLogName.ReplaceAllString(job, "_") + ".log"
+	head := fmt.Sprintf("repo: %s\nsha: %s\ncheck: %s\nstate: %s (%s)\ndevice: %s\nrunner: %s\n\n",
+		rec.Repo, rec.SHA, rec.Context, state, desc, rec.Device, rec.Name)
+	return checkLog{name: name, data: append([]byte(head), tail...)}
+}
+
+// saveCheckLogs writes finished checks' logs to <state>/checks, root-only,
+// and prunes the oldest past MaxCheckLogs. A failure is logged, never fatal.
+func (b *Broker) saveCheckLogs(logs []checkLog) {
+	if len(logs) == 0 || b.o.StateDir == "" {
+		return
+	}
+	dir := filepath.Join(b.o.StateDir, "checks")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		b.log.Warn("check log not saved", "error", err)
+		return
+	}
+	for _, l := range logs {
+		if err := config.WriteAtomic(filepath.Join(dir, l.name), l.data, 0o600); err != nil {
+			b.log.Warn("check log not saved", "file", l.name, "error", err)
+		}
+	}
+	ents, err := os.ReadDir(dir)
+	if err != nil || len(ents) <= MaxCheckLogs {
+		return
+	}
+	type aged struct {
+		name string
+		mod  time.Time
+	}
+	var all []aged
+	for _, e := range ents {
+		if info, err := e.Info(); err == nil && info.Mode().IsRegular() {
+			all = append(all, aged{e.Name(), info.ModTime()})
+		}
+	}
+	sort.Slice(all, func(i, j int) bool { return all[i].mod.Before(all[j].mod) })
+	for i := 0; i < len(all)-MaxCheckLogs; i++ {
+		os.Remove(filepath.Join(dir, all[i].name))
+	}
+}

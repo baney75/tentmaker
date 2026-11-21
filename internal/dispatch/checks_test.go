@@ -3,6 +3,10 @@ package dispatch
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -175,6 +179,38 @@ func TestChecksBranches(t *testing.T) {
 	}
 }
 
+// A finished check's log stays on the broker, so a failed status can be read.
+func TestChecksLogKept(t *testing.T) {
+	r := newRig(t, checksRepo(repoSite))
+	w := r.addWorker("alpha", 4)
+	r.forge.SetFile(repoSite, sha1, ciWorkflow, []byte("test\n"))
+	r.forge.SetCommits(repoSite, []core.Commit{{SHA: sha1, Ref: "main"}})
+	r.tick()
+	names := started(w.ex)
+	if len(names) != 1 {
+		t.Fatalf("starts = %v", names)
+	}
+	w.ex.SetResult(names[0], core.CheckResult{State: "failure", Description: "step 2 failed", LogTail: "make: *** [test] Error 1\n"})
+	w.ex.Exit(names[0])
+	r.run(4*time.Second, 2*time.Second)
+	if got := r.forge.Status(repoSite, sha1, "tentmaker/test"); got != "failure" {
+		t.Fatalf("status = %q", got)
+	}
+	p := filepath.Join(r.bdir, "checks", strings.ReplaceAll(repoSite, "/", "_")+"-"+sha1[:12]+"-test.log")
+	b, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatalf("no check log: %v", err)
+	}
+	for _, s := range []string{"check: tentmaker/test", "state: failure (step 2 failed)", "make: *** [test] Error 1"} {
+		if !strings.Contains(string(b), s) {
+			t.Errorf("check log misses %q:\n%s", s, b)
+		}
+	}
+	if st, _ := os.Stat(p); runtime.GOOS != "windows" && st.Mode().Perm() != 0o600 {
+		t.Errorf("check log mode %v", st.Mode().Perm())
+	}
+}
+
 func TestChecksWorkerSilentGetsErrorStatus(t *testing.T) {
 	r := newRig(t, checksRepo(repoSite))
 	w := r.addWorker("alpha", 1)
@@ -278,5 +314,30 @@ func TestSecretsNeverLogged(t *testing.T) {
 	r.assertNoSecrets()
 	if strings.Contains(logs, "jit-") || strings.Contains(logs, "token=") {
 		t.Fatalf("a secret shape appears in the logs")
+	}
+}
+
+func TestCheckLogsPruned(t *testing.T) {
+	r := newRig(t)
+	dir := filepath.Join(r.bdir, "checks")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-time.Hour)
+	for i := 0; i < MaxCheckLogs; i++ {
+		p := filepath.Join(dir, fmt.Sprintf("old-%03d.log", i))
+		os.WriteFile(p, []byte("x"), 0o600)
+		os.Chtimes(p, old, old.Add(time.Duration(i)*time.Second))
+	}
+	r.broker.saveCheckLogs([]checkLog{{name: "new.log", data: []byte("y")}})
+	ents, _ := os.ReadDir(dir)
+	if len(ents) != MaxCheckLogs {
+		t.Fatalf("%d logs kept, want %d", len(ents), MaxCheckLogs)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "old-000.log")); err == nil {
+		t.Error("the oldest log was kept")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "new.log")); err != nil {
+		t.Error("the new log was pruned")
 	}
 }

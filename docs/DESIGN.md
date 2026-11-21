@@ -272,7 +272,9 @@ func New(o Options) *Client                            // implements core.Status
   repo's `branches`; never forks), plans the
   workflows at that sha via `FileAt`/`ListDir`, and offers one check job per planned job that has
   no `tentmaker/<job>` status yet. It posts `pending` ("running on <device>") when granting and
-  the final state from `WorkRequest.Results`. A worker that goes silent for 2 minutes gets its
+  the final state from `WorkRequest.Results`. It also writes the result's log tail, with repo,
+  sha, check, state, device and runner, to `<state>/checks/<owner>_<repo>-<sha12>-<job>.log` (mode
+  0600, newest 200 kept), since the worker deletes the job dir when the job ends. A worker that goes silent for 2 minutes gets its
   pending statuses set to `error` ("device went offline") so they can be retried by a re-run.
   The bundle carries an archive URL that may contain a short-lived token; it is a secret like a
   JIT config.
@@ -399,6 +401,7 @@ section is rewritten.
 **checks**
 
 - `StatusForge.PendingCommits(ctx, repo, branches...)` also returns the heads of `branches` (config `[[repos]] branches`, `repo add --branch`); a branch that doesn't exist is skipped. Branch heads, like the default branch, need no `authors` match: only people with push access move them.
+- The broker keeps each finished check's log tail under `<state>/checks` (newest 200). Before this, a failed `tentmaker/<job>` status pointed at nothing: the worker deletes the job dir and the tail was dropped after posting the status.
 - `CheckBundle.Ref` carries the branch.
 - An empty `Platform.Arch` means any arch.
 - `ListDir` returns sorted entry names, and `ErrNotFound` for a missing folder.
