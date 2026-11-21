@@ -106,8 +106,7 @@ function Install-Tentmaker {
             $InstallDir.Equals($d.TrimEnd('\'), [StringComparison]::OrdinalIgnoreCase)) { $isSystem = $true }
     }
     if ($isSystem -and -not $isAdmin) {
-        Fail "installing to $InstallDir needs Administrator" ("open PowerShell as Administrator (Start, type PowerShell, right-click, Run as administrator) and run: $rawInstall" +
-            "`n  or install for this user only: `$env:TENTMAKER_INSTALL_DIR = `"`$env:LOCALAPPDATA\Tentmaker`"; $rawInstall")
+        Fail "installing to $InstallDir needs Administrator" "open PowerShell as Administrator (Start, type PowerShell, right-click, Run as administrator) and run: $rawInstall"
     }
 
     # PowerShell 5.1 defaults to TLS 1.0; GitHub needs 1.2.

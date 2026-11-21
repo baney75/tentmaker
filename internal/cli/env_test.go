@@ -119,7 +119,9 @@ type fakeUpdater struct {
 	mu         sync.Mutex
 	newer      bool
 	applied    []string
+	appliedTo  []string
 	rolledBack int
+	rollbackTo []string
 }
 
 func (u *fakeUpdater) Check(ctx context.Context, channel, current string) (update.Release, bool, error) {
@@ -134,6 +136,7 @@ func (u *fakeUpdater) Download(ctx context.Context, rel update.Release, dir stri
 func (u *fakeUpdater) Apply(ctx context.Context, newBin, curBin, want string) error {
 	u.mu.Lock()
 	u.applied = append(u.applied, want)
+	u.appliedTo = append(u.appliedTo, curBin)
 	u.mu.Unlock()
 	return nil
 }
@@ -141,6 +144,7 @@ func (u *fakeUpdater) Apply(ctx context.Context, newBin, curBin, want string) er
 func (u *fakeUpdater) Rollback(curBin string) error {
 	u.mu.Lock()
 	u.rolledBack++
+	u.rollbackTo = append(u.rollbackTo, curBin)
 	u.mu.Unlock()
 	return nil
 }
@@ -202,7 +206,10 @@ type fixture struct {
 	installOpts InstallOptions
 	execUnin    int
 	daemon      *fakeDaemon
-	mu          sync.Mutex
+	// userWritable maps a path prefix to why a user could change files
+	// under it; BinaryProblem reports it for any path under the prefix.
+	userWritable map[string]string
+	mu           sync.Mutex
 }
 
 // deadAddr is a loopback port with nothing listening.
@@ -228,15 +235,16 @@ func newFixture(t *testing.T) *fixture {
 	}
 	f := &fixture{
 		t: t, root: root,
-		store:  &memStore{m: map[string][]byte{}},
-		svc:    &fakeService{},
-		forge:  fakeforge.New("github", nil),
-		ex:     fakeexec.New("fake-linux", 0, core.Platform{OS: "linux", Arch: "x64"}),
-		up:     &fakeUpdater{},
-		stdout: &bytes.Buffer{},
-		stderr: &bytes.Buffer{},
-		isRoot: true,
-		daemon: &fakeDaemon{version: "1.0.0"},
+		store:        &memStore{m: map[string][]byte{}},
+		svc:          &fakeService{},
+		forge:        fakeforge.New("github", nil),
+		ex:           fakeexec.New("fake-linux", 0, core.Platform{OS: "linux", Arch: "x64"}),
+		up:           &fakeUpdater{},
+		stdout:       &bytes.Buffer{},
+		stderr:       &bytes.Buffer{},
+		isRoot:       true,
+		daemon:       &fakeDaemon{version: "1.0.0"},
+		userWritable: map[string]string{},
 	}
 	exe := filepath.Join(root, "bin", "tentmaker")
 	f.env = &Env{
@@ -304,6 +312,15 @@ func newFixture(t *testing.T) *fixture {
 		},
 		Now:        time.Now,
 		Executable: func() (string, error) { return exe, nil },
+		BinaryProblem: func(p string) (string, error) {
+			for pre, why := range f.userWritable {
+				if p == pre || strings.HasPrefix(p, pre+string(filepath.Separator)) {
+					return why, nil
+				}
+			}
+			return "", nil
+		},
+		ServiceBinDirs: []string{filepath.Join(root, "sys", "bin"), filepath.Join(root, "sys", "libexec", "tentmaker")},
 		Command: func(ctx context.Context, out io.Writer, name string, args ...string) error {
 			io.WriteString(out, "line one\nline two\n")
 			return nil

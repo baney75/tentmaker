@@ -101,6 +101,10 @@ type Options struct {
 	// ArchiveHTTP downloads check source archives from forges (nil: a
 	// client with dial and header timeouts; the fetch has its own limit).
 	ArchiveHTTP *http.Client
+	// BinaryProblem, when set, lets doctor check that only root can change
+	// the binary this daemon runs from (binsafe.Problem). Set it when the
+	// daemon runs as root or SYSTEM.
+	BinaryProblem func(path string) (string, error)
 
 	UpdateEvery     time.Duration
 	ShutdownTimeout time.Duration
@@ -1083,6 +1087,14 @@ func (d *Daemon) Doctor(ctx context.Context) Report {
 	}
 	if d.o.Service == nil {
 		in.ServiceNote = "the service is running (pid " + fmt.Sprint(os.Getpid()) + ")"
+	}
+	if d.o.BinaryProblem != nil && d.o.Executable != nil {
+		if exe, err := d.o.Executable(); err == nil {
+			if r, err := filepath.EvalSymlinks(exe); err == nil {
+				exe = r
+			}
+			in.Binary, in.BinaryProblem = exe, d.o.BinaryProblem
+		}
 	}
 	if cfg.Mesh.Enabled {
 		in.Tailscale = d.o.Tailscale

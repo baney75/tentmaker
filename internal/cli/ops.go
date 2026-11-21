@@ -410,12 +410,9 @@ func (a *app) update(ctx context.Context, channel string, checkOnly bool) (updat
 	}
 	cfg, _, _ := a.loadConfig()
 	rc := a.resolved(cfg)
-	cur, err := a.env.Executable()
+	cur, err := a.rootBinary()
 	if err != nil {
-		return v, fail("", "find this binary: %v", err)
-	}
-	if r, err := filepath.EvalSymlinks(cur); err == nil {
-		cur = r
+		return v, err
 	}
 	dir := filepath.Join(rc.CacheDir, "update")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -520,12 +517,9 @@ func (a *app) cmdRollback(args []string) (any, error) {
 	if err := a.needRoot(); err != nil {
 		return nil, err
 	}
-	cur, err := a.env.Executable()
+	cur, err := a.rootBinary()
 	if err != nil {
-		return nil, fail("", "find this binary: %v", err)
-	}
-	if r, err := filepath.EvalSymlinks(cur); err == nil {
-		cur = r
+		return nil, err
 	}
 	if err := a.env.Updater.Rollback(cur); err != nil {
 		return nil, fail("reinstall with the install script", "%v", err)
@@ -703,6 +697,9 @@ func (a *app) cmdDaemon(args []string) (any, error) {
 		Now:         a.env.Now,
 		ReloadOnHUP: true,
 		UpdateEvery: daemon.UpdateEveryFromEnv(a.env.Getenv),
+	}
+	if a.env.IsRoot() {
+		o.BinaryProblem = a.env.BinaryProblem
 	}
 	run := func(ctx context.Context) error { return a.env.RunDaemon(ctx, o) }
 	if a.env.GOOS == "windows" && service.IsWindowsService() {

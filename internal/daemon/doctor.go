@@ -59,6 +59,11 @@ type DoctorInput struct {
 	Update      func(ctx context.Context, channel, current string) (update.Release, bool, error)
 	// Extra are problems the caller found building components.
 	Extra []core.Problem
+	// Binary is the binary the root (SYSTEM) service runs, and
+	// BinaryProblem says why someone else could change it ("" when no one
+	// can). Either empty skips the check.
+	Binary        string
+	BinaryProblem func(path string) (string, error)
 }
 
 // CheckTimeout bounds each doctor check.
@@ -78,6 +83,7 @@ func Doctor(ctx context.Context, in DoctorInput) Report {
 		{"tailscale", func(ctx context.Context) []Finding { return checkTailscale(ctx, in) }},
 		{"disk", func(ctx context.Context) []Finding { return checkDisk(ctx, in) }},
 		{"version", func(ctx context.Context) []Finding { return checkVersion(ctx, in) }},
+		{"binary", func(context.Context) []Finding { return checkBinary(in) }},
 	}
 	results := make([][]Finding, len(jobs))
 	var wg sync.WaitGroup
@@ -159,6 +165,26 @@ func checkService(ctx context.Context, in DoctorInput) []Finding {
 		return []Finding{{Check: "service", Status: Fail, What: what, Fix: "sudo tentmaker setup (it restarts the service); then `tentmaker logs`"}}
 	}
 	return []Finding{{Check: "service", Status: OK, What: "the service is running"}}
+}
+
+// checkBinary fails when someone other than root could change the binary
+// the root service runs: they would get root on its next restart or update.
+// An older setup pointed the service at ~/.local/bin when install.sh ran
+// without root.
+func checkBinary(in DoctorInput) []Finding {
+	if in.Binary == "" || in.BinaryProblem == nil {
+		return nil
+	}
+	why, err := in.BinaryProblem(in.Binary)
+	switch {
+	case err != nil:
+		return []Finding{{Check: "binary", Status: Warn, What: "can't check who can change " + in.Binary + ": " + err.Error()}}
+	case why != "":
+		return []Finding{{Check: "binary", Status: Fail,
+			What: "the service runs " + in.Binary + " as root, but " + why + ", so that user could take over this machine",
+			Fix:  "run sudo tentmaker setup, which copies the binary to a folder only root can change"}}
+	}
+	return []Finding{{Check: "binary", Status: OK, What: "only root can change " + in.Binary}}
 }
 
 func checkExecutors(ctx context.Context, in DoctorInput) []Finding {

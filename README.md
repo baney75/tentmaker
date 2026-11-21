@@ -41,7 +41,7 @@ curl -fsSL https://raw.githubusercontent.com/baney75/tentmaker/main/scripts/inst
   sh -s -- --yes -- --memory 4GiB --boost-memory 12GiB --repo owner/name
 ```
 
-Without root the binary goes to `~/.local/bin` instead of `/usr/local/bin`.
+Without root the binary goes to `~/.local/bin` instead of `/usr/local/bin`. The service runs as root, so `sudo tentmaker setup` never points it at a binary you can change: it copies the binary to `/usr/local/bin` (or `/usr/local/libexec/tentmaker`), points the service there, and tells you to remove the copy in `~/.local/bin`. On Windows the copy goes to `C:\Program Files\Tentmaker`.
 
 **Windows** (in PowerShell opened as Administrator)
 
@@ -239,7 +239,7 @@ There are two channels and no others.
 - **stable:** GitHub Releases tagged `vX.Y.Z`.
 - **dev:** one rolling prerelease tagged `dev`, rebuilt on every push to `main`, versioned like `0.1.1-dev.202611211530.abc1234`.
 
-With `update.auto` on (the default) a device checks every 6 hours and updates only between jobs. An update verifies the sha256, checks the new binary runs, swaps it in, restarts the service, and rolls back if the service isn't healthy within 60 seconds.
+With `update.auto` on (the default) a device checks every 6 hours and updates only between jobs. An update verifies the sha256, checks the new binary runs, swaps it in, restarts the service, and rolls back if the service isn't healthy within 60 seconds. Updates and rollbacks change only the root-owned binary the service runs.
 
 ```sh
 sudo tentmaker update --check

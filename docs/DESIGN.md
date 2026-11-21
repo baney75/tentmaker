@@ -65,6 +65,7 @@ internal/mesh/            tailnet peer API: discovery, WhoIs auth, remote WorkSo
 internal/service/         install the daemon as a systemd / launchd / Windows service
 internal/update/          stable/dev channels, verified self-update with rollback
 internal/httpsafe/        redirect policy that keeps credential headers on their origin
+internal/binsafe/         checks that only root (SYSTEM and Administrators) can change a binary
 internal/mcp/             stdio MCP server for agents
 internal/cli/             commands
 scripts/install.sh        Linux and macOS installer
@@ -374,6 +375,17 @@ are rediscovered every 30 s; a peer failing 3 calls in a row is skipped for a mi
   `<bin>.prev`, adds the version to `<state>/update-bad.json` (auto-update skips those), deletes
   the marker and exits, so the service manager starts the previous binary. A marker for another
   version is deleted.
+- The service runs only a binary that root alone can change. Setup walks the running binary and
+  every parent folder (Unix: owned by uid 0, no write bit for others, group write only for gid 0,
+  no symlinks; Windows: owner and every allow ACE that can write, delete or change the DACL belong
+  to SYSTEM, Administrators or TrustedInstaller). If the walk fails, for example a binary in
+  `~/.local/bin`, setup copies it to `/usr/local/bin/tentmaker` when that folder passes, else
+  `/usr/local/libexec/tentmaker/tentmaker`, and on Windows to
+  `%ProgramFiles%\Tentmaker\tentmaker.exe`, checks the copy, points the service there and says so
+  in one line that names the old copy to remove. With no safe folder setup refuses. `update` and
+  `rollback` work only on that root-owned path, and `doctor` fails a service binary that a
+  non-root user can change. A root service that runs a user-writable binary would let that user
+  run code as root (review r1 second-F7). (internal/binsafe, internal/cli)
 
 Install:
 

@@ -22,6 +22,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/baney75/tentmaker/internal/binsafe"
 	"github.com/baney75/tentmaker/internal/checks"
 	"github.com/baney75/tentmaker/internal/config"
 	"github.com/baney75/tentmaker/internal/control"
@@ -101,6 +102,14 @@ type Env struct {
 	Probe       func(stateDir string) guards.Probe
 	Now         func() time.Time
 	Executable  func() (string, error)
+	// BinaryProblem says why someone other than root (Windows: SYSTEM and
+	// Administrators) could change the binary at path or a folder above it,
+	// or "" when no one can. Default binsafe.Problem.
+	BinaryProblem func(path string) (string, error)
+	// ServiceBinDirs are root-owned folders setup may copy the binary into
+	// when the service can't run it in place, in order of preference.
+	// Default binsafe.ServiceDirs.
+	ServiceBinDirs []string
 	// Command runs a host tool (journalctl, git) with output to out.
 	Command   func(ctx context.Context, out io.Writer, name string, args ...string) error
 	RunBundle func(ctx context.Context, b core.CheckBundle, outDir string, log io.Writer) core.CheckResult
@@ -144,21 +153,23 @@ func DefaultEnv() *Env {
 		VerifyToken: func(ctx context.Context, kind, base, tok string) (string, error) {
 			return verifyToken(ctx, nil, kind, base, tok)
 		},
-		Control:       &control.Client{Addr: control.DefaultAddr},
-		Updater:       update.FromEnv(os.Getenv),
-		Tailscale:     mesh.NewTailscaleCLI(),
-		RemoteInstall: mesh.RemoteInstall,
-		Hostname:      os.Hostname,
-		Getwd:         os.Getwd,
-		TotalMemory:   power.TotalMemory,
-		CPUs:          power.CPUs,
-		Power:         power.New(),
-		Idle:          power.NewIdle(),
-		Probe:         guards.NewHostProbe,
-		Now:           time.Now,
-		Executable:    os.Executable,
-		Command:       runCommand,
-		RunBundle:     checks.RunBundle,
+		Control:        &control.Client{Addr: control.DefaultAddr},
+		Updater:        update.FromEnv(os.Getenv),
+		Tailscale:      mesh.NewTailscaleCLI(),
+		RemoteInstall:  mesh.RemoteInstall,
+		Hostname:       os.Hostname,
+		Getwd:          os.Getwd,
+		TotalMemory:    power.TotalMemory,
+		CPUs:           power.CPUs,
+		Power:          power.New(),
+		Idle:           power.NewIdle(),
+		Probe:          guards.NewHostProbe,
+		Now:            time.Now,
+		Executable:     os.Executable,
+		BinaryProblem:  binsafe.Problem,
+		ServiceBinDirs: binsafe.ServiceDirs(runtime.GOOS, os.Getenv),
+		Command:        runCommand,
+		RunBundle:      checks.RunBundle,
 		RunDaemon: func(ctx context.Context, o daemon.Options) error {
 			return daemon.New(o).Run(ctx)
 		},

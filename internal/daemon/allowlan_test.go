@@ -117,3 +117,26 @@ func TestDaemonReloadAllowLANRebuildsExecutors(t *testing.T) {
 		t.Fatalf("%d jobs run under rules that open the LAN", n)
 	}
 }
+
+// Doctor fails when someone other than root could change the binary the
+// root service runs (an older setup pointed it at ~/.local/bin). Review r1
+// partB second-F7.
+func TestDoctorFlagsUserWritableServiceBinary(t *testing.T) {
+	in := DoctorInput{Binary: "/home/alice/.local/bin/tentmaker", BinaryProblem: func(p string) (string, error) {
+		if strings.HasPrefix(p, "/home/alice/") {
+			return p + " is owned by uid 1000, not root", nil
+		}
+		return "", nil
+	}}
+	f := checkBinary(in)
+	if len(f) != 1 || f[0].Status != Fail || !strings.Contains(f[0].Fix, "sudo tentmaker setup") {
+		t.Fatalf("user-writable: %+v", f)
+	}
+	in.Binary = "/usr/local/bin/tentmaker"
+	if f := checkBinary(in); len(f) != 1 || f[0].Status != OK {
+		t.Fatalf("root-owned: %+v", f)
+	}
+	if f := checkBinary(DoctorInput{Binary: "/x"}); f != nil {
+		t.Fatalf("no checker: %+v", f)
+	}
+}

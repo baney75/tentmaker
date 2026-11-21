@@ -3,6 +3,8 @@ package cli
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -13,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/baney75/tentmaker/internal/binsafe"
 	"github.com/baney75/tentmaker/internal/config"
 	"github.com/baney75/tentmaker/internal/daemon"
 	"github.com/baney75/tentmaker/internal/secrets"
@@ -618,25 +621,197 @@ func (a *app) setupToken(o setupOpts, interactive bool, cfg *config.Config, v *s
 
 // ---------------------------------------------------------------- service
 
-func (a *app) serviceSpec() (service.Spec, error) {
+// selfPath is this binary's path with symlinks resolved.
+func (a *app) selfPath() (string, error) {
 	exe, err := a.env.Executable()
 	if err != nil {
-		return service.Spec{}, fmt.Errorf("find this binary: %v", err)
+		return "", fmt.Errorf("find this binary: %v", err)
 	}
 	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
 		exe = resolved
+	}
+	return exe, nil
+}
+
+// serviceBinary is the binary the service runs. The service runs as root
+// (Windows: SYSTEM), so a user who could change its binary, a folder above
+// it, or the .prev copy an update rolls back to would get root on the next
+// restart or update. This binary is used in place when only root can change
+// it. Otherwise (install.sh puts it in ~/.local/bin without root) it is
+// copied into the first of ServiceBinDirs that only root can change, and
+// note says so.
+func (a *app) serviceBinary() (bin, note string, err error) {
+	exe, err := a.selfPath()
+	if err != nil {
+		return "", "", err
+	}
+	why, err := a.env.BinaryProblem(exe)
+	if err != nil {
+		return "", "", fmt.Errorf("check who can change %s: %v", exe, err)
+	}
+	if why == "" {
+		return exe, "", nil
+	}
+	var skipped []string
+	for _, dir := range a.env.ServiceBinDirs {
+		target, err := a.copyRootOwned(exe, dir)
+		if err != nil {
+			skipped = append(skipped, err.Error())
+			continue
+		}
+		return target, fmt.Sprintf("the service runs %s, a copy only root can change, because %s; remove %s and use %s", target, why, exe, target), nil
+	}
+	return "", "", fmt.Errorf("the service won't run %s as root because %s, and there is no root-owned folder to copy it into (%s); install it with root: curl -fsSL https://raw.githubusercontent.com/baney75/tentmaker/main/scripts/install.sh | sudo sh",
+		exe, why, strings.Join(skipped, "; "))
+}
+
+// copyRootOwned copies exe into dir, which it creates, unless someone other
+// than root could change dir or a folder above it. It returns the copy's
+// path once it has checked that only root can change it.
+func (a *app) copyRootOwned(exe, dir string) (string, error) {
+	existing := dir
+	for {
+		if _, err := os.Stat(existing); err == nil {
+			break
+		}
+		parent := filepath.Dir(existing)
+		if parent == existing {
+			return "", fmt.Errorf("%s has no existing parent", dir)
+		}
+		existing = parent
+	}
+	if why, err := a.env.BinaryProblem(existing); err != nil || why != "" {
+		return "", fmt.Errorf("%s: %s", dir, firstNonEmpty(why, fmt.Sprint(err)))
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", fmt.Errorf("make %s: %v", dir, err)
+	}
+	if why, err := a.env.BinaryProblem(dir); err != nil || why != "" {
+		return "", fmt.Errorf("%s: %s", dir, firstNonEmpty(why, fmt.Sprint(err)))
+	}
+	target := filepath.Join(dir, binsafe.BinaryName(a.env.GOOS))
+	if !sameContent(exe, target) {
+		if err := installCopy(exe, target, a.env.GOOS); err != nil {
+			return "", fmt.Errorf("copy to %s: %v", target, err)
+		}
+	}
+	if why, err := a.env.BinaryProblem(target); err != nil || why != "" {
+		return "", fmt.Errorf("%s: %s", target, firstNonEmpty(why, fmt.Sprint(err)))
+	}
+	return target, nil
+}
+
+// sameContent reports whether files a and b both exist with equal bytes.
+func sameContent(a, b string) bool {
+	ha, err := fileSHA256(a)
+	if err != nil {
+		return false
+	}
+	hb, err := fileSHA256(b)
+	return err == nil && ha == hb
+}
+
+func fileSHA256(p string) (string, error) {
+	f, err := os.Open(p)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// installCopy copies src to dst through a temp file in dst's folder and
+// renames it into place, mode 0755. On Windows a running dst is renamed
+// aside first (a running exe can be renamed but not replaced).
+func installCopy(src, dst, goos string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	tmp, err := os.CreateTemp(filepath.Dir(dst), ".tentmaker-setup-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := io.Copy(tmp, in); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(0o755); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if goos == "windows" {
+		if _, err := os.Stat(dst); err == nil {
+			old := dst + ".old"
+			os.Remove(old)
+			if err := os.Rename(dst, old); err != nil {
+				return err
+			}
+		}
+	}
+	return os.Rename(tmp.Name(), dst)
+}
+
+// rootBinary is the binary update and rollback work on as root: this one
+// when only root can change it, else the root-owned copy setup made. They
+// never write a binary or a .prev someone else could change.
+func (a *app) rootBinary() (string, error) {
+	exe, err := a.selfPath()
+	if err != nil {
+		return "", fail("", "%v", err)
+	}
+	why, err := a.env.BinaryProblem(exe)
+	if err != nil {
+		return "", fail("", "check who can change %s: %v", exe, err)
+	}
+	if why == "" {
+		return exe, nil
+	}
+	for _, dir := range a.env.ServiceBinDirs {
+		target := filepath.Join(dir, binsafe.BinaryName(a.env.GOOS))
+		if _, err := os.Stat(target); err != nil {
+			continue
+		}
+		if w, err := a.env.BinaryProblem(target); err == nil && w == "" {
+			return target, nil
+		}
+	}
+	return "", fail("run sudo tentmaker setup, which copies the binary to a folder only root can change",
+		"%s: Tentmaker won't update or roll back, as root, a binary someone else can change", why)
+}
+
+func (a *app) serviceSpec() (service.Spec, string, error) {
+	exe, note, err := a.serviceBinary()
+	if err != nil {
+		return service.Spec{}, "", err
 	}
 	spec := service.Spec{Binary: exe, Args: []string{"daemon"}, LogPath: a.env.Paths.Log}
 	if def := daemon.DefaultPaths(a.env.GOOS, a.env.Getenv).Config; a.env.ConfigPath != def && a.env.GOOS != "windows" {
 		spec.Env = map[string]string{"TENTMAKER_CONFIG": a.env.ConfigPath}
 	}
-	return spec, nil
+	return spec, note, nil
 }
 
 func (a *app) setupService(v *setupView) error {
-	spec, err := a.serviceSpec()
+	spec, note, err := a.serviceSpec()
 	if err != nil {
 		return err
+	}
+	if note != "" {
+		a.step(v, "binary", daemon.Warn, "%s", note)
 	}
 	if err := a.env.Service.Install(a.ctx, spec); err != nil {
 		return fmt.Errorf("install the service: %v", err)
