@@ -279,7 +279,14 @@ physical LAN only, never what the tailnet routes.
     loopback flag and take multicast and broadcast to any host (224.0.0.0/4 and 255.255.255.255
     as `FWP_V4_ADDR_MASK`, ff00::/8 as `FWP_V6_ADDR_MASK`), which the firewall rules don't, and
     which a live run reached. A live run proved the loopback blocks (127.0.0.1, ::1, wildcard
-    listeners, the mesh port, the host's own addresses). The filters have fixed keys; `SetWFP`
+    listeners, the mesh port, the host's own addresses). The block also stops a job from reaching
+    a server it starts itself on 127.0.0.1 or ::1, and WFP's static filters can't do better: at
+    connect only the connecting user is known, and at `FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V4`/`_V6`
+    `FWPM_CONDITION_ALE_REMOTE_USER_ID` never matches loopback traffic (Microsoft's ALE docs: the
+    remote user comes from IPsec credentials). A live probe showed it, even with an Everyone
+    descriptor, while the loopback flag and the listener's `ALE_USER_ID` did match
+    (`wfp_live_windows_test.go`, review r2 partS second-S2-F6). Letting a job reach its own
+    listeners needs a callout driver or an AppContainer, not filters. The filters have fixed keys; `SetWFP`
     deletes every Tentmaker key and adds the wanted filters in one transaction, and
     reads them back by key. Each filter's description spells out all of its conditions.
   - `checkNet` reads the profiles, the group's rules and the DNS servers (`Get-DnsClientServerAddress`,

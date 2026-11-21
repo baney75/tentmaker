@@ -7,6 +7,11 @@ package windows
 // 127.0.0.1. Each case adds one hard block in Tentmaker's sublayer, keyed to
 // the listener's port, then dials. It needs an elevated shell and changes
 // the host's filters, so it runs only with -tags live on a throwaway runner.
+//
+// It records why the loopback fence sits at the connect layer (DESIGN.md,
+// Windows): at accept, ALE_REMOTE_USER_ID never matches loopback traffic,
+// so no filter can let the runner reach its own listeners and nothing else
+// (review r2 partS second-S2-F6, windows-latest, 2026-11-21).
 
 import (
 	"fmt"
@@ -19,8 +24,14 @@ import (
 	win "golang.org/x/sys/windows"
 )
 
+// The accept layer and its fields, from fwpmu.h; only this probe uses them.
+var (
+	fwpmLayerALEAuthRecvAcceptV4 = win.GUID{Data1: 0xe1cd9fe7, Data2: 0xf4b5, Data3: 0x4273, Data4: [8]byte{0x96, 0xc0, 0x59, 0x2e, 0x48, 0x7b, 0x86, 0x50}}
+	fwpmConditionALERemoteUserID = win.GUID{Data1: 0xf63073b7, Data2: 0x0189, Data3: 0x4ab0, Data4: [8]byte{0x95, 0xa4, 0x61, 0x23, 0xcb, 0xfa, 0xb8, 0x62}}
+	fwpmConditionLocalPort       = win.GUID{Data1: 0x0c1ba1af, Data2: 0x5765, Data3: 0x453f, Data4: [8]byte{0xaf, 0x22, 0xa8, 0xf7, 0x91, 0xac, 0x77, 0x5b}}
+)
+
 type probeCond struct {
-	name  string
 	field win.GUID
 	sid   string // a security descriptor condition for this SID
 	flags uint32 // a flags-all-set condition
@@ -111,7 +122,7 @@ func TestWFPLoopbackConditionsLive(t *testing.T) {
 	}
 	me := tu.User.Sid.String()
 	t.Logf("this process runs as %s", me)
-	loop := probeCond{name: "loopback flag", field: fwpmConditionFlags, flags: fwpConditionFlagIsLoopback}
+	loop := probeCond{field: fwpmConditionFlags, flags: fwpConditionFlagIsLoopback}
 	cases := []struct {
 		name  string
 		layer win.GUID
@@ -124,9 +135,11 @@ func TestWFPLoopbackConditionsLive(t *testing.T) {
 			loop, {field: fwpmConditionLocalPort, port: true}}},
 		{"accept: listener user, local port", fwpmLayerALEAuthRecvAcceptV4, true, []probeCond{
 			{field: fwpmConditionALEUserID, sid: me}, {field: fwpmConditionLocalPort, port: true}}},
-		{"accept: remote user, local port", fwpmLayerALEAuthRecvAcceptV4, true, []probeCond{
+		// Microsoft's ALE docs: the remote user comes from IPsec
+		// credentials. Loopback has none, so these never match.
+		{"accept: remote user, local port", fwpmLayerALEAuthRecvAcceptV4, false, []probeCond{
 			{field: fwpmConditionALERemoteUserID, sid: me}, {field: fwpmConditionLocalPort, port: true}}},
-		{"accept: remote user Everyone, local port", fwpmLayerALEAuthRecvAcceptV4, true, []probeCond{
+		{"accept: remote user Everyone, local port", fwpmLayerALEAuthRecvAcceptV4, false, []probeCond{
 			{field: fwpmConditionALERemoteUserID, sid: "S-1-1-0"}, {field: fwpmConditionLocalPort, port: true}}},
 	}
 	s, err := wfpOpen()
