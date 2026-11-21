@@ -53,7 +53,9 @@ internal/guards/          host probes: free memory, free disk, load, process lis
 internal/secrets/         OS secret store for forge tokens
 internal/forge/github/    GitHub Actions: queued jobs, JIT runners, fork policy, migrate
 internal/forge/forgejo/   Forgejo / Gitea Actions
+internal/forge/gitlab/    GitLab (checks mode only)
 internal/forge/fake/      in-memory core.Forge for tests
+internal/checks/          checks mode: plan workflow jobs, run them, post statuses
 internal/executor/linux/  ephemeral actions/runner, own user, systemd unit, rootless podman
 internal/executor/darwin/ Tart VM per job (macOS and Linux guests), Softnet isolation
 internal/executor/windows/ dedicated local user, Job Object limits, fresh dir per job
@@ -231,6 +233,48 @@ evicts on `Evict`, resets the executor when nothing runs and the node is dirty, 
 `state.json` atomically, and on start reconciles: anything `List` shows that state doesn't know
 is stopped and cleaned. Boot failures back off exponentially and close the worker after 5 in a
 row until restart.
+
+## Checks mode (internal/checks, internal/forge/gitlab)
+
+Runner mode needs the forge's own runner (GitHub actions/runner, Forgejo act_runner). Checks mode
+needs only a commit status API, so it works with GitHub (including repos whose hosted Actions
+never start), Forgejo, Gitea and GitLab. It is the generalized `local-ci.nu` from Local Studio.
+
+```go
+// checks
+func Plan(workflowPath string, src []byte, forge string) (jobs []core.CheckJob, skipped []Skip, err error)
+type Skip struct{ Job, Reason string }
+func RunBundle(ctx context.Context, b core.CheckBundle, outDir string, log io.Writer) core.CheckResult // what `tentmaker check-run` calls
+func Context(job core.CheckJob) string                 // "tentmaker/<job name>"
+// gitlab
+func New(o Options) *Client                            // implements core.StatusForge only
+```
+
+- **Plan** reads GitHub/Forgejo workflow YAML (and `.gitlab-ci.yml` for GitLab: script jobs with
+  `image:` ignored or mapped to linux) into `CheckJob`s. Supported: `run` steps, `shell` bash/sh/pwsh,
+  `env` at workflow/job/step level with literal values, `working-directory`, `continue-on-error`,
+  `timeout-minutes`, `runs-on` mapped to a platform (ubuntu-* -> linux, macos-* -> macos, windows-*
+  -> windows, self-hosted label lists by their os label), `actions/checkout` (the archive is the
+  checkout), cache actions (skipped), and setup actions mapped to `Tool` (setup-go, setup-node,
+  setup-python, setup-java, mlugg/setup-zig, hustcer/setup-nu, dtolnay/rust-toolchain). Anything
+  else (other `uses:`, `${{ }}` expressions outside env literals that can be resolved from `github.sha`,
+  `github.ref_name`, `runner.os`, `matrix` with a single combination, `services`, `container`,
+  job-level `if`) makes Plan skip the job with a plain reason. A skipped job gets no status.
+- **RunBundle** downloads the archive (sha256 not needed: the URL is the forge's own, over TLS)
+  into a fresh dir, strips the top-level folder, runs each step with `bash --noprofile --norc -eo
+  pipefail` (or the step's shell) in its working directory with env `CI=true`, `GITHUB_SHA`,
+  `GITHUB_WORKSPACE`, `RUNNER_TEMP`, `RUNNER_OS`, `TENTMAKER=1`, finds tools for `Tool` steps on PATH
+  or under `<state>/tools/<tool>-<version>/` (it does not download toolchains in v1; a missing tool
+  fails the job with the fix), stops at the first failing step unless continue-on-error, enforces
+  the job timeout, writes `result.json` and `log.txt`.
+- **Broker in checks mode** polls `PendingCommits` per checks-mode repo (same-repo PR heads whose
+  author is in `authors`, default the owner, plus default-branch heads; never forks), plans the
+  workflows at that sha via `FileAt`/`ListDir`, and offers one check job per planned job that has
+  no `tentmaker/<job>` status yet. It posts `pending` ("running on <device>") when granting and
+  the final state from `WorkRequest.Results`. A worker that goes silent for 2 minutes gets its
+  pending statuses set to `error` ("device went offline") so they can be retried by a re-run.
+  The bundle carries an archive URL that may contain a short-lived token; it is a secret like a
+  JIT config.
 
 ## Mesh (internal/mesh)
 

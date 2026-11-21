@@ -118,8 +118,24 @@ const (
 	ExecUnknown ExecState = "unknown" // treat as running: never cut a live job
 )
 
+// Exec kinds. A runner job runs the forge's own runner (GitHub actions/runner)
+// with a single-use registration. A check job runs one workflow job's steps
+// directly with `tentmaker check-run` and the broker posts a commit status;
+// it works with any forge that has a commit status API.
+const (
+	KindRunner = "runner"
+	KindCheck  = "check"
+)
+
 // ExecSpec is everything an executor needs to start one runner.
+//
+// For KindRunner, Grant.Secret is the forge's runner registration (a GitHub
+// JIT config). For KindCheck, Grant.Secret is a JSON-encoded CheckBundle and
+// the executor runs `<tentmaker binary for the guest platform> check-run
+// --out <dir>` inside the sandbox with the secret on stdin; check-run writes
+// <dir>/result.json (a CheckResult) and <dir>/log.txt.
 type ExecSpec struct {
+	Kind        string        // KindRunner (default when empty) or KindCheck
 	Name        string        // runner name, matches NamePattern
 	Grant       Grant         // the single-use registration
 	Platform    Platform      // what the job runs on
@@ -162,6 +178,81 @@ type Executor interface {
 	// SetPoolLimit applies the whole-pool budget where the sandbox supports it
 	// (a cgroup slice on Linux). It must never shrink below what running jobs use.
 	SetPoolLimit(ctx context.Context, limit Resources, inUse Resources) error
+	// CheckResult reads a finished KindCheck job's result.json and the tail
+	// (last 64 KiB) of its log. Call it after the job exits, before Clean.
+	CheckResult(ctx context.Context, name string) (CheckResult, error)
+}
+
+// CheckStep is one step of a planned check job.
+type CheckStep struct {
+	Name             string            `json:"name"`
+	Run              string            `json:"run"`
+	Shell            string            `json:"shell"` // "bash" (default), "sh", "pwsh"
+	WorkingDirectory string            `json:"working_directory"`
+	Env              map[string]string `json:"env"`
+	ContinueOnError  bool              `json:"continue_on_error"`
+	// Tool is set for a setup action Tentmaker maps to a local tool, such
+	// as {"go": "1.25"} from actions/setup-go.
+	Tool map[string]string `json:"tool,omitempty"`
+}
+
+// CheckJob is one workflow job planned for checks mode.
+type CheckJob struct {
+	Workflow string            `json:"workflow"` // path in the repo, ".github/workflows/ci.yml"
+	ID       string            `json:"id"`       // job key in the workflow
+	Name     string            `json:"name"`     // display name, used in the status context
+	Platform Platform          `json:"platform"`
+	Env      map[string]string `json:"env"`
+	Steps    []CheckStep       `json:"steps"`
+	Timeout  time.Duration     `json:"timeout"`
+}
+
+// CheckBundle is what check-run receives on stdin. ArchiveURL may carry a
+// short-lived token, so the whole bundle is a secret.
+type CheckBundle struct {
+	Repo       string   `json:"repo"`
+	SHA        string   `json:"sha"`
+	ArchiveURL string   `json:"archive_url"`      // tar.gz of the repo at SHA
+	Header     string   `json:"header,omitempty"` // optional "Authorization: ..." for the download
+	Job        CheckJob `json:"job"`
+}
+
+// CheckResult is the outcome of one check job.
+type CheckResult struct {
+	Runner      string        `json:"runner"`
+	Repo        string        `json:"repo"`
+	SHA         string        `json:"sha"`
+	Context     string        `json:"context"` // "tentmaker/<job name>"
+	State       string        `json:"state"`   // "success", "failure", "error"
+	Description string        `json:"description"`
+	Duration    time.Duration `json:"duration"`
+	LogTail     string        `json:"log_tail"`
+}
+
+// Commit is a commit a checks-mode broker may test.
+type Commit struct {
+	Repo     string `json:"repo"`
+	SHA      string `json:"sha"`
+	Ref      string `json:"ref"` // branch name
+	PR       int    `json:"pr"`  // 0 for a branch push
+	Author   string `json:"author"`
+	FromFork bool   `json:"from_fork"`
+}
+
+// StatusForge is a forge usable in checks mode: it lists commits to test,
+// serves workflow files and source archives, and takes commit statuses.
+// GitHub, Forgejo/Gitea and GitLab implement it.
+type StatusForge interface {
+	Name() string
+	// PendingCommits lists open same-repo PR heads and default-branch heads.
+	PendingCommits(ctx context.Context, repo string) ([]Commit, error)
+	FileAt(ctx context.Context, repo, sha, path string) ([]byte, error)
+	ListDir(ctx context.Context, repo, sha, path string) ([]string, error)
+	// Archive returns a URL (and optional auth header) for a tar.gz of the repo at sha.
+	Archive(ctx context.Context, repo, sha string) (url, header string, err error)
+	// Statuses returns context -> state for sha.
+	Statuses(ctx context.Context, repo, sha string) (map[string]string, error)
+	PostStatus(ctx context.Context, repo, sha, context, state, description, targetURL string) error
 }
 
 // PowerState is the machine's power source.
@@ -217,6 +308,9 @@ type WorkRequest struct {
 	Limits    Resources  `json:"limits"`    // per-job limit it will enforce
 	Running   []string   `json:"running"`   // runner names from this broker still running
 	Ended     []string   `json:"ended"`     // runner names that exited since the last request
+	// Results carries finished check jobs back to the broker that granted
+	// them, which posts the commit statuses.
+	Results []CheckResult `json:"results"`
 }
 
 // WorkOffer is one job for the worker, with the grant to run it.

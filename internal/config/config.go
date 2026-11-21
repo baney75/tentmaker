@@ -141,11 +141,20 @@ type Repo struct {
 	// Public repos run only with AllowPublic, after the forge requires
 	// approval for outside contributors.
 	AllowPublic bool `toml:"allow_public" json:"allow_public"`
+	// Mode is "runner" (the forge's own runner; GitHub and Forgejo) or
+	// "checks" (Tentmaker runs workflow jobs itself and posts commit
+	// statuses; any forge, and GitHub repos whose hosted Actions don't run).
+	Mode string `toml:"mode" json:"mode"`
+	// Workflows to run in checks mode (empty = every workflow under
+	// .github/workflows or .forgejo/workflows triggered by push or pull_request).
+	Workflows []string `toml:"workflows" json:"workflows"`
+	// Authors whose PR heads checks mode runs (empty = the repo owner only).
+	Authors []string `toml:"authors" json:"authors"`
 }
 
 // Forge is how to reach one forge.
 type Forge struct {
-	Kind string `toml:"kind" json:"kind"` // "github", "forgejo"
+	Kind string `toml:"kind" json:"kind"` // "github", "forgejo", "gitlab"
 	URL  string `toml:"url" json:"url"`   // API base; empty = https://api.github.com
 	// Token comes from the secret store, never this file.
 }
@@ -263,8 +272,16 @@ func (c Config) Validate() []string {
 		}
 	}
 	for _, r := range c.Repos {
-		if !strings.Contains(r.Name, "/") || strings.Count(r.Name, "/") != 1 {
-			p = append(p, fmt.Sprintf("repo %q must be owner/name", r.Name))
+		if r.Name == "" || strings.HasPrefix(r.Name, "/") || strings.HasSuffix(r.Name, "/") || !strings.Contains(r.Name, "/") {
+			p = append(p, fmt.Sprintf("repo %q must be owner/name (GitLab groups: group/sub/name)", r.Name))
+		}
+		switch r.Mode {
+		case "", "runner", "checks":
+		default:
+			p = append(p, fmt.Sprintf(`repo %q: mode must be "runner" or "checks"`, r.Name))
+		}
+		if r.Forge == "gitlab" && r.Mode != "checks" {
+			p = append(p, fmt.Sprintf(`repo %q: GitLab repos run in mode = "checks"`, r.Name))
 		}
 	}
 	switch c.Update.Channel {
