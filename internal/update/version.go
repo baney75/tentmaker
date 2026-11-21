@@ -19,6 +19,9 @@ func ParseVersion(s string) (Version, error) {
 	orig := s
 	s = strings.TrimPrefix(strings.TrimSpace(s), "v")
 	if i := strings.IndexByte(s, '+'); i >= 0 {
+		if !idents(s[i+1:]) {
+			return Version{}, fmt.Errorf("version %q has bad build metadata", orig)
+		}
 		s = s[:i]
 	}
 	var pre string
@@ -45,12 +48,10 @@ func ParseVersion(s string) (Version, error) {
 	}
 	v := Version{Major: nums[0], Minor: nums[1], Patch: nums[2]}
 	if pre != "" {
-		v.Pre = strings.Split(pre, ".")
-		for _, id := range v.Pre {
-			if id == "" {
-				return Version{}, fmt.Errorf("version %q has an empty prerelease part", orig)
-			}
+		if !idents(pre) {
+			return Version{}, fmt.Errorf("version %q has an empty prerelease part or one with a character outside 0-9, A-Z, a-z and -", orig)
 		}
+		v.Pre = strings.Split(pre, ".")
 	}
 	return v, nil
 }
@@ -129,6 +130,24 @@ func cmpInt(a, b int64) int {
 		return 1
 	}
 	return 0
+}
+
+// idents reports whether s is dot-separated semver identifiers: each
+// non-empty and only [0-9A-Za-z-]. Anything else (a space, a byte that
+// isn't ASCII) would not survive String and ParseVersion again.
+func idents(s string) bool {
+	for _, id := range strings.Split(s, ".") {
+		if id == "" {
+			return false
+		}
+		for i := 0; i < len(id); i++ {
+			c := id[i]
+			if !(c >= '0' && c <= '9' || c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c == '-') {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func allDigits(s string) bool {

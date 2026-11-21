@@ -64,7 +64,8 @@ func TestParseAndCompare(t *testing.T) {
 			}
 		}
 	}
-	for _, bad := range []string{"", "1", "1.2", "1.2.x", "1.2.3-", "1.2.3-a..b", "a.b.c"} {
+	for _, bad := range []string{"", "1", "1.2", "1.2.x", "1.2.3-", "1.2.3-a..b", "a.b.c",
+		"0.0.0-0\x83\x9e +0", "1.2.3-a b", "1.2.3-a_b", "1.2.3+", "1.2.3+a..b", "1.2.3+a b"} {
 		if _, err := ParseVersion(bad); err == nil {
 			t.Errorf("ParseVersion(%q) accepted", bad)
 		}
