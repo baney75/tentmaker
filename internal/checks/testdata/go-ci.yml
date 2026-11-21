@@ -1,0 +1,55 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+env:
+  GOFLAGS: -trimpath
+  LEVEL: workflow
+jobs:
+  test:
+    name: Go
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      LEVEL: job
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test ./...
+        env:
+          LEVEL: step
+      - name: Cross-build
+        run: |
+          for os in linux darwin windows; do for arch in amd64 arm64; do GOOS=$os GOARCH=$arch go build ./... || exit 1; done; done
+      - name: Stamp
+        run: echo "built ${{ github.sha }} on ${{ runner.os }}"
+
+  integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+    steps:
+      - uses: actions/checkout@v4
+      - run: go test -tags integration ./...
+
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: echo "${{ secrets.TOKEN }}" | docker login --password-stdin
+
+  lint:
+    runs-on: [self-hosted, tentmaker, linux]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: golangci/golangci-lint-action@v6
