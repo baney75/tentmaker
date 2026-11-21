@@ -330,25 +330,27 @@ placeholders() {
 	printf 'Throwaway branch for team.yml run %s. Deleted at the end of the run.\n' "$RUN_KEY" >"$d/README.md"
 	gcommit "$d" "team $RUN_KEY placeholder"
 	for r in $BRANCHES; do refs+=("HEAD:refs/heads/$(br "$r")"); done
-	gpush "$d" "${refs[@]}"
+	gpush "$d" "${refs[@]}" >&2 || die "placeholder push failed"
 	log "placeholder $(git -C "$d" rev-parse HEAD) pushed to ${#refs[@]} branches"
 }
 
-# push_branch NAME LINUX_SLEEP WINDOWS_SLEEP: a commit with only the team
-# workflow on the throwaway branch NAME; prints its sha.
+# push_branch NAME LINUX_SLEEP WINDOWS_SLEEP: a child of TEAM_SHA that changes
+# only .github/team/check/*, pushed to the throwaway branch NAME; prints its
+# sha. The GITHUB_TOKEN may not push a commit that creates or edits a
+# workflow file, so the workflow comes unchanged from TEAM_SHA, which is
+# already on GitHub. The brokers plan only $TEMPLATE (repo add --workflow).
 push_branch() {
-	local d
-	d=$(mktemp -d)
-	git -C "$d" init -q
-	mkdir -p "$d/.github/workflows"
-	sed -e "s/^  TM_MARK: .*/  TM_MARK: \"$RUN_KEY-$1-$(date +%s%N)\"/" \
-		-e "s/^  TM_LINUX_SLEEP: .*/  TM_LINUX_SLEEP: \"$2\"/" \
-		-e "s/^  TM_WINDOWS_SLEEP: .*/  TM_WINDOWS_SLEEP: \"$3\"/" \
-		"$TEMPLATE" >"$d/$TEMPLATE"
-	grep -q "TM_LINUX_SLEEP: \"$2\"" "$d/$TEMPLATE" && grep -q "TM_WINDOWS_SLEEP: \"$3\"" "$d/$TEMPLATE" || die "could not set the sleeps in $TEMPLATE"
-	printf 'Throwaway branch for team.yml run %s. Deleted at the end of the run.\n' "$RUN_KEY" >"$d/README.md"
-	gcommit "$d" "team $RUN_KEY $1 linux=${2}s windows=${3}s"
-	gpush "$d" "HEAD:refs/heads/$(br "$1")"
+	local d c
+	d=$(mktemp -d)/wt
+	git -C "${GITHUB_WORKSPACE:-$PWD}" worktree add -q --detach "$d" "$TEAM_SHA" >&2 || die "could not check out $TEAM_SHA for $1"
+	c=$d/.github/team/check
+	[ -f "$d/$TEMPLATE" ] || die "$TEMPLATE is missing at $TEAM_SHA"
+	echo "$2" >"$c/linux.sleep"
+	echo "$3" >"$c/windows.sleep"
+	echo "$RUN_KEY-$1-$(date +%s%N)" >"$c/mark"
+	gcommit "$d" "team $RUN_KEY $1 linux=${2}s windows=${3}s" >&2
+	[ -z "$(git -C "$d" diff --name-only HEAD~1 HEAD -- .github/workflows)" ] || die "the $1 commit touches .github/workflows"
+	gpush "$d" "HEAD:refs/heads/$(br "$1")" >&2 || die "push of $(br "$1") failed"
 	git -C "$d" rev-parse HEAD
 	log "pushed $(br "$1") linux=${2}s windows=${3}s"
 }
