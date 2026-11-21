@@ -16,6 +16,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/baney75/tentmaker/internal/httpsafe"
 )
 
 const (
@@ -97,7 +99,7 @@ func download(ctx context.Context, client *http.Client, rawURL, header, dst stri
 			return errors.New("too many redirects")
 		}
 		// Keep the auth header on the archive's own host only.
-		if hName != "" && r.URL.Host != u.Host {
+		if hName != "" && !httpsafe.SameOrigin(r.URL, u) {
 			r.Header.Del(hName)
 		}
 		return nil

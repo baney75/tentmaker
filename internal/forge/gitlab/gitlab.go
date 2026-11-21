@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/baney75/tentmaker/internal/core"
+	"github.com/baney75/tentmaker/internal/httpsafe"
 )
 
 const (
@@ -410,7 +411,7 @@ func (c *Client) once(ctx context.Context, method, u, path string, form url.Valu
 			req.Header.Set("PRIVATE-TOKEN", tok)
 		}
 	}
-	res, err := c.http.Do(req)
+	res, err := httpsafe.Guard(c.http).Do(req)
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil, false, ctx.Err()

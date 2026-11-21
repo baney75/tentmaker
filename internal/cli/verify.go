@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/baney75/tentmaker/internal/forge/github"
+	"github.com/baney75/tentmaker/internal/httpsafe"
 )
 
 // verifyTimeout bounds the one API call that checks a new token.
@@ -107,7 +108,7 @@ func forgeGet(ctx context.Context, hc *http.Client, kind, u, token string) (int,
 		req.Header.Set("Accept", "application/vnd.github+json")
 	}
 	req.Header.Set("User-Agent", "tentmaker")
-	resp, err := hc.Do(req)
+	resp, err := httpsafe.Guard(hc).Do(req)
 	if err != nil {
 		var ue interface{ Unwrap() error }
 		if errors.As(err, &ue) && ue.Unwrap() != nil {

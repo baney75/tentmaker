@@ -64,6 +64,7 @@ internal/dispatch/        Broker (forge side) and Worker (device side)
 internal/mesh/            tailnet peer API: discovery, WhoIs auth, remote WorkSource, claims
 internal/service/         install the daemon as a systemd / launchd / Windows service
 internal/update/          stable/dev channels, verified self-update with rollback
+internal/httpsafe/        redirect policy that keeps credential headers on their origin
 internal/mcp/             stdio MCP server for agents
 internal/cli/             commands
 scripts/install.sh        Linux and macOS installer
@@ -420,6 +421,13 @@ section is rewritten.
 - `migrate`'s added concurrency group starts with `${{ github.workflow }}`.
 - Grants expire after 1 h (`github.GrantTTL`).
 - v0.1 runs Forgejo, Gitea and GitLab repos in checks mode only.
+- Every request that carries a credential header (`Authorization`, `PRIVATE-TOKEN`, `JOB-TOKEN`,
+  `Proxy-Authorization`, `Cookie`) goes through `httpsafe.Guard`: a redirect to another origin
+  (scheme, host and port) is refused. Go copies `PRIVATE-TOKEN` to every redirect target and
+  `Authorization` to any port of the same host, so a forge or proxy that redirected elsewhere got
+  the token (review r1 sol-F2). Covers the GitHub, Forgejo and GitLab clients, `connect`'s token
+  check and the control client. Archive downloads still follow the redirect (GitHub's goes to
+  codeload) but drop the header unless the target has the archive URL's origin.
 
 **executors**
 

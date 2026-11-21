@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/baney75/tentmaker/internal/core"
+	"github.com/baney75/tentmaker/internal/httpsafe"
 )
 
 // DefaultAddr is where the daemon listens.
@@ -301,7 +302,7 @@ func (c *Client) http() *http.Client {
 	if c.HTTP != nil {
 		return c.HTTP
 	}
-	return &http.Client{Timeout: ClientTimeout}
+	return httpsafe.Guard(&http.Client{Timeout: ClientTimeout})
 }
 
 func (c *Client) url(path string) string {

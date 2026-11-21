@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/baney75/tentmaker/internal/core"
+	"github.com/baney75/tentmaker/internal/httpsafe"
 )
 
 // The archive relay. A check's source archive is fetched by the broker that
@@ -170,7 +171,7 @@ func downloadArchive(ctx context.Context, client *http.Client, rawURL, header st
 		if len(via) >= 10 {
 			return errors.New("too many redirects")
 		}
-		if hName != "" && r.URL.Host != u.Host {
+		if hName != "" && !httpsafe.SameOrigin(r.URL, u) {
 			r.Header.Del(hName)
 		}
 		return nil

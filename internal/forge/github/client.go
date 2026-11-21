@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/baney75/tentmaker/internal/core"
+	"github.com/baney75/tentmaker/internal/httpsafe"
 )
 
 const (
@@ -376,9 +377,9 @@ func (c *Client) once(ctx context.Context, r request, payload []byte) (response,
 			req.Header.Set("If-None-Match", cached.etag)
 		}
 	}
-	hc := c.http
+	hc := httpsafe.Guard(c.http)
 	if r.noRedirect {
-		cp := *c.http
+		cp := *hc
 		cp.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 		hc = &cp
 	}

@@ -52,6 +52,7 @@ import (
 	"time"
 
 	"github.com/baney75/tentmaker/internal/core"
+	"github.com/baney75/tentmaker/internal/httpsafe"
 )
 
 const (
@@ -288,7 +289,7 @@ func (c *Client) once(ctx context.Context, method, path string, payload []byte, 
 	if payload != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	hc := c.http
+	hc := httpsafe.Guard(c.http)
 	if hc.Timeout == 0 {
 		cp := *hc
 		cp.Timeout = HTTPTimeout
