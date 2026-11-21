@@ -188,10 +188,13 @@ jobs:
             if [ "$SECONDS" -ge "$deadline" ]; then echo "::error::$ctx did not succeed within 6 minutes"; exit 1; fi
             sleep 10
           done
-          # The job ran under Tentmaker, not GitHub's runner.
-          sudo journalctl -u tentmaker --no-pager -o cat | grep -q 'TENTMAKER=1 GITHUB_ACTIONS=unset' ||
-            sudo grep -rqs 'TENTMAKER=1 GITHUB_ACTIONS=unset' /var/lib/tentmaker ||
-            { echo "::error::no Tentmaker log shows TENTMAKER=1 GITHUB_ACTIONS=unset"; exit 1; }
+          # The job ran under Tentmaker, not GitHub's runner: the broker keeps
+          # the check's log, and it shows the env Tentmaker set.
+          log="/var/lib/tentmaker/checks/${REPO/\//_}-${TM_SHA:0:12}-smoke.log"
+          sudo cat "$log" || { echo "::error::no check log at $log"; exit 1; }
+          sudo grep -q '^state: success' "$log" || { echo "::error::$log does not record success"; exit 1; }
+          sudo grep -q 'TENTMAKER=1 GITHUB_ACTIONS=unset' "$log" ||
+            { echo "::error::$log does not show TENTMAKER=1 GITHUB_ACTIONS=unset"; exit 1; }
 
       - name: dump on failure
         if: failure()
@@ -383,11 +386,13 @@ jobs:
             if ([DateTime]::UtcNow -gt $deadline) { Write-Output "::error::$ctx did not succeed within 6 minutes"; exit 1 }
             Start-Sleep -Seconds 10
           }
-          $hit = Select-String -Path "$env:ProgramData\Tentmaker\logs\*.log", "$env:ProgramData\Tentmaker\state\*" -Pattern 'TENTMAKER=1 GITHUB_ACTIONS=unset' -SimpleMatch -ErrorAction SilentlyContinue
-          if (-not $hit) {
-            $hit = Get-ChildItem -Recurse -File "$env:ProgramData\Tentmaker" -ErrorAction SilentlyContinue | Select-String -Pattern 'TENTMAKER=1 GITHUB_ACTIONS=unset' -SimpleMatch -ErrorAction SilentlyContinue
-          }
-          if (-not $hit) { Write-Output "::error::no Tentmaker log shows TENTMAKER=1 GITHUB_ACTIONS=unset"; exit 1 }
+          # The job ran under Tentmaker, not GitHub's runner: the broker keeps
+          # the check's log, and it shows the env Tentmaker set.
+          $log = "$env:ProgramData\Tentmaker\state\checks\$($env:REPO -replace '/', '_')-$($env:TM_SHA.Substring(0, 12))-smoke-windows.log"
+          if (-not (Test-Path $log)) { Write-Output "::error::no check log at $log"; exit 1 }
+          Get-Content $log
+          if (-not (Select-String -Path $log -Pattern '^state: success' -Quiet)) { Write-Output "::error::$log does not record success"; exit 1 }
+          if (-not (Select-String -Path $log -Pattern 'TENTMAKER=1 GITHUB_ACTIONS=unset' -SimpleMatch -Quiet)) { Write-Output "::error::$log does not show TENTMAKER=1 GITHUB_ACTIONS=unset"; exit 1 }
 
       - name: dump on failure
         if: failure()
