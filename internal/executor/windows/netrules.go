@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/netip"
 	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -534,10 +535,7 @@ func (e *Executor) checkNet(ctx context.Context, sid string) error {
 	want := host.selfAddresses()
 	var have []string
 	for _, a := range selfNow {
-		if x, err := netip.ParseAddr(a); err == nil {
-			a = x.Unmap().String()
-		}
-		have = append(have, a)
+		have = append(have, normAddr(a))
 	}
 	if _, ok := rules[selfRule]; !ok || !selfSeen {
 		have = nil
@@ -547,6 +545,23 @@ func (e *Executor) checkNet(ctx context.Context, sid string) error {
 		return &errStaleNet{fmt.Sprintf("it names %s; this host has %s", orNone(have), orNone(w))}
 	}
 	return nil
+}
+
+// normAddr spells one address the firewall lists the way selfAddresses
+// does. Windows may list a single address with a full-length mask
+// ("192.0.2.7/255.255.255.255", "2001:db8::7/128").
+func normAddr(s string) string {
+	a, mask, _ := strings.Cut(s, "/")
+	x, err := netip.ParseAddr(a)
+	if err != nil {
+		return s
+	}
+	x = x.Unmap()
+	switch mask {
+	case "", "255.255.255.255", strconv.Itoa(x.BitLen()):
+		return x.String()
+	}
+	return s
 }
 
 func orNone(xs []string) string {

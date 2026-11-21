@@ -267,8 +267,14 @@ func tailscaleIfaces(ifInet6 string) []string {
 // loopback, from /proc/net/ipv6_route. Sorted, without repeats.
 func onLinkV6(ipv6Route string, tsIfaces []string) []netip.Prefix {
 	// RTF_CACHE entries are per-destination exceptions (path MTU), not
-	// prefixes; counting them would make the set churn.
-	const rtfUp, rtfGateway, rtfReject, rtfCache = 0x1, 0x2, 0x200, 0x01000000
+	// prefixes; counting them would make the set churn. RTF_LOCAL and
+	// RTF_ANYCAST are the host's own addresses, which the kernel lists on
+	// the interface that holds them, not on lo; HostV6 covers those.
+	const (
+		rtfUp, rtfGateway, rtfReject = 0x1, 0x2, 0x200
+		rtfAnycast, rtfCache         = 0x00100000, 0x01000000
+		rtfLocal                     = 0x80000000
+	)
 	b, err := os.ReadFile(ipv6Route)
 	if err != nil {
 		return nil
@@ -287,7 +293,7 @@ func onLinkV6(ipv6Route string, tsIfaces []string) []netip.Prefix {
 		if !ok || !ok2 || err1 != nil || err2 != nil || bits == 0 || bits > 128 {
 			continue
 		}
-		if flags&rtfUp == 0 || flags&(rtfGateway|rtfReject|rtfCache) != 0 || !next.IsUnspecified() || !global.Contains(dst) {
+		if flags&rtfUp == 0 || flags&(rtfGateway|rtfReject|rtfCache|rtfAnycast|rtfLocal) != 0 || !next.IsUnspecified() || !global.Contains(dst) {
 			continue
 		}
 		pr, err := dst.Prefix(int(bits))
@@ -295,6 +301,14 @@ func onLinkV6(ipv6Route string, tsIfaces []string) []netip.Prefix {
 			out = append(out, pr)
 		}
 	}
+	// nft merges a prefix inside another into the larger one, so the
+	// listing would never show it and checkNet would call the rules stale.
+	all := slices.Clone(out)
+	out = slices.DeleteFunc(out, func(p netip.Prefix) bool {
+		return slices.ContainsFunc(all, func(q netip.Prefix) bool {
+			return q.Bits() < p.Bits() && q.Contains(p.Addr())
+		})
+	})
 	slices.SortFunc(out, func(a, b netip.Prefix) int {
 		if c := a.Addr().Compare(b.Addr()); c != 0 {
 			return c

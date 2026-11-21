@@ -93,9 +93,9 @@ type fakeAPI struct {
 	dns      []string
 	// addrs are the host's addresses (Get-NetIPAddress); self is what
 	// Tentmaker-Block-Self names.
-	addrs []string
-	self  []string
-	scripts  []string
+	addrs   []string
+	self    []string
+	scripts []string
 }
 
 func newFakeAPI() *fakeAPI {

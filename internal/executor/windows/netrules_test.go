@@ -347,3 +347,25 @@ func TestStartUpdatesSelfRule(t *testing.T) {
 		t.Errorf("a self rule with no addresses left: %v", v.api.self)
 	}
 }
+
+func TestNormAddr(t *testing.T) {
+	for in, want := range map[string]string{
+		"192.0.2.7": "192.0.2.7", "192.0.2.7/255.255.255.255": "192.0.2.7", "192.0.2.7/32": "192.0.2.7",
+		"2001:DB8::7": "2001:db8::7", "2001:db8:0:0::7/128": "2001:db8::7", "::ffff:192.0.2.7": "192.0.2.7",
+		"10.0.0.0/255.0.0.0": "10.0.0.0/255.0.0.0", "LocalSubnet": "LocalSubnet",
+	} {
+		if got := normAddr(in); got != want {
+			t.Errorf("normAddr(%q) = %q, want %q", in, got, want)
+		}
+	}
+	// Listed with masks, the self rule still matches the host.
+	ctx := context.Background()
+	v := newEnv(t)
+	v.install()
+	for i, a := range v.api.self {
+		v.api.self[i] = strings.ToUpper(a) + "/128"
+	}
+	if err := v.e.checkNet(ctx, testSID); err != nil {
+		t.Errorf("self rule listed with masks: %v", err)
+	}
+}
