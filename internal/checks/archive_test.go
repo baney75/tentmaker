@@ -164,3 +164,20 @@ func TestDownloadHonorsHeaderAndHidesSecrets(t *testing.T) {
 		t.Fatal("file URL accepted")
 	}
 }
+
+// Fuzz finding: each link target looked local on its own, but esc goes
+// through up (which points at the target dir) and then "..", so it
+// resolved to the target's parent.
+func TestExtractRefusesDotDotAfterALink(t *testing.T) {
+	a := writeArchive(t, []entry{
+		{name: "top/", typ: tar.TypeDir},
+		{name: "top/a/", typ: tar.TypeDir},
+		{name: "top/a/b/", typ: tar.TypeDir},
+		{name: "top/a/b/up", typ: tar.TypeSymlink, link: "../.."},
+		{name: "top/a/b/esc", typ: tar.TypeSymlink, link: "up/.."},
+	})
+	err := extract(a, filepath.Join(t.TempDir(), "dst"))
+	if err == nil || !strings.Contains(err.Error(), "points outside the archive") {
+		t.Fatalf("extract = %v, want a refusal", err)
+	}
+}

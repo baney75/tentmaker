@@ -155,7 +155,13 @@ func (s *server) handleLine(ctx context.Context, line []byte) {
 		if isNotification {
 			return
 		}
-		s.fail(req.ID, codeInvalidRequest, `invalid request: need "jsonrpc":"2.0", a string or number "id" and a "method"`)
+		id := req.ID
+		if !validID(id) {
+			// JSON-RPC 2.0: an id that can't be read (an object, null,
+			// 1e999) is answered as null, never echoed.
+			id = nil
+		}
+		s.fail(id, codeInvalidRequest, `invalid request: need "jsonrpc":"2.0", a string or number "id" and a "method"`)
 		return
 	}
 	if isNotification {

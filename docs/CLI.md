@@ -51,6 +51,29 @@ connect, pause, resume, update, rollback, uninstall) need root or Administrator 
 with the exact command to rerun (`sudo tentmaker ...`, or "open PowerShell as
 Administrator"). status, pool, budget, repo list, doctor, logs, version and migrate do not.
 
+## status
+
+`tentmaker status --json` prints the daemon's view: version, device, the budget decision and
+why, power, pause, worker and broker state, mesh, warnings and problems. When the service is
+running it also has a `runtime` section about the daemon process itself:
+
+```json
+"runtime": {
+  "pid": 4242,
+  "uptime_s": 86400,
+  "goroutines": 41,
+  "heap_in_use_bytes": 9437184,
+  "sys_bytes": 25165824,
+  "gc_cycles": 310,
+  "open_fds": 17
+}
+```
+
+`open_fds` counts the process's open file descriptors on Linux and macOS and is -1 on Windows.
+On a device that runs for months these numbers should level off; one that only grows (heap,
+goroutines or open files) is a leak worth a bug report. When the service is not running,
+status is computed locally and has no `runtime` section.
+
 ## setup
 
 Flags (all optional; with `--yes` every missing value takes its default):

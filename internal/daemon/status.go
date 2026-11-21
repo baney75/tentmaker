@@ -33,6 +33,9 @@ type Status struct {
 	Problems    []core.Problem         `json:"problems"`
 	LastError   string                 `json:"last_error,omitempty"`
 	Next        string                 `json:"next,omitempty"`
+	// Runtime is the daemon process itself; absent when the service isn't
+	// running and status was computed locally.
+	Runtime *RuntimeStatus `json:"runtime,omitempty"`
 }
 
 // MeshStatus is this device's place in the pool.

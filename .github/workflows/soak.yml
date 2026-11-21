@@ -1,0 +1,451 @@
+# Soak: does a long-running daemon leak? Installs Tentmaker the way e2e.yml
+# does, puts this repo in checks mode with the GITHUB_TOKEN, then for 45
+# minutes pushes one throwaway branch per minute (tm-soak/<run_id>/<n>), each
+# a new commit with a short workflow at .tentmaker-soak/job.yml, and adds it
+# with `tentmaker repo add` (a config reload every minute). Every 30 s it
+# samples the daemon: RSS, goroutines, heap, open fds, job units in
+# tentmaker.slice, the runner user's podman containers and the files under
+# the state and jobs dirs. It asserts that every branch got exactly one
+# final success, that RSS and goroutines grow by less than 20% after the
+# first 10 minutes (a least-squares slope), that nothing is left behind, and
+# that the state dir stays bounded (check logs pruned at 200; 210 old ones
+# are planted first). metrics/soak.json has the series and verdicts.
+#
+# The throwaway commits are pushed with the GITHUB_TOKEN, so they start no
+# GitHub workflow, and the job file is outside .github/workflows, so hosted
+# Actions never run it.
+name: soak
+
+on:
+  push:
+    branches: [test/soak]
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: minutes of pushes (one branch a minute; the leak fit needs more than 10)
+        default: "45"
+
+permissions:
+  contents: write
+  statuses: write
+  pull-requests: read
+
+concurrency:
+  group: soak-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  TM_VERSION: 0.0.0-soak.${{ github.run_number }}
+  TM_PORT: "8765"
+  SOAK_MINUTES: ${{ inputs.minutes || '45' }}
+  SOAK_PREFIX: tm-soak/${{ github.run_id }}
+  SOAK_JOB: .tentmaker-soak/job.yml
+  SOAK_CONTEXT: tentmaker/soak
+  STATE: /var/lib/tentmaker
+  REPO: ${{ github.repository }}
+
+jobs:
+  soak:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+
+      - name: build the release archives
+        timeout-minutes: 15
+        run: scripts/build.sh "$TM_VERSION"
+
+      - name: serve dist/ as a fake release and install with the one-liner
+        timeout-minutes: 10
+        run: |
+          srv=$RUNNER_TEMP/srv
+          mkdir -p "$srv/latest/download"
+          cp dist/* "$srv/latest/download/"
+          cp scripts/install.sh "$srv/install.sh"
+          nohup python3 -m http.server --bind 127.0.0.1 --directory "$srv" "$TM_PORT" >"$RUNNER_TEMP/http.log" 2>&1 &
+          up=""
+          for _ in $(seq 1 50); do
+            if curl -fsS --max-time 2 -o /dev/null "http://127.0.0.1:$TM_PORT/latest/download/SHA256SUMS"; then up=1; break; fi
+            sleep 0.2
+          done
+          test -n "$up" || { echo "::error::the release server did not start"; cat "$RUNNER_TEMP/http.log"; exit 1; }
+          curl -fsSL --max-time 60 "http://127.0.0.1:$TM_PORT/install.sh" |
+            sudo env TENTMAKER_DOWNLOAD_BASE="http://127.0.0.1:$TM_PORT" sh
+          got=$(tentmaker version --json | jq -r .version)
+          test "$got" = "$TM_VERSION" || { echo "::error::installed $got, want $TM_VERSION"; exit 1; }
+
+      - name: setup
+        id: setup
+        timeout-minutes: 15
+        run: |
+          for h in /home/*; do sudo chmod o-rwx "$h"; done
+          rc=0
+          sudo tentmaker setup --yes --json --no-mesh --no-gh --memory 2GiB --boost-memory 4GiB >"$RUNNER_TEMP/setup.json" || rc=$?
+          cat "$RUNNER_TEMP/setup.json"
+          test "$rc" = 0 || { echo "::error::setup exited $rc"; exit 1; }
+          jq -e '.ok == true and .service == "running"' "$RUNNER_TEMP/setup.json" >/dev/null || { echo "::error::setup did not finish"; exit 1; }
+
+      - name: checks mode with the GITHUB_TOKEN
+        timeout-minutes: 5
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          printf %s "$GITHUB_TOKEN" | timeout 60 sudo tentmaker connect github --token-stdin --json | tee "$RUNNER_TEMP/connect.json"
+          jq -e '.ok == true' "$RUNNER_TEMP/connect.json" >/dev/null || { echo "::error::connect failed"; exit 1; }
+          # 210 old check logs: the broker must prune them to 200 as real
+          # check logs arrive.
+          sudo sh -c 'mkdir -p "$1/checks" && chmod 700 "$1/checks" && for i in $(seq 1 210); do printf "seed\n" >"$1/checks/seed-$i.log"; done && touch -d 2020-01-01 "$1"/checks/seed-*.log' sh "$STATE"
+          sudo find "$STATE/checks" -name 'seed-*.log' | wc -l
+
+      - name: write the sampler
+        run: |
+          mkdir -p metrics
+          cat >"$RUNNER_TEMP/sample.sh" <<'SH'
+          #!/usr/bin/env bash
+          # One JSON line about the daemon and what it leaves on the host.
+          # Every command has a timeout; a reading that fails is -1.
+          t=$(( $(date +%s) - T0 ))
+          pid=$(timeout 10 systemctl show -p MainPID --value tentmaker 2>/dev/null || echo 0)
+          pid=${pid:-0}
+          rss=$(ps -o rss= -p "$pid" 2>/dev/null | tr -d ' ')
+          st=$(timeout 20 tentmaker status --json 2>/dev/null) || st='{}'
+          num() { jq -r "$1 // -1" <<<"$st" 2>/dev/null || echo -1; }
+          fds=$(sudo timeout 10 find "/proc/$pid/fd" -mindepth 1 -maxdepth 1 2>/dev/null | wc -l)
+          units=$(timeout 20 systemctl list-units --all --plain --no-legend 'tentmaker-job-*' 2>/dev/null | wc -l)
+          cgroups=$(find /sys/fs/cgroup/tentmaker.slice -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)
+          ruid=$(id -u tentmaker-runner 2>/dev/null || echo 0)
+          containers=$(sudo timeout 30 runuser -u tentmaker-runner -- env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin \
+            HOME="$STATE/linux" XDG_RUNTIME_DIR="/run/user/$ruid" XDG_CONFIG_HOME="$STATE/linux/.config" \
+            podman ps -aq 2>/dev/null | wc -l) || containers=-1
+          # The state dir without the runner's home and private dir, which
+          # hold the runner template and podman's storage.
+          state_ls=$(sudo timeout 30 find "$STATE" -xdev \( -path "$STATE/linux" -o -path "$STATE/linux-private" \) -prune -o -type f -printf '%s\n' 2>/dev/null)
+          state_files=$(printf '%s' "$state_ls" | grep -c . || true)
+          state_bytes=$(printf '%s\n' "$state_ls" | awk '{s+=$1} END {print s+0}')
+          jobs=$(sudo timeout 10 find "$STATE/linux/jobs" -mindepth 1 -maxdepth 1 2>/dev/null | wc -l)
+          job_files=$(sudo timeout 30 find "$STATE/linux/jobs" -xdev -type f 2>/dev/null | wc -l)
+          logs=$(sudo timeout 10 find "$STATE/checks" -maxdepth 1 -type f -name '*.log' 2>/dev/null | wc -l)
+          seeds=$(sudo timeout 10 find "$STATE/checks" -maxdepth 1 -type f -name 'seed-*.log' 2>/dev/null | wc -l)
+          jq -cn --argjson t "$t" --argjson pid "$pid" --argjson rss_kb "${rss:--1}" \
+            --argjson goroutines "$(num .runtime.goroutines)" --argjson heap "$(num .runtime.heap_in_use_bytes)" \
+            --argjson open_fds "$(num .runtime.open_fds)" --argjson uptime "$(num .runtime.uptime_s)" \
+            --argjson running "$(num '.running | length')" \
+            --argjson fds "$fds" --argjson units "$units" --argjson cgroups "$cgroups" --argjson containers "$containers" \
+            --argjson state_files "$state_files" --argjson state_bytes "$state_bytes" \
+            --argjson job_dirs "$jobs" --argjson job_files "$job_files" --argjson check_logs "$logs" --argjson seed_logs "$seeds" \
+            '{t: $t, pid: $pid, rss_kb: $rss_kb, goroutines: $goroutines, heap_in_use_bytes: $heap, open_fds: $open_fds,
+              proc_fds: $fds, uptime_s: $uptime, running: $running, units: $units, slice_cgroups: $cgroups, containers: $containers,
+              state_files: $state_files, state_bytes: $state_bytes, job_dirs: $job_dirs, job_files: $job_files,
+              check_logs: $check_logs, seed_logs: $seed_logs}'
+          SH
+          chmod +x "$RUNNER_TEMP/sample.sh"
+          T0=$(date +%s) "$RUNNER_TEMP/sample.sh" | tee metrics/first.json
+          jq -e '.goroutines > 0 and .rss_kb > 0 and .heap_in_use_bytes > 0' metrics/first.json >/dev/null ||
+            { echo "::error::status --json has no runtime section or the daemon has no RSS"; exit 1; }
+
+      - name: soak (one branch a minute, a sample every 30 s)
+        timeout-minutes: 65
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          T0=$(date +%s); export T0
+          echo "$T0" >metrics/t0
+          ( k=0
+            while :; do
+              "$RUNNER_TEMP/sample.sh" >>metrics/samples.jsonl
+              k=$((k + 1))
+              wait_s=$(( T0 + 30 * k - $(date +%s) ))
+              if [ "$wait_s" -gt 0 ]; then sleep "$wait_s"; fi
+            done ) &
+          sampler=$!
+          trap 'kill "$sampler" 2>/dev/null || true' EXIT
+
+          # git reads the token from the masked env through this helper; it
+          # is never in argv.
+          export GIT_TERMINAL_PROMPT=0
+          git config credential.helper '!f() { echo username=x-access-token; echo "password=$GITHUB_TOKEN"; }; f'
+          git config user.name tentmaker-soak
+          git config user.email soak@tentmaker.invalid
+          base=$(git rev-parse HEAD)
+          : >metrics/branches.tsv
+          pending=()
+          logname() { printf '%s/checks/%s-%s-soak.log' "$STATE" "${REPO//\//_}" "${1:0:12}"; }
+          # done_branches drops branches whose check log says they ended.
+          refresh() {
+            local keep=() b sha
+            for b in "${pending[@]}"; do
+              sha=$(awk -v b="$b" '$2 == b {print $3}' metrics/branches.tsv)
+              if sudo test -f "$(logname "$sha")"; then continue; fi
+              keep+=("$b")
+            done
+            pending=("${keep[@]}")
+          }
+          add_repo() {
+            local args=() b
+            for b in "${pending[@]}"; do args+=(--branch "$b"); done
+            timeout 120 sudo tentmaker repo add "$REPO" --mode checks --allow-public --workflow "$SOAK_JOB" "${args[@]}" --json >"$RUNNER_TEMP/repo.json" ||
+              { echo "::warning::repo add failed"; cat "$RUNNER_TEMP/repo.json"; }
+          }
+
+          for n in $(seq 1 "$SOAK_MINUTES"); do
+            branch="$SOAK_PREFIX/$n"
+            git checkout -q --detach "$base"
+            mkdir -p "$(dirname "$SOAK_JOB")"
+            cat >"$SOAK_JOB" <<YML
+          # Throwaway soak job $n of run $GITHUB_RUN_ID, run by Tentmaker in checks mode.
+          name: tentmaker-soak-job
+          on: push
+          jobs:
+            soak:
+              runs-on: ubuntu-latest
+              timeout-minutes: 5
+              steps:
+                - run: echo "soak $n TENTMAKER=\${TENTMAKER:-unset} GITHUB_ACTIONS=\${GITHUB_ACTIONS:-unset}"
+                - run: test "\$TENTMAKER" = 1
+                - name: a little work
+                  run: for i in 1 2 3 4 5; do sha256sum /etc/os-release >/dev/null; done; echo done $n
+          YML
+            git add "$SOAK_JOB"
+            git commit -q -m "soak $n of run $GITHUB_RUN_ID"
+            sha=$(git rev-parse HEAD)
+            if timeout 60 git push -q origin "HEAD:refs/heads/$branch"; then
+              printf '%s\t%s\t%s\t%s\n' "$n" "$branch" "$sha" "$(( $(date +%s) - T0 ))" >>metrics/branches.tsv
+              pending+=("$branch")
+            else
+              echo "::error::push of $branch failed"
+            fi
+            refresh
+            add_repo
+            echo "$(date -u +%T) pushed $branch ($sha); unfinished: ${#pending[@]}"
+            wait_s=$(( T0 + 60 * n - $(date +%s) ))
+            if [ "$wait_s" -gt 0 ]; then sleep "$wait_s"; fi
+          done
+
+          # Drain: up to 10 minutes for the last checks, then a quiet minute
+          # so leftovers are leftovers and not jobs still ending.
+          deadline=$((SECONDS + 600))
+          while :; do
+            refresh
+            [ "${#pending[@]}" -eq 0 ] && break
+            if [ "$SECONDS" -ge "$deadline" ]; then echo "::warning::unfinished after the drain: ${pending[*]}"; break; fi
+            sleep 15
+          done
+          sleep 60
+          kill "$sampler" 2>/dev/null || true
+          wait "$sampler" 2>/dev/null || true
+          "$RUNNER_TEMP/sample.sh" | tee metrics/last.json
+          git config --unset credential.helper || true
+
+      - name: read the commit statuses
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        timeout-minutes: 15
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          : >metrics/statuses.jsonl
+          test -f metrics/branches.tsv || exit 0
+          while IFS=$'\t' read -r n branch sha pushed; do
+            ok=""
+            for try in 1 2 3; do
+              if out=$(timeout 30 gh api "repos/$REPO/commits/$sha/statuses?per_page=100" \
+                --jq "[.[] | select(.context == \"$SOAK_CONTEXT\") | {state, created_at, description}]"); then ok=1; break; fi
+              sleep $((try * 5))
+            done
+            test -n "$ok" || out=null
+            jq -cn --argjson n "$n" --arg branch "$branch" --arg sha "$sha" --argjson pushed "$pushed" --argjson statuses "$out" \
+              '{n: $n, branch: $branch, sha: $sha, pushed_t: $pushed, statuses: $statuses}' >>metrics/statuses.jsonl
+          done <metrics/branches.tsv
+          timeout 30 gh api rate_limit --jq '.resources.core | {limit, remaining, used, reset}' >metrics/rate_limit.json || echo '{}' >metrics/rate_limit.json
+          cat metrics/rate_limit.json
+
+      - name: report and verdicts
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        timeout-minutes: 5
+        run: |
+          python3 - <<'PY'
+          import json, os, sys
+
+          M = "metrics"
+          def lines(p):
+              try:
+                  with open(os.path.join(M, p)) as f:
+                      return [json.loads(l) for l in f if l.strip()]
+              except FileNotFoundError:
+                  return []
+          def one(p):
+              try:
+                  with open(os.path.join(M, p)) as f:
+                      return json.load(f)
+              except (FileNotFoundError, ValueError):
+                  return {}
+
+          samples = lines("samples.jsonl")
+          last = one("last.json")
+          branches = lines("statuses.jsonl")
+          minutes = int(os.environ["SOAK_MINUTES"])
+          verdicts = {}
+
+          def fit(xs, ys):
+              n = len(xs)
+              mx, my = sum(xs) / n, sum(ys) / n
+              sxx = sum((x - mx) ** 2 for x in xs)
+              slope = sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / sxx if sxx else 0.0
+              return slope, my - slope * mx
+
+          def growth(key, warm=600):
+              pts = [(s["t"], s[key]) for s in samples if s["t"] >= warm and s.get(key, -1) >= 0]
+              out = {"start": None, "end": None, "samples": len(pts)}
+              if samples:
+                  first = [s[key] for s in samples if s.get(key, -1) >= 0]
+                  out["first"] = first[0] if first else None
+              if len(pts) < 4:
+                  out.update(ok=False, why="fewer than 4 samples after the first 10 minutes")
+                  return out
+              xs, ys = [p[0] for p in pts], [p[1] for p in pts]
+              slope, icpt = fit(xs, ys)
+              base = slope * xs[0] + icpt
+              grow = slope * (xs[-1] - xs[0]) / base if base > 0 else float("inf")
+              out.update(start=ys[0], end=ys[-1], min=min(ys), max=max(ys), slope_per_min=round(slope * 60, 4),
+                         fitted_start=round(base, 2), fitted_growth=round(grow, 4), ok=grow < 0.20)
+              return out
+
+          rss, gor = growth("rss_kb"), growth("goroutines")
+          heap, fds = growth("heap_in_use_bytes"), growth("proc_fds")
+          verdicts["rss_growth_under_20pct"] = rss["ok"]
+          verdicts["goroutine_growth_under_20pct"] = gor["ok"]
+
+          pids = sorted({s["pid"] for s in samples if s.get("pid", 0) > 0})
+          verdicts["daemon_never_restarted"] = len(pids) == 1
+
+          per = []
+          for b in branches:
+              st = b["statuses"] or []
+              succ = sum(1 for s in st if s["state"] == "success")
+              bad = sum(1 for s in st if s["state"] in ("failure", "error"))
+              final = st[0]["state"] if st else None
+              per.append({"n": b["n"], "branch": b["branch"], "sha": b["sha"], "successes": succ, "failures": bad,
+                          "final": final, "statuses": len(st), "ok": succ == 1 and bad == 0 and final == "success"})
+          verdicts["every_branch_pushed"] = len(per) == minutes
+          verdicts["every_branch_one_final_success"] = bool(per) and all(p["ok"] for p in per)
+
+          left = {k: last.get(k, -1) for k in ("units", "slice_cgroups", "containers", "job_dirs", "running")}
+          verdicts["no_leftover_units"] = left["units"] == 0 and left["slice_cgroups"] == 0
+          verdicts["no_leftover_containers"] = left["containers"] == 0
+          verdicts["no_leftover_job_dirs"] = left["job_dirs"] == 0
+
+          logs = [s["check_logs"] for s in samples] + [last.get("check_logs", -1)]
+          sb = [s for s in samples if s["t"] >= 600]
+          state = {"check_logs_max": max(logs) if logs else None, "check_logs_end": last.get("check_logs"),
+                   "seed_logs_end": last.get("seed_logs"),
+                   "state_bytes_first": samples[0]["state_bytes"] if samples else None,
+                   "state_bytes_at_10min": sb[0]["state_bytes"] if sb else None,
+                   "state_bytes_end": last.get("state_bytes"), "state_files_end": last.get("state_files"),
+                   "state_bytes_growth": growth("state_bytes")}
+          real_logs = (last.get("check_logs", 0) or 0) - (last.get("seed_logs", 0) or 0)
+          verdicts["check_logs_pruned_at_200"] = (state["check_logs_max"] is not None and state["check_logs_max"] <= 200
+                                                  and last.get("check_logs") == 200 and real_logs >= len(per))
+          sgrow = (last.get("state_bytes", 0) - sb[0]["state_bytes"]) if sb else None
+          verdicts["state_dir_bounded"] = sgrow is not None and sgrow < (1 << 20)
+
+          ok = all(verdicts.values())
+          out = {"run_id": os.environ.get("GITHUB_RUN_ID"), "sha": os.environ.get("GITHUB_SHA"), "minutes": minutes,
+                 "ok": ok, "verdicts": verdicts, "rss_kb": rss, "goroutines": gor, "heap_in_use_bytes": heap,
+                 "proc_fds": fds, "leftovers": left, "state": state, "daemon_pids": pids,
+                 "rate_limit": one("rate_limit.json"), "branches": per, "series": samples, "last": last}
+          with open(os.path.join(M, "soak.json"), "w") as f:
+              json.dump(out, f, indent=1)
+
+          def chart(key, title, scale=1.0, unit="", w=60, h=10):
+              pts = [(s["t"], s[key] / scale) for s in samples if s.get(key, -1) >= 0]
+              if len(pts) < 2:
+                  return [f"{title}: no data"]
+              t0, t1 = pts[0][0], pts[-1][0]
+              lo, hi = min(p[1] for p in pts), max(p[1] for p in pts)
+              if hi == lo:
+                  hi = lo + 1
+              grid = [[" "] * w for _ in range(h)]
+              for t, v in pts:
+                  x = int((t - t0) / max(1, t1 - t0) * (w - 1))
+                  y = int((v - lo) / (hi - lo) * (h - 1))
+                  grid[h - 1 - y][x] = "*"
+              rows = [f"{title} ({lo:.1f} to {hi:.1f}{unit}, {t0 // 60} to {t1 // 60} min)"]
+              for i, r in enumerate(grid):
+                  label = hi - (hi - lo) * i / (h - 1)
+                  rows.append(f"{label:10.1f} |" + "".join(r))
+              rows.append(" " * 11 + "+" + "-" * w)
+              return rows
+
+          md = [f"## soak: {'pass' if ok else 'FAIL'}", "",
+                f"{minutes} branches, one a minute; a sample every 30 s; the fit starts at 10 minutes.", "",
+                "| verdict | ok |", "| --- | --- |"]
+          md += [f"| {k} | {'yes' if v else 'NO'} |" for k, v in verdicts.items()]
+          md += ["", "| series | first | at 10 min | end | slope per min | fitted growth |", "| --- | --- | --- | --- | --- | --- |"]
+          for name, g in (("RSS KiB", rss), ("goroutines", gor), ("heap bytes", heap), ("open fds", fds)):
+              md.append(f"| {name} | {g.get('first')} | {g.get('start')} | {g.get('end')} | {g.get('slope_per_min')} | {g.get('fitted_growth')} |")
+          md += ["", f"Leftovers: {left}", f"Check logs: max {state['check_logs_max']}, end {state['check_logs_end']} "
+                 f"({state['seed_logs_end']} planted ones left); state dir {state['state_bytes_end']} bytes at the end.", "",
+                 "```"] + chart("rss_kb", "RSS MiB", 1024, " MiB") + [""] + chart("goroutines", "goroutines") + \
+                [""] + chart("proc_fds", "open fds") + ["```"]
+          bad = [p for p in per if not p["ok"]]
+          if bad:
+              md += ["", "Branches without exactly one final success:", ""] + [f"- {p['branch']} {p['sha'][:12]}: {p['statuses']} statuses, final {p['final']}" for p in bad]
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+              f.write("\n".join(md) + "\n")
+          print("\n".join(md))
+          for k, v in verdicts.items():
+              if not v:
+                  print(f"::error::soak verdict failed: {k}")
+          sys.exit(0 if ok else 1)
+          PY
+
+      - name: dump on failure
+        if: failure()
+        timeout-minutes: 5
+        run: |
+          echo "== status"; timeout 20 tentmaker status --json || true
+          echo "== daemon log"; sudo journalctl -u tentmaker --no-pager -n 600 || true
+          echo "== units"; systemctl list-units --all --plain --no-legend 'tentmaker-job-*' || true
+          echo "== jobs"; sudo find "$STATE/linux/jobs" -maxdepth 2 2>/dev/null | head -100 || true
+          echo "== broker state"; sudo find "$STATE" -maxdepth 1 -name 'broker*.json' -exec sh -c 'for f; do echo "== $f"; tail -c 20000 "$f"; echo; done' sh {} + || true
+
+      - name: delete the throwaway branches
+        if: always()
+        timeout-minutes: 10
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          export GIT_TERMINAL_PROMPT=0
+          git config credential.helper '!f() { echo username=x-access-token; echo "password=$GITHUB_TOKEN"; }; f'
+          refs=$(timeout 60 git ls-remote --heads origin "refs/heads/$SOAK_PREFIX/*" | awk '{print $2}')
+          n=0
+          for r in $refs; do
+            timeout 60 git push -q origin --delete "$r" && n=$((n + 1)) || echo "::warning::could not delete $r"
+          done
+          git config --unset credential.helper || true
+          echo "deleted $n branches"
+          left=$(timeout 60 git ls-remote --heads origin "refs/heads/$SOAK_PREFIX/*" | wc -l) || left=-1
+          test "$left" = 0 || { echo "::error::$left throwaway branches are left"; exit 1; }
+
+      - name: uninstall --purge
+        if: ${{ !cancelled() && steps.setup.outcome != 'skipped' }}
+        timeout-minutes: 10
+        run: |
+          sudo tentmaker uninstall --purge --yes --json | tee "$RUNNER_TEMP/uninstall.json"
+          jq -e '.ok == true and .purged == true' "$RUNNER_TEMP/uninstall.json" >/dev/null || { echo "::error::uninstall did not finish"; exit 1; }
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: soak-metrics-${{ github.run_id }}
+          path: metrics/
+          if-no-files-found: warn
+          retention-days: 30
