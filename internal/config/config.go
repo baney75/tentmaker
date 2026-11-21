@@ -26,7 +26,7 @@ const (
 	GiB Size = 1 << 30
 )
 
-var sizeRe = regexp.MustCompile(`^\s*([0-9]+(?:\.[0-9]+)?)\s*([KMGT]?)(i?B?)\s*$`)
+var sizeRe = regexp.MustCompile(`^\s*([0-9]+(?:\.[0-9]+)?)\s*([KMGT]?)(I?B?)\s*$`)
 
 // ParseSize reads "4GiB", "4G", "4GB" (all binary), "512MiB" or "0".
 func ParseSize(s string) (Size, error) {
@@ -280,8 +280,12 @@ func (c Config) Validate() []string {
 		default:
 			p = append(p, fmt.Sprintf(`repo %q: mode must be "runner" or "checks"`, r.Name))
 		}
-		if r.Forge == "gitlab" && r.Mode != "checks" {
-			p = append(p, fmt.Sprintf(`repo %q: GitLab repos run in mode = "checks"`, r.Name))
+		kind := r.Forge
+		if f, ok := c.Forges[r.Forge]; ok && f.Kind != "" {
+			kind = f.Kind
+		}
+		if (kind == "gitlab" || kind == "forgejo" || kind == "gitea") && r.Mode != "checks" {
+			p = append(p, fmt.Sprintf(`repo %q: %s repos run in mode = "checks" in this version`, r.Name, kind))
 		}
 	}
 	switch c.Update.Channel {

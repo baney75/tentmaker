@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>dev.tentmaker.daemon</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/Users/a&amp;b/tentmaker</string>
+		<string>daemon</string>
+	</array>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>TENTMAKER_CONFIG</key>
+		<string>/tmp/&lt;x&gt;.toml</string>
+	</dict>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>ThrottleInterval</key>
+	<integer>5</integer>
+	<key>ExitTimeOut</key>
+	<integer>30</integer>
+	<key>AbandonProcessGroup</key>
+	<true/>
+	<key>StandardOutPath</key>
+	<string>/tmp/tm.log</string>
+	<key>StandardErrorPath</key>
+	<string>/tmp/tm.log</string>
+</dict>
+</plist>
