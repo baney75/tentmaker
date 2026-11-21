@@ -117,7 +117,9 @@ failure sets `Admit=false` (and `Evict=true` for `stop_below_disk`). `Admit` is 
 
 Power per OS: Linux reads `/sys/class/power_supply/*/{type,online,capacity}` (Mains online, or no
 Battery present, means AC; a supply whose `type` can't be read, or any attribute read error other
-than a missing optional file, makes power unknown, not AC). macOS runs `pmset -g batt`. Windows calls `GetSystemPowerStatus`
+than a missing optional file, makes power unknown, not AC; `type` and `scope` are read first, and a
+supply whose scope is Device, a peripheral such as a sleeping Bluetooth mouse, is skipped along with
+its read errors). macOS runs `pmset -g batt`. Windows calls `GetSystemPowerStatus`
 (golang.org/x/sys/windows). Idle: macOS `ioreg -c IOHIDSystem` HIDIdleTime; Linux
 `loginctl show-session` IdleHint/IdleSinceHint for the active seat session; Windows: a daemon in
 session 0 can't see input, so it returns an error ("not idle") unless the user-mode tray helper

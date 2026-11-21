@@ -48,8 +48,8 @@ func readField(fsys fs.FS, name string, required bool) (string, error) {
 // readPowerSupply decides the power state from sysfs. A Mains or USB supply
 // that is online means AC. No battery at all (a desktop, a VM, a server)
 // means AC. With batteries but no Mains or USB entry, a discharging battery
-// means on battery. Batteries whose scope is Device (a wireless mouse) are
-// not the machine's own and are ignored.
+// means on battery. Supplies whose scope is Device (a wireless mouse) are
+// not the machine's own and are skipped, read errors and all.
 func readPowerSupply(fsys fs.FS) (core.PowerState, error) {
 	entries, err := fs.ReadDir(fsys, ".")
 	if errors.Is(err, fs.ErrNotExist) {
@@ -67,12 +67,24 @@ func readPowerSupply(fsys fs.FS) (core.PowerState, error) {
 		if err != nil {
 			return core.PowerState{}, err
 		}
-		s := supply{name: n, kind: kind}
+		// Scope comes next: a Device supply (a wireless mouse) is not the
+		// machine's own, and one that is asleep returns EIO or ENODATA on
+		// its other attributes, so skip it before reading them (review r2
+		// partB first-F1). A scope we can't read might hide the machine's
+		// own battery, so that still fails closed.
+		scope, err := readField(fsys, n+"/scope", false)
+		if err != nil {
+			return core.PowerState{}, err
+		}
+		if strings.EqualFold(scope, "Device") {
+			continue
+		}
+		s := supply{name: n, kind: kind, scope: scope}
 		for _, f := range []struct {
 			file string
 			dst  *string
 		}{
-			{"scope", &s.scope}, {"status", &s.status}, {"online", &s.online}, {"capacity", &s.capacity},
+			{"status", &s.status}, {"online", &s.online}, {"capacity", &s.capacity},
 			{"energy_now", &s.energyNow}, {"energy_full", &s.energyFull},
 			{"charge_now", &s.chargeNow}, {"charge_full", &s.chargeFull},
 		} {
@@ -94,10 +106,9 @@ func decideSysfs(supplies []supply) (core.PowerState, error) {
 	lines, linesOnline := 0, 0
 	for _, s := range supplies {
 		switch {
+		case strings.EqualFold(s.scope, "Device"):
+			// Not the machine's own; readPowerSupply already skips these.
 		case s.kind == "Battery":
-			if strings.EqualFold(s.scope, "Device") {
-				continue
-			}
 			batteries = append(batteries, s)
 		case isLineSupply(s.kind):
 			lines++
