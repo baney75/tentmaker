@@ -22,6 +22,11 @@ BRANCHES="s1 s2 s3 s4 s5 s6 w1 t1 t2 t3 t4 t5 t6 r1 r2"
 TEMPLATE=.github/workflows/tentmaker-team.yml
 TAG=tag:tentmaker-ci
 
+# KEY_EXPIRES is when the TS_AUTHKEY repo secret stops working, with a
+# margin: the key made 2026-11-21 17:32 UTC lasts 10 days. From this time on
+# every job stops before it calls tailscale. Change it when the key is renewed.
+KEY_EXPIRES=2026-12-01T17:00:00Z
+
 ACL_HINT='Add to the tailnet policy file (either form) so the CI nodes reach each other on the mesh port:
   "grants": [{"src": ["tag:tentmaker-ci"], "dst": ["tag:tentmaker-ci"], "ip": ["tcp:7433"]}]
 or
@@ -179,6 +184,27 @@ abort() { sig_post "abort-$1" failure "${2:-job failed}" || true; }
 
 # ---------------------------------------------------------------- tailnet
 
+# renew_hint: what the owner does when TS_AUTHKEY has expired or was refused.
+renew_hint() {
+	printf '%s' "renew TS_AUTHKEY: in the Tailscale admin console (Settings, Keys) generate an auth key that is reusable and ephemeral, tagged $TAG (the policy file must list $TAG in tagOwners), store it as the TS_AUTHKEY repo secret (gh secret set TS_AUTHKEY -R $REPO, then paste the key at the prompt), and set KEY_EXPIRES in .github/team/team.sh to the new key's expiry"
+}
+
+# key_check: stop before tailscale runs once the key has expired. TEAM_NOW
+# (epoch seconds) stands in for the clock; only team_test.sh sets it.
+key_check() {
+	local t exp left
+	t=${TEAM_NOW:-$(now)}
+	exp=$(epoch "$KEY_EXPIRES")
+	if [ "$t" -ge "$exp" ]; then
+		die "TS_AUTHKEY expired at $KEY_EXPIRES; not calling tailscale. $(renew_hint)"
+	fi
+	left=$(((exp - t) / 86400))
+	if [ "$left" -lt 3 ]; then
+		printf '::warning::TS_AUTHKEY expires at %s, in under %s days. %s\n' "$KEY_EXPIRES" "$((left + 1))" "$(renew_hint)"
+	fi
+	log "TS_AUTHKEY is good until $KEY_EXPIRES"
+}
+
 # login_hint: why `tailscale up` failed, with the owner's fix when it is the key.
 login_hint() {
 	local state=""
@@ -186,8 +212,8 @@ login_hint() {
 		state=$(ts status --json 2>/dev/null | jqr -r '.BackendState // ""' || true)
 	fi
 	log "tailscale backend state: ${state:-unknown}"
-	if [ "$state" = NeedsLogin ] || [ "$state" = NeedsMachineAuth ] || [ "$(date -u +%Y%m%d)" -gt 20261201 ]; then
-		die "TS_AUTHKEY expired or invalid: ask the owner for a new reusable, ephemeral key tagged tag:tentmaker-ci"
+	if [ "$state" = NeedsLogin ] || [ "$state" = NeedsMachineAuth ] || [ "${TEAM_NOW:-$(now)}" -ge "$(epoch "$KEY_EXPIRES")" ]; then
+		die "the tailnet refused TS_AUTHKEY (expired, revoked or invalid, or it asks for a tag the policy does not permit; the Tailscale step's log says which). $(renew_hint)"
 	fi
 	die "tailscale up failed (backend state ${state:-unknown}); see the Tailscale step's log"
 }
@@ -667,6 +693,7 @@ sig-post) sig_post "$@" ;;
 sig-wait) sig_wait "$@" ;;
 abort) abort "$@" ;;
 login-hint) login_hint ;;
+key-check) key_check ;;
 identity) identity ;;
 wait-mesh) wait_mesh ;;
 ready)
