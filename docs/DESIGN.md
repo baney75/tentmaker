@@ -180,25 +180,46 @@ setup`), idempotent and safe to rerun.
   CPU rate control and `KILL_ON_JOB_CLOSE`. Platforms: `windows/<arch>`. Linux jobs on Windows
   (WSL2) are roadmap, not v1.
 
-**Network isolation.** Linux and Windows jobs share the host's network stack, so Install fences
-the runner user off and every `Start` checks the fence first; no rules means no job (fail closed).
-Jobs may reach the internet, the DNS servers the host is configured with, and the source archive
-relay on 127.0.0.1:7434. Always blocked: the tailnet (100.64.0.0/10, fd7a:115c:a1e0::/48), link-local
+**Network isolation.** Install fences the runner user off and every `Start` checks the fence
+first; no rules means no job (fail closed). A Linux job also gets a network namespace of its own
+(below); a Windows job shares the host's network stack. Jobs may reach the internet, the DNS
+servers the host is configured with, and the source archive relay on 127.0.0.1:7434. Always blocked: the tailnet (100.64.0.0/10, fd7a:115c:a1e0::/48), link-local
 (169.254/16, fe80::/10), unique local (fc00::/7), loopback and this host's own addresses, and port
 7433 on any address. RFC 1918 (10/8, 172.16/12, 192.168/16) and, on Linux, the host's on-link
 global IPv6 prefixes are the LAN, blocked unless `[guards] allow_lan`; `allow_lan` means the
 physical LAN only, never what the tailnet routes.
 
+- Linux job namespace (`netns.go`): each job runs in a network namespace of its own, so its own
+  127.0.0.1 and ::1 work (httptest, a test database) and the host's loopback does not. Per job,
+  two transient units in `tentmaker.slice` run as the runner user: `tentmaker-netns-<name>`
+  (`unshare --user --map-root-user --net`, holding a user namespace the runner owns and a network
+  namespace in it) and `tentmaker-uplink-<name>` (pasta, `Type=forking`, joining the holder's
+  namespaces by pid). pasta must run as the runner: it opens every outside socket, and the per-uid
+  rules below match them; pasta started as root and dropping privileges cannot join a namespace
+  owned by the initial user namespace, hence the runner-owned holder. pasta forwards only the
+  relay (`-T 7434`: the job's own 127.0.0.1:7434 reaches the host's), maps no other host loopback
+  (`--no-map-gw`) and publishes no job port (`-t none -u none`). `Start` waits until the holder's
+  process has left the host's namespace (`/proc/<pid>/ns/net` differs from the daemon's), starts
+  pasta, then the job unit with `NetworkNamespacePath=/proc/<pid>/ns/net` and
+  `BindReadOnlyPaths=<private>/resolv.conf:/etc/resolv.conf`, which names the host's resolvers or,
+  behind the 127.0.0.53 stub, `/run/systemd/resolve/resolv.conf`'s upstream servers (also added
+  to the DNS holes). Any step that fails stops both units and refuses the job; setup and
+  `Preflight` fail without pasta or unshare, or with no DNS server a job can reach. `Stop`,
+  `Clean` and `Reset` stop the units. The namespace is isolation; the rules below are the policy.
+  A job owns its namespace's user namespace, so it can reconfigure its own namespace; everything
+  still leaves through pasta as the runner.
 - Linux (`netrules.go`): nftables table `inet tentmaker`, an output hook that sends every packet
   with `meta skuid { <runner uid>, <its subuid ranges> }` to a `runner` chain (accept relay and DNS,
   then reject). The subordinate uids matter: a rootless container on the host network that runs as
-  a non-root user opens its sockets as one of them. `oifname "lo"` covers the host's own
-  addresses. Always rejected besides the ranges above: RFC 1918, CGNAT and ULA out a Tailscale
+  a non-root user opens its sockets as one of them (through the podman service, which runs in the
+  host's namespace). `oifname "lo"` covers the host's own addresses. Always rejected besides the ranges above: RFC 1918, CGNAT and ULA out a Tailscale
   interface (other devices' subnet routes; public destinations stay open for an exit node), IPv4
   multicast and broadcast (224/4, 255.255.255.255) and ff00::/8. Tailscale interfaces are
   `tailscale0` plus any interface holding a tailnet IPv6 address (`/proc/net/if_inet6`); the
   on-link prefixes are `/proc/net/ipv6_route` routes in 2000::/3 with no gateway, outside loopback
-  and Tailscale. With no `nft`, the same rules as an iptables and ip6tables `TENTMAKER` chain with
+  and Tailscale, leaving out the host's own and anycast addresses (`RTF_LOCAL`, `RTF_ANYCAST`; the
+  kernel lists them on the interface that holds them) and any prefix inside another (nft merges
+  it, so the listing would never show it). With no `nft`, the same rules as an iptables and ip6tables `TENTMAKER` chain with
   one `--uid-owner` jump per uid range. Rootless podman's pasta and slirp4netns run as the runner
   user, so container traffic matches too. The rules file lives in `<lib>/net.nft` (or
   `net-iptables.sh`); `tentmaker-net.service` (oneshot, before `network-pre.target` and

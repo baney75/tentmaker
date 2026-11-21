@@ -212,7 +212,7 @@ Its read tools (`status`, `pool`, `doctor`) work as any user. Tools that change 
 
 **Sandboxes per OS:**
 
-- **Linux:** each job runs as the unprivileged user `tentmaker-runner` (no sudo, no docker group, `NoNewPrivileges`) in a transient systemd unit with hard memory, CPU and process limits, a fresh runner copy and its own home. Container steps use rootless podman.
+- **Linux:** each job runs as the unprivileged user `tentmaker-runner` (no sudo, no docker group, `NoNewPrivileges`) in a transient systemd unit with hard memory, CPU and process limits, a fresh runner copy, its own home and a network namespace of its own: servers a job starts on 127.0.0.1 work, the host's loopback services stay out of reach. Container steps use rootless podman.
 - **macOS:** each job gets its own Tart VM cloned from a digest-pinned image, deleted afterwards. Softnet blocks the VM from your tailnet, your LAN, link-local addresses and the Mac itself.
 - **Windows:** each job runs as the local standard user `tentmaker-runner` inside a Job Object with hard memory and CPU caps, in a fresh directory only that user can open.
 
@@ -278,7 +278,7 @@ On Windows, run `tentmaker uninstall` in an Administrator PowerShell. If the bin
 
 ## Requirements
 
-- Linux with systemd and cgroup v2, podman for container steps; amd64 or arm64.
+- Linux with systemd and cgroup v2, pasta (the `passt` package) for each job's own network namespace, podman for container steps; amd64 or arm64.
 - macOS on Apple silicon. The Softnet network filter needs macOS 26 or newer.
 - Windows on amd64 or arm64.
 - Tailscale on every device that joins a pool. A single device can run with `--no-mesh`.

@@ -10,6 +10,8 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -36,7 +38,14 @@ type fakeHost struct {
 	ipt     string
 	enabled map[string]bool
 	nftFail bool // nft -f fails (a broken nft, a bad rules file)
+	// netnsPID is what systemctl reports as a namespace holder's MainPID;
+	// 0 means the default, testNetnsPID.
+	netnsPID int
 }
+
+// testNetnsPID is the fake namespace holder; newEnv gives it a network
+// namespace other than the host's.
+const testNetnsPID = 4242
 
 func (f *fakeHost) Run(ctx context.Context, c Cmd) (Result, error) {
 	f.mu.Lock()
@@ -122,6 +131,12 @@ func (f *fakeHost) firewallLocked(c Cmd) (Result, bool, error) {
 			}
 		}
 		return Result{}, true, nil
+	case c.Path == "systemctl" && len(c.Args) == 4 && a == "show --property=MainPID --value "+c.Args[3] && strings.HasPrefix(c.Args[3], NetnsPrefix):
+		pid := f.netnsPID
+		if pid == 0 {
+			pid = testNetnsPID
+		}
+		return Result{Stdout: strconv.Itoa(pid) + "\n"}, true, nil
 	case c.Path == "systemctl" && len(c.Args) == 2 && c.Args[0] == "enable":
 		if f.enabled == nil {
 			f.enabled = map[string]bool{}
@@ -237,12 +252,22 @@ func newEnv(t *testing.T) *env {
 		Nft:               filepath.Join(dir, "sbin", "nft"),
 		Iptables:          filepath.Join(dir, "sbin", "iptables"),
 		Ip6tables:         filepath.Join(dir, "sbin", "ip6tables"),
+		Pasta:             filepath.Join(dir, "sbin", "pasta"),
+		Unshare:           filepath.Join(dir, "sbin", "unshare"),
+		ResolvedConf:      filepath.Join(dir, "resolved.conf"),
+		Proc:              filepath.Join(dir, "proc"),
 	}
 	must(t, os.MkdirAll(filepath.Join(dir, "sbin"), 0o755))
-	for _, tool := range []string{p.Nft, p.Iptables, p.Ip6tables} {
+	for _, tool := range []string{p.Nft, p.Iptables, p.Ip6tables, p.Pasta, p.Unshare} {
 		must(t, os.WriteFile(tool, []byte("#!/bin/sh\n"), 0o755))
 	}
 	must(t, os.WriteFile(p.ResolvConf, []byte("# managed\nnameserver 127.0.0.53\noptions edns0\n"), 0o644))
+	must(t, os.WriteFile(p.ResolvedConf, []byte("nameserver 192.0.2.53\nnameserver 127.0.0.1\n"), 0o644))
+	// The host's network namespace and the fake holder's.
+	for pid, ns := range map[string]string{"self": "net:[4026531840]", strconv.Itoa(testNetnsPID): "net:[4026532999]"} {
+		must(t, os.MkdirAll(filepath.Join(p.Proc, pid, "ns"), 0o755))
+		must(t, os.Symlink(ns, filepath.Join(p.Proc, pid, "ns", "net")))
+	}
 	o := Options{
 		StateDir: filepath.Join(dir, "state"),
 		CacheDir: filepath.Join(dir, "cache"),
@@ -315,6 +340,20 @@ func findCmd(t *testing.T, f *fakeHost, path string) Cmd {
 	return Cmd{}
 }
 
+// findUnit returns the systemd-run that started unit.
+func findUnit(t *testing.T, f *fakeHost, unit string) Cmd {
+	t.Helper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, c := range f.cmds {
+		if c.Path == "systemd-run" && slices.Contains(c.Args, "--unit="+unit) {
+			return c
+		}
+	}
+	t.Fatalf("no systemd-run for %s; ran %v", unit, f.cmds)
+	return Cmd{}
+}
+
 func TestStartRunner(t *testing.T) {
 	v := newEnv(t)
 	v.installed(t)
@@ -344,7 +383,7 @@ func TestStartRunner(t *testing.T) {
 	if ents, _ := os.ReadDir(v.e.secretDir()); len(ents) != 0 {
 		t.Fatalf("stdin file left behind: %v", ents)
 	}
-	c := findCmd(t, v.f, "systemd-run")
+	c := findUnit(t, v.f, unitName("job-abc"))
 	jd := v.e.jobDir("job-abc")
 	rt := filepath.Join(v.dir, "run-user", "1234")
 	want := []string{
@@ -353,6 +392,8 @@ func TestStartRunner(t *testing.T) {
 		"-p", "Type=exec", "-p", "MemoryMax=2147483648", "-p", "MemorySwapMax=0", "-p", "OOMPolicy=stop", "-p", "CPUQuota=150%",
 		"-p", "TasksMax=4096", "-p", "Nice=10", "-p", "IOSchedulingClass=idle", "-p", "RuntimeMaxSec=5400",
 		"-p", "TimeoutStopSec=30", "-p", "NoNewPrivileges=yes", "-p", "PrivateTmp=yes",
+		"-p", "NetworkNamespacePath=" + filepath.Join(v.dir, "proc", "4242", "ns", "net"),
+		"-p", "BindReadOnlyPaths=" + filepath.Join(v.dir, "state", "linux-private", "resolv.conf") + ":/etc/resolv.conf",
 		"-p", "InaccessiblePaths=-" + rt + "/bus", "-p", "InaccessiblePaths=-" + rt + "/systemd",
 		"-p", "InaccessiblePaths=-/run/tailscale", "-p", "InaccessiblePaths=-/var/run/tailscale", "-p", "InaccessiblePaths=-/var/lib/tailscale",
 		"-p", "InaccessiblePaths=-" + filepath.Join(v.dir, "home"), "-p", "InaccessiblePaths=-/root",
@@ -408,7 +449,7 @@ func TestStartCheck(t *testing.T) {
 	if err := v.e.Start(context.Background(), spec("chk-001", core.KindCheck)); err != nil {
 		t.Fatal(err)
 	}
-	c := findCmd(t, v.f, "systemd-run")
+	c := findUnit(t, v.f, unitName("chk-001"))
 	jd := v.e.jobDir("chk-001")
 	tail := c.Args[len(c.Args)-6:]
 	want := []string{"--working-directory=" + jd + "/work", "--", v.e.guestBinary(), "check-run", "--out", jd + "/out"}
@@ -776,7 +817,7 @@ func TestCheckResultOutOfMemory(t *testing.T) {
 	v := newEnv(t)
 	v.installed(t)
 	ctx := context.Background()
-	if strings.Contains(strings.Join(v.e.unitArgs(spec("job-x", "runner"), core.KindCheck, 1234, 1234, "/in"), " "), "--collect") {
+	if strings.Contains(strings.Join(v.e.unitArgs(spec("job-x", "runner"), core.KindCheck, 1234, 1234, "/in", "/proc/1/ns/net"), " "), "--collect") {
 		t.Fatal("--collect unloads a failed unit before CheckResult reads its Result")
 	}
 	v.f.respond = func(c Cmd) (Result, error) {

@@ -319,9 +319,11 @@ func TestReadResolvers(t *testing.T) {
 		t.Error("a missing resolv.conf gave resolvers")
 	}
 
-	// 100.100.100.100 (MagicDNS) is allowed only when it is the configured resolver.
+	// 100.100.100.100 (MagicDNS) is allowed only when it is the configured
+	// resolver. Behind the stub, the upstream servers jobs query from their
+	// own namespace are allowed (resolved.conf's, not its loopback one).
 	v := newEnv(t)
-	if s := NftRules(v.e.policy(testUID)); strings.Contains(s, "100.100.100.100") || !strings.Contains(s, "{ 127.0.0.53 } udp dport 53 accept") {
+	if s := NftRules(v.e.policy(testUID)); strings.Contains(s, "100.100.100.100") || !strings.Contains(s, "{ 127.0.0.53, 192.0.2.53 } udp dport 53 accept") {
 		t.Errorf("default policy DNS:\n%s", s)
 	}
 	must(t, os.WriteFile(v.o.Paths.ResolvConf, []byte("nameserver 100.100.100.100\nnameserver 127.0.0.53\n"), 0o644))
@@ -340,7 +342,7 @@ func TestInstallLoadsNetRules(t *testing.T) {
 	b, err := os.ReadFile(file)
 	must(t, err)
 	// The runner's subordinate uids from the subuid file install wrote.
-	if string(b) != NftRules(NetPolicy{UID: testUID, SubUIDs: []IDRange{{165536, 231071}}, Resolvers: []netip.Addr{StubResolver}}) {
+	if string(b) != NftRules(NetPolicy{UID: testUID, SubUIDs: []IDRange{{165536, 231071}}, Resolvers: []netip.Addr{StubResolver, netip.MustParseAddr("192.0.2.53")}}) {
 		t.Errorf("net.nft:\n%s", b)
 	}
 	if st, _ := os.Stat(file); st.Mode().Perm() != 0o644 || v.f.chowns[file] != [2]int{0, 0} {
@@ -383,7 +385,7 @@ func TestInstallFallsBackToIptables(t *testing.T) {
 	file := filepath.Join(v.dir, "lib", "net-iptables.sh")
 	b, err := os.ReadFile(file)
 	must(t, err)
-	if string(b) != IptablesRules(NetPolicy{UID: testUID, SubUIDs: []IDRange{{165536, 231071}}, Resolvers: []netip.Addr{StubResolver}}, v.o.Paths.Iptables, v.o.Paths.Ip6tables) {
+	if string(b) != IptablesRules(NetPolicy{UID: testUID, SubUIDs: []IDRange{{165536, 231071}}, Resolvers: []netip.Addr{StubResolver, netip.MustParseAddr("192.0.2.53")}}, v.o.Paths.Iptables, v.o.Paths.Ip6tables) {
 		t.Errorf("net-iptables.sh:\n%s", b)
 	}
 	unit, _ := os.ReadFile(filepath.Join(v.dir, "systemd", NetUnit))

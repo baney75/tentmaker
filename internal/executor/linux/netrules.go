@@ -124,10 +124,10 @@ func (e *Executor) nftRules() string      { return filepath.Join(e.p.Lib, "net.n
 func (e *Executor) iptablesRules() string { return filepath.Join(e.p.Lib, "net-iptables.sh") }
 func (e *Executor) netUnitPath() string   { return filepath.Join(e.p.Systemd, NetUnit) }
 
-// tool returns the absolute path of a firewall tool, or "" when it is not
+// tool returns the absolute path of a firewall or namespace tool, or "" when it is not
 // installed. Paths overrides the lookup (tests).
 func (e *Executor) tool(name string) string {
-	p := map[string]string{"nft": e.p.Nft, "iptables": e.p.Iptables, "ip6tables": e.p.Ip6tables}[name]
+	p := map[string]string{"nft": e.p.Nft, "iptables": e.p.Iptables, "ip6tables": e.p.Ip6tables, "pasta": e.p.Pasta, "unshare": e.p.Unshare}[name]
 	if p == "" {
 		p, _ = lookPath(name)
 	}
@@ -186,11 +186,12 @@ func readResolvers(path string) []netip.Addr {
 	return out
 }
 
-// policy is this host's NetPolicy: the runner's uid, the stub resolver and
-// every nameserver in resolv.conf.
+// policy is this host's NetPolicy: the runner's uid, the stub resolver,
+// every nameserver in resolv.conf and the upstream ones jobs query from
+// their own namespace.
 func (e *Executor) policy(uid int) NetPolicy {
 	rs := []netip.Addr{StubResolver}
-	for _, a := range readResolvers(e.p.ResolvConf) {
+	for _, a := range append(readResolvers(e.p.ResolvConf), e.jobResolvers()...) {
 		if !slices.Contains(rs, a) {
 			rs = append(rs, a)
 		}

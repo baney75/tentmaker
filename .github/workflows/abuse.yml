@@ -72,6 +72,14 @@ jobs:
       - name: close home directories
         run: for h in /home/*; do sudo chmod o-rwx "$h"; done
 
+      # Each job gets a network namespace of its own with pasta as its
+      # uplink; setup refuses a host without it.
+      - name: install pasta
+        run: |
+          command -v pasta >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq passt; }
+          pasta --version | head -1
+          sysctl kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || true
+
       # tailscaled, not logged in, so its local API socket is real. It uses
       # userspace networking so the harness can stand in its own tailscale0.
       - name: install tailscaled
@@ -348,6 +356,7 @@ jobs:
           echo "== status"; tentmaker status --json || true
           echo "== daemon log"; sudo journalctl -u tentmaker --no-pager -n 300 || true
           echo "== job units"; sudo journalctl --no-pager -n 200 -u 'tentmaker-job-*' || true
+          echo "== job namespaces"; sudo journalctl --no-pager -n 100 -u 'tentmaker-netns-*' -u 'tentmaker-uplink-*' || true
           echo "== nft"; sudo nft list ruleset 2>/dev/null | head -200 || true
           echo "== decoys"; cat "$RUNNER_TEMP"/decoy*.log || true
           echo "== routes"; ip route; ip -6 route

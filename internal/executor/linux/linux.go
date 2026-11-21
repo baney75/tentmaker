@@ -63,9 +63,12 @@ type Paths struct {
 	ResolvConf        string // /etc/resolv.conf: the DNS servers jobs may query
 	IfInet6           string // /proc/net/if_inet6: finds the Tailscale interfaces
 	IPv6Route         string // /proc/net/ipv6_route: the on-link IPv6 prefixes (the LAN)
-	// Nft, Iptables and Ip6tables are the firewall tools; empty means look
-	// them up in SystemPath.
-	Nft, Iptables, Ip6tables string
+	ResolvedConf      string // /run/systemd/resolve/resolv.conf: upstream DNS behind the 127.0.0.53 stub
+	Proc              string // /proc
+	// Nft, Iptables and Ip6tables are the firewall tools, Pasta and Unshare
+	// make a job's network namespace; empty means look them up in
+	// SystemPath.
+	Nft, Iptables, Ip6tables, Pasta, Unshare string
 }
 
 func (p Paths) withDefaults() Paths {
@@ -90,6 +93,8 @@ func (p Paths) withDefaults() Paths {
 	set(&p.ResolvConf, "/etc/resolv.conf")
 	set(&p.IfInet6, "/proc/net/if_inet6")
 	set(&p.IPv6Route, "/proc/net/ipv6_route")
+	set(&p.ResolvedConf, "/run/systemd/resolve/resolv.conf")
+	set(&p.Proc, "/proc")
 	return p
 }
 
@@ -291,6 +296,11 @@ func (e *Executor) Start(ctx context.Context, spec core.ExecSpec) (err error) {
 		os.RemoveAll(dir)
 		return err
 	}
+	netns, err := e.startNetns(ctx, spec.Name, uid, gid)
+	if err != nil {
+		os.RemoveAll(dir)
+		return fmt.Errorf("%v; no job runs without a network namespace of its own", err)
+	}
 	// The secret waits in a root-only 0600 file. systemd opens it as the
 	// unit's stdin before it drops to the runner user; it is gone as soon as
 	// systemd-run returns (Type=exec: the process has started by then).
@@ -299,12 +309,14 @@ func (e *Executor) Start(ctx context.Context, spec core.ExecSpec) (err error) {
 	}
 	sp := e.secretPath(spec.Name)
 	if err := config.WriteAtomic(sp, spec.Grant.Secret, 0o600); err != nil {
+		e.stopNetns(context.WithoutCancel(ctx), spec.Name)
 		os.RemoveAll(dir)
 		return fmt.Errorf("write the job's stdin file: %v", err)
 	}
 	defer os.Remove(sp)
-	if _, err := e.h.Run(ctx, Cmd{Path: "systemd-run", Args: e.unitArgs(spec, kind, uid, gid, sp), Timeout: time.Minute}); err != nil {
+	if _, err := e.h.Run(ctx, Cmd{Path: "systemd-run", Args: e.unitArgs(spec, kind, uid, gid, sp, netns), Timeout: time.Minute}); err != nil {
 		e.h.Run(context.WithoutCancel(ctx), Cmd{Path: "systemctl", Args: []string{"stop", unitName(spec.Name)}, Timeout: time.Minute})
+		e.stopNetns(context.WithoutCancel(ctx), spec.Name)
 		os.RemoveAll(dir)
 		return fmt.Errorf("start unit %s: %s", unitName(spec.Name), redact(err.Error(), spec.Grant.Secret))
 	}
@@ -373,7 +385,7 @@ func (e *Executor) jobEnv(spec core.ExecSpec, uid int) []string {
 }
 
 // unitArgs is the systemd-run argv for one job. It holds no secret.
-func (e *Executor) unitArgs(spec core.ExecSpec, kind string, uid, gid int, stdinFile string) []string {
+func (e *Executor) unitArgs(spec core.ExecSpec, kind string, uid, gid int, stdinFile, netns string) []string {
 	dir := e.jobDir(spec.Name)
 	rt := e.runtimeDir(uid)
 	args := []string{
@@ -397,6 +409,10 @@ func (e *Executor) unitArgs(spec core.ExecSpec, kind string, uid, gid int, stdin
 		"-p", "TimeoutStopSec=30",
 		"-p", "NoNewPrivileges=yes",
 		"-p", "PrivateTmp=yes",
+		// Its own network namespace and loopback (netns.go), and DNS servers
+		// it can reach from there.
+		"-p", "NetworkNamespacePath=" + netns,
+		"-p", "BindReadOnlyPaths=" + e.jobResolvConf() + ":/etc/resolv.conf",
 		// The user bus and manager sockets sit at fixed paths this uid owns; a
 		// job on them could point podman.service at a config it wrote.
 		"-p", "InaccessiblePaths=-" + filepath.Join(rt, "bus"),
@@ -605,6 +621,7 @@ func (e *Executor) Stop(ctx context.Context, name string) error {
 	if st == core.ExecRunning {
 		return fmt.Errorf("unit %s still runs after stop", unitName(name))
 	}
+	e.stopNetns(ctx, name)
 	e.log.Info("job stopped", "executor", Name, "name", name)
 	return nil
 }
@@ -624,6 +641,7 @@ func (e *Executor) Clean(ctx context.Context, name string) error {
 	os.Remove(e.secretPath(name))
 	// A failed unit stays loaded (no --collect) until this.
 	e.h.Run(ctx, Cmd{Path: "systemctl", Args: []string{"reset-failed", unitName(name)}, Timeout: 30 * time.Second})
+	e.stopNetns(ctx, name)
 	return e.removeJobDir(ctx, e.jobDir(name))
 }
 
@@ -708,6 +726,15 @@ func (e *Executor) Reset(ctx context.Context) error {
 		if st != "inactive" && st != "failed" {
 			return fmt.Errorf("reset refused: job %s is %s", n, st)
 		}
+	}
+	// No job runs, so no job namespace should either.
+	nsUnits, err := e.netnsUnits(ctx)
+	if err != nil {
+		return err
+	}
+	for _, u := range nsUnits {
+		e.h.Run(ctx, Cmd{Path: "systemctl", Args: []string{"stop", u}, Timeout: 30 * time.Second})
+		e.h.Run(ctx, Cmd{Path: "systemctl", Args: []string{"reset-failed", u}, Timeout: 30 * time.Second})
 	}
 	u := strconv.Itoa(uid)
 	steps := []Cmd{

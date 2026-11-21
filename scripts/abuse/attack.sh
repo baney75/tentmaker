@@ -136,6 +136,23 @@ echo "tentmaker abuse: job dir $job_dir, uid $(id -u), groups $(id -G)"
 # Controls: a sandbox that blocks everything would pass every attack.
 if http_ok https://api.github.com/zen; then echo "CONTROL internet OK"; else echo "CONTROL internet FAILED"; fi
 if getent hosts github.com >/dev/null; then echo "CONTROL dns OK"; else echo "CONTROL dns FAILED"; fi
+# The job's own loopback works: a test that starts a server on 127.0.0.1
+# or ::1 (httptest, a database) reaches it, as on GitHub's runners. The
+# host's loopback stays closed (loopback-other-port and the rest below).
+own_lo() { # own_lo NAME BIND URLHOST PORT
+	python3 -m http.server "$4" --bind "$2" >/dev/null 2>&1 &
+	local pid=$! ok=FAILED
+	for _ in $(seq 20); do
+		if http_ok "http://$3:$4/"; then ok=OK; break; fi
+		sleep 0.25
+	done
+	kill "$pid" 2>/dev/null
+	echo "CONTROL $1 $ok"
+}
+if [ "$(uname -s)" = Linux ]; then
+	own_lo own-loopback-v4 127.0.0.1 127.0.0.1 18771
+	own_lo own-loopback-v6 ::1 '[::1]' 18772
+fi
 
 # Forge tokens and the control token.
 got=""
