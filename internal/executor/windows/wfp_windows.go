@@ -41,6 +41,8 @@ const (
 	fwpUint32             = 3
 	fwpByteArray16        = 11
 	fwpSecurityDescriptor = 14
+	fwpV4AddrMask         = 0x100
+	fwpV6AddrMask         = 0x101
 
 	fwpMatchEqual       = 0
 	fwpMatchFlagsAllSet = 6
@@ -83,6 +85,17 @@ type fwpValue0 struct {
 type fwpmDisplayData0 struct {
 	Name        *uint16
 	Description *uint16
+}
+
+// FWP_V4_ADDR_AND_MASK (host byte order) and FWP_V6_ADDR_AND_MASK.
+type fwpV4AddrAndMask struct {
+	Addr uint32
+	Mask uint32
+}
+
+type fwpV6AddrAndMask struct {
+	Addr         [16]byte
+	PrefixLength uint8
 }
 
 type fwpByteBlob struct {
@@ -246,7 +259,9 @@ func (s *wfpSession) addFilter(f WFPFilter) error {
 	pin.Pin(blob)
 	conds := []fwpmFilterCondition0{
 		{FieldKey: fwpmConditionALEUserID, MatchType: fwpMatchEqual, Value: fwpValue0{Type: fwpSecurityDescriptor, Value: uintptr(unsafe.Pointer(blob))}},
-		{FieldKey: fwpmConditionFlags, MatchType: fwpMatchFlagsAllSet, Value: fwpValue0{Type: fwpUint32, Value: fwpConditionFlagIsLoopback}},
+	}
+	if !f.AnyHost {
+		conds = append(conds, fwpmFilterCondition0{FieldKey: fwpmConditionFlags, MatchType: fwpMatchFlagsAllSet, Value: fwpValue0{Type: fwpUint32, Value: fwpConditionFlagIsLoopback}})
 	}
 	if f.Protocol != 0 {
 		conds = append(conds, fwpmFilterCondition0{FieldKey: fwpmConditionIPProtocol, MatchType: fwpMatchEqual, Value: fwpValue0{Type: fwpUint8, Value: uintptr(f.Protocol)}})
@@ -268,6 +283,22 @@ func (s *wfpSession) addFilter(f WFPFilter) error {
 		*b = a.As16()
 		pin.Pin(b)
 		conds = append(conds, fwpmFilterCondition0{FieldKey: fwpmConditionRemoteAddr, MatchType: fwpMatchEqual, Value: fwpValue0{Type: fwpByteArray16, Value: uintptr(unsafe.Pointer(b))}})
+	}
+	for _, p := range f.RemotePrefixes {
+		p = p.Masked()
+		if f.V6 != p.Addr().Is6() {
+			return fmt.Errorf("WFP filter %s: %s is the wrong family", f.Key, p)
+		}
+		if p.Addr().Is4() {
+			b := p.Addr().As4()
+			m := &fwpV4AddrAndMask{Addr: binary.BigEndian.Uint32(b[:]), Mask: ^uint32(0) << (32 - p.Bits())}
+			pin.Pin(m)
+			conds = append(conds, fwpmFilterCondition0{FieldKey: fwpmConditionRemoteAddr, MatchType: fwpMatchEqual, Value: fwpValue0{Type: fwpV4AddrMask, Value: uintptr(unsafe.Pointer(m))}})
+			continue
+		}
+		m := &fwpV6AddrAndMask{Addr: p.Addr().As16(), PrefixLength: uint8(p.Bits())}
+		pin.Pin(m)
+		conds = append(conds, fwpmFilterCondition0{FieldKey: fwpmConditionRemoteAddr, MatchType: fwpMatchEqual, Value: fwpValue0{Type: fwpV6AddrMask, Value: uintptr(unsafe.Pointer(m))}})
 	}
 	prov := win.GUID(WFPProvider)
 	flt := &fwpmFilter0{

@@ -34,4 +34,10 @@ const (
 	_ = 72 - unsafe.Sizeof(fwpmSublayer0{})
 	_ = unsafe.Offsetof(fwpmSublayer0{}.Weight) - 64
 	_ = 64 - unsafe.Offsetof(fwpmSublayer0{}.Weight)
+	_ = unsafe.Sizeof(fwpV4AddrAndMask{}) - 8
+	_ = 8 - unsafe.Sizeof(fwpV4AddrAndMask{})
+	_ = unsafe.Sizeof(fwpV6AddrAndMask{}) - 17
+	_ = 17 - unsafe.Sizeof(fwpV6AddrAndMask{})
+	_ = unsafe.Offsetof(fwpV6AddrAndMask{}.PrefixLength) - 16
+	_ = 16 - unsafe.Offsetof(fwpV6AddrAndMask{}.PrefixLength)
 )

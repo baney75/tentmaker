@@ -22,9 +22,13 @@ import (
 //   - block everything else, with FWPM_FILTER_FLAG_CLEAR_ACTION_RIGHT so no
 //     later sublayer can permit it again.
 //
+// Two more hard blocks, not limited to loopback traffic, take multicast and
+// broadcast (224.0.0.0/4, 255.255.255.255, ff00::/8): Windows Firewall
+// rules don't, and a live run saw a job's datagram to 239.77.77.77 answered.
+//
 // Every object is persistent, so the filters are in force from boot,
-// before the service starts. Traffic to other hosts is not loopback and is
-// left to the Windows Firewall rules (netrules.go).
+// before the service starts. Other traffic to other hosts is not loopback
+// and is left to the Windows Firewall rules (netrules.go).
 
 // GUID is a Windows GUID, laid out like golang.org/x/sys/windows.GUID.
 type GUID struct {
@@ -72,18 +76,27 @@ func WFPKeys() []GUID {
 }
 
 // WFPFilter is one filter at the ALE connect layer. Every filter matches
-// only sockets of user SID and only loopback traffic (traffic to this host).
+// only sockets of user SID, and only loopback traffic (traffic to this
+// host) unless AnyHost.
 type WFPFilter struct {
-	Key         GUID
-	Name        string
-	V6          bool
-	Permit      bool // else block, which no later sublayer may override
-	Weight      uint8
-	SID         string
-	Protocol    uint8        // 6 TCP, 17 UDP, 0 any
-	RemotePort  uint16       // 0 any
-	RemoteAddrs []netip.Addr // any of them; none means any address
+	Key            GUID
+	Name           string
+	V6             bool
+	Permit         bool // else block, which no later sublayer may override
+	AnyHost        bool // traffic to any host, not only loopback traffic
+	Weight         uint8
+	SID            string
+	Protocol       uint8          // 6 TCP, 17 UDP, 0 any
+	RemotePort     uint16         // 0 any
+	RemoteAddrs    []netip.Addr   // any of them or of RemotePrefixes; none
+	RemotePrefixes []netip.Prefix // of either means any address
 }
+
+// Multicast and broadcast destinations, blocked for jobs on every host.
+var (
+	MulticastV4 = []netip.Prefix{netip.MustParsePrefix("224.0.0.0/4"), netip.MustParsePrefix("255.255.255.255/32")}
+	MulticastV6 = []netip.Prefix{netip.MustParsePrefix("ff00::/8")}
+)
 
 // Description is written on the filter. It spells out every condition, so
 // comparing it with what is installed compares the filters.
@@ -96,19 +109,26 @@ func (f WFPFilter) Description() string {
 	if f.V6 {
 		fam = "v6"
 	}
-	s := fmt.Sprintf("tentmaker %s user %s: %s %s loopback weight %d", wfpVersion, f.SID, act, fam, f.Weight)
+	scope := "loopback"
+	if f.AnyHost {
+		scope = "any host"
+	}
+	s := fmt.Sprintf("tentmaker %s user %s: %s %s %s weight %d", wfpVersion, f.SID, act, fam, scope, f.Weight)
 	if f.Protocol != 0 {
 		s += fmt.Sprintf(" proto %d", f.Protocol)
 	}
 	if f.RemotePort != 0 {
 		s += fmt.Sprintf(" port %d", f.RemotePort)
 	}
-	if len(f.RemoteAddrs) > 0 {
-		var as []string
-		for _, a := range f.RemoteAddrs {
-			as = append(as, a.String())
-		}
-		s += " to " + strings.Join(as, " ")
+	var to []string
+	for _, a := range f.RemoteAddrs {
+		to = append(to, a.String())
+	}
+	for _, p := range f.RemotePrefixes {
+		to = append(to, p.String())
+	}
+	if len(to) > 0 {
+		s += " to " + strings.Join(to, " ")
 	}
 	return s
 }
@@ -140,6 +160,10 @@ func WFPFilters(sid string, resolvers []netip.Addr) []WFPFilter {
 	for i, v6 := range []bool{false, true} {
 		fs = append(fs, WFPFilter{Key: wfpFilterKey(5 + i), Name: "Tentmaker: CI jobs never reach this host",
 			V6: v6, Weight: 1, SID: sid})
+	}
+	for i, ps := range [][]netip.Prefix{MulticastV4, MulticastV6} {
+		fs = append(fs, WFPFilter{Key: wfpFilterKey(7 + i), Name: "Tentmaker: CI jobs send no multicast or broadcast",
+			V6: i == 1, AnyHost: true, Weight: 1, SID: sid, RemotePrefixes: ps})
 	}
 	return fs
 }

@@ -209,13 +209,32 @@ func TestWFPFilters(t *testing.T) {
 			continue
 		}
 		blocks++
-		// The blocks take all of this host's traffic for the user, both
-		// families, no matter the address or port.
-		if f.Protocol != 0 || f.RemotePort != 0 || len(f.RemoteAddrs) != 0 {
+		if f.AnyHost {
+			// Multicast and broadcast, to any host, each family.
+			want := MulticastV4
+			if f.V6 {
+				want = MulticastV6
+			}
+			if f.Protocol != 0 || f.RemotePort != 0 || len(f.RemoteAddrs) != 0 || !slices.Equal(f.RemotePrefixes, want) {
+				t.Errorf("multicast block: %s", f.Description())
+			}
+			continue
+		}
+		// The loopback blocks take all of this host's traffic for the
+		// user, both families, no matter the address or port.
+		if f.Protocol != 0 || f.RemotePort != 0 || len(f.RemoteAddrs) != 0 || len(f.RemotePrefixes) != 0 {
 			t.Errorf("block narrower than all loopback: %s", f.Description())
 		}
 	}
-	if blocks != 2 || permits != 5 {
+	for _, want := range []string{
+		"tentmaker wfp-v1 user " + testSID + ": block v4 any host weight 1 to 224.0.0.0/4 255.255.255.255/32",
+		"tentmaker wfp-v1 user " + testSID + ": block v6 any host weight 1 to ff00::/8",
+	} {
+		if !slices.ContainsFunc(fs, func(f WFPFilter) bool { return f.Description() == want && !f.Permit }) {
+			t.Errorf("no %q", want)
+		}
+	}
+	if blocks != 4 || permits != 5 {
 		t.Errorf("%d blocks and %d permits:\n%v", blocks, permits, fs)
 	}
 	want := "tentmaker wfp-v1 user " + testSID + ": permit v4 loopback weight 14 proto 17 port 53 to 168.63.129.16 192.0.2.53"
@@ -223,7 +242,7 @@ func TestWFPFilters(t *testing.T) {
 		t.Errorf("no %q", want)
 	}
 	// No DNS servers: the relay and the blocks only.
-	if fs := WFPFilters(testSID, nil); len(fs) != 3 {
+	if fs := WFPFilters(testSID, nil); len(fs) != 5 {
 		t.Errorf("filters without DNS servers: %v", fs)
 	}
 }
