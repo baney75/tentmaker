@@ -1,0 +1,31 @@
+# The workflow the e2e test runs through Tentmaker in checks mode. Tentmaker
+# posts its result as the commit statuses tentmaker/smoke and
+# tentmaker/smoke-windows. GitHub's own runners run it too, where it does
+# nothing but echo: GitHub sets GITHUB_ACTIONS=true and Tentmaker does not,
+# and e2e.yml checks the Tentmaker log for TENTMAKER=1 GITHUB_ACTIONS=unset.
+name: tentmaker-smoke
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - run: echo "tentmaker-smoke TENTMAKER=${TENTMAKER:-unset} GITHUB_ACTIONS=${GITHUB_ACTIONS:-unset} RUNNER_OS=$RUNNER_OS"
+      - run: test "$TENTMAKER" = 1 || test "${GITHUB_ACTIONS:-}" = true
+
+  smoke-windows:
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - shell: pwsh
+        run: Write-Output "tentmaker-smoke TENTMAKER=$(if ($env:TENTMAKER) { $env:TENTMAKER } else { 'unset' }) GITHUB_ACTIONS=$(if ($env:GITHUB_ACTIONS) { $env:GITHUB_ACTIONS } else { 'unset' }) RUNNER_OS=$env:RUNNER_OS"
+      - shell: pwsh
+        run: if ($env:TENTMAKER -ne '1' -and $env:GITHUB_ACTIONS -ne 'true') { exit 1 }
