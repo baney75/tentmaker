@@ -42,6 +42,25 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # Tentmaker never reruns a context a commit already has a status for,
+      # and an earlier run may have tested TM_SHA. A new commit with its
+      # tree, on a throwaway branch, is one no run has seen. Commits made
+      # with GITHUB_TOKEN trigger no workflows.
+      - name: copy the head to a throwaway branch
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          tree=$(timeout 30 gh api "repos/$REPO/git/commits/$TM_SHA" --jq .tree.sha)
+          sha=$(timeout 30 gh api "repos/$REPO/git/commits" -f "tree=$tree" -f "parents[]=$TM_SHA" \
+            -f "message=tentmaker abuse $GITHUB_RUN_ID.$GITHUB_RUN_ATTEMPT ($RUNNER_OS) of $TM_SHA" --jq .sha)
+          [ -n "$sha" ] || { echo "::error::could not make the throwaway commit"; exit 1; }
+          branch="tm-abuse/$GITHUB_RUN_ID.$GITHUB_RUN_ATTEMPT/linux"
+          timeout 30 gh api "repos/$REPO/git/refs" -f "ref=refs/heads/$branch" -f "sha=$sha" >/dev/null
+          echo "TM_COPY_BRANCH=$branch" >>"$GITHUB_ENV"
+          echo "TM_COPY_SHA=$sha" >>"$GITHUB_ENV"
+          echo "testing $sha on $branch, a copy of $TM_SHA"
       - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version-file: go.mod
@@ -145,7 +164,7 @@ jobs:
           echo "host address: $hostip"
           urls="http://100.64.77.1:8080/ http://[fd7a:115c:a1e0::77]:8080/ http://10.77.0.1:8080/ http://100.100.100.100/
             http://192.0.2.77:8767/ http://[2001:db8:77::1]:8767/ http://$hostip:8767/ http://10.78.0.2:8767/ http://[2001:db8:78::2]:8767/ http://$hostip:7433/ http://100.64.77.1:7433/
-            http://[fd7a:115c:a1e0::77]:7433/ http://[::1]:7433/ http://127.0.0.1:7433/ http://127.0.0.1:8766/ http://[::1]:8766/
+            http://[fd7a:115c:a1e0::77]:7433/ http://[::1]:7433/ http://127.0.0.1:7433/ http://127.0.0.1:8766/ http://[::1]:8766/ http://127.0.0.1:8767/ http://[::1]:8767/
             http://10.78.0.1:8080/ http://[2001:db8:78::1]:8080/ http://10.99.0.1:8080/"
           [ -n "$meta" ] && urls="$urls http://169.254.169.254/metadata/instance"
           for u in $urls; do
@@ -194,12 +213,12 @@ jobs:
         run: |
           start=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           printf %s "$GITHUB_TOKEN" | sudo tentmaker connect github --token-stdin --json | jq -e '.ok == true' >/dev/null || { echo "::error::connect failed"; exit 1; }
-          sudo tentmaker repo add "$REPO" --mode checks --allow-public --workflow .github/workflows/tentmaker-abuse.yml --branch "$TM_BRANCH" --json |
+          sudo tentmaker repo add "$REPO" --mode checks --allow-public --workflow .github/workflows/tentmaker-abuse.yml --branch "$TM_COPY_BRANCH" --json |
             jq -e '.ok == true' >/dev/null || { echo "::error::repo add failed"; exit 1; }
           jobs="abuse-sibling abuse abuse-oom abuse-pids"
           deadline=$((SECONDS + 900))
           while :; do
-            timeout 30 gh api "repos/$REPO/commits/$TM_SHA/statuses?per_page=100" >"$RUNNER_TEMP/all-statuses.json" || { sleep 10; continue; }
+            timeout 30 gh api "repos/$REPO/commits/$TM_COPY_SHA/statuses?per_page=100" >"$RUNNER_TEMP/all-statuses.json" || { sleep 10; continue; }
             jq 'reduce (.[] | select(.context | startswith("tentmaker/"))) as $s ({}; if has($s.context) then . else .[$s.context] = {state: $s.state, description: $s.description, created_at: $s.created_at} end)' \
               "$RUNNER_TEMP/all-statuses.json" >"$RUNNER_TEMP/statuses.json"
             pending=""
@@ -219,7 +238,7 @@ jobs:
           jq . "$RUNNER_TEMP/statuses.json"
           mkdir -p "$RUNNER_TEMP/abuse-logs"
           for j in $jobs; do
-            log="/var/lib/tentmaker/checks/${REPO/\//_}-${TM_SHA:0:12}-$j.log"
+            log="/var/lib/tentmaker/checks/${REPO/\//_}-${TM_COPY_SHA:0:12}-$j.log"
             echo "== $log"
             sudo cat "$log" | tee "$RUNNER_TEMP/abuse-logs/$j.log" || echo "(no log)"
           done
@@ -269,14 +288,14 @@ jobs:
             for t in iptables ip6tables; do sudo "$t" -w 5 -D OUTPUT -m owner --uid-owner "$uid" -j TENTMAKER || true; done
           fi
           sudo tentmaker repo add "$REPO" --mode checks --allow-public --workflow .github/workflows/tentmaker-abuse.yml \
-            --workflow .github/workflows/tentmaker-abuse-closed.yml --branch "$TM_BRANCH" --json | jq -e '.ok == true' >/dev/null ||
+            --workflow .github/workflows/tentmaker-abuse-closed.yml --branch "$TM_COPY_BRANCH" --json | jq -e '.ok == true' >/dev/null ||
             { echo "::error::repo add failed"; exit 1; }
-          st=$(bash scripts/abuse/wait-status.sh "$REPO" "$TM_SHA" tentmaker/abuse-closed 300)
+          st=$(bash scripts/abuse/wait-status.sh "$REPO" "$TM_COPY_SHA" tentmaker/abuse-closed 300)
           echo "status: $st"
           state=$(jq -r .state <<<"$st")
           desc=$(jq -r .description <<<"$st")
           mkdir -p "$RUNNER_TEMP/abuse-logs"
-          sudo cat "/var/lib/tentmaker/checks/${REPO/\//_}-${TM_SHA:0:12}-abuse-closed.log" >"$RUNNER_TEMP/abuse-logs/abuse-closed.log" 2>/dev/null || true
+          sudo cat "/var/lib/tentmaker/checks/${REPO/\//_}-${TM_COPY_SHA:0:12}-abuse-closed.log" >"$RUNNER_TEMP/abuse-logs/abuse-closed.log" 2>/dev/null || true
           cat "$RUNNER_TEMP/abuse-logs/abuse-closed.log"
           if [ "$state" = success ] || [ "$state" = failure ] || grep -q 'ATTACK fail-closed SUCCEEDED' "$RUNNER_TEMP/abuse-logs/abuse-closed.log"; then
             echo "ATTACK fail-closed SUCCEEDED the job ran without the rules ($state: $desc)" >>"$h"
@@ -331,11 +350,11 @@ jobs:
           sudo nft list table inet tentmaker || true
           sudo tentmaker repo add "$REPO" --mode checks --allow-public --workflow .github/workflows/tentmaker-abuse.yml \
             --workflow .github/workflows/tentmaker-abuse-closed.yml --workflow .github/workflows/tentmaker-abuse-lan.yml \
-            --branch "$TM_BRANCH" --json | jq -e '.ok == true' >/dev/null || { echo "::error::repo add failed"; exit 1; }
-          st=$(bash scripts/abuse/wait-status.sh "$REPO" "$TM_SHA" tentmaker/abuse-lan 600)
+            --branch "$TM_COPY_BRANCH" --json | jq -e '.ok == true' >/dev/null || { echo "::error::repo add failed"; exit 1; }
+          st=$(bash scripts/abuse/wait-status.sh "$REPO" "$TM_COPY_SHA" tentmaker/abuse-lan 600)
           echo "status: $st"
           jq -c '{"tentmaker/abuse-lan": .}' <<<"$st" >"$RUNNER_TEMP/statuses-lan.json"
-          sudo cat "/var/lib/tentmaker/checks/${REPO/\//_}-${TM_SHA:0:12}-abuse-lan.log" | tee "$RUNNER_TEMP/abuse-logs/abuse-lan.log" || echo "(no log)"
+          sudo cat "/var/lib/tentmaker/checks/${REPO/\//_}-${TM_COPY_SHA:0:12}-abuse-lan.log" | tee "$RUNNER_TEMP/abuse-logs/abuse-lan.log" || echo "(no log)"
 
       - name: judge
         if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
@@ -382,6 +401,14 @@ jobs:
           done
           if [ -n "$left" ]; then echo "::error::left after uninstall --purge:$left"; exit 1; fi
 
+      - name: delete the throwaway branch
+        if: always() && env.TM_COPY_BRANCH != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: timeout 30 gh api -X DELETE "repos/$REPO/git/refs/heads/$TM_COPY_BRANCH" >/dev/null || echo "::warning::could not delete $TM_COPY_BRANCH"
+
   windows:
     name: abuse (windows-latest)
     runs-on: windows-latest
@@ -394,6 +421,25 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # Tentmaker never reruns a context a commit already has a status for,
+      # and an earlier run may have tested TM_SHA. A new commit with its
+      # tree, on a throwaway branch, is one no run has seen. Commits made
+      # with GITHUB_TOKEN trigger no workflows.
+      - name: copy the head to a throwaway branch
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          tree=$(timeout 30 gh api "repos/$REPO/git/commits/$TM_SHA" --jq .tree.sha)
+          sha=$(timeout 30 gh api "repos/$REPO/git/commits" -f "tree=$tree" -f "parents[]=$TM_SHA" \
+            -f "message=tentmaker abuse $GITHUB_RUN_ID.$GITHUB_RUN_ATTEMPT ($RUNNER_OS) of $TM_SHA" --jq .sha)
+          [ -n "$sha" ] || { echo "::error::could not make the throwaway commit"; exit 1; }
+          branch="tm-abuse/$GITHUB_RUN_ID.$GITHUB_RUN_ATTEMPT/windows"
+          timeout 30 gh api "repos/$REPO/git/refs" -f "ref=refs/heads/$branch" -f "sha=$sha" >/dev/null
+          echo "TM_COPY_BRANCH=$branch" >>"$GITHUB_ENV"
+          echo "TM_COPY_SHA=$sha" >>"$GITHUB_ENV"
+          echo "testing $sha on $branch, a copy of $TM_SHA"
       - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version-file: go.mod
@@ -493,7 +539,7 @@ jobs:
           Write-Output "host address: $hostip"
           $urls = @('http://100.64.77.1:8080/', 'http://[fd7a:115c:a1e0::77]:8080/', 'http://10.77.0.1:8080/', 'http://100.100.100.100/',
             'http://192.0.2.77:8767/', 'http://[2001:db8:77::1]:8767/', "http://${hostip}:8767/", "http://${hostip}:7433/", 'http://100.64.77.1:7433/',
-            'http://[fd7a:115c:a1e0::77]:7433/', 'http://[::1]:7433/', 'http://127.0.0.1:7433/', 'http://127.0.0.1:8766/', 'http://[::1]:8766/')
+            'http://[fd7a:115c:a1e0::77]:7433/', 'http://[::1]:7433/', 'http://127.0.0.1:7433/', 'http://127.0.0.1:8766/', 'http://[::1]:8766/', 'http://127.0.0.1:8767/', 'http://[::1]:8767/')
           if ($meta) { $urls += 'http://169.254.169.254/metadata/instance' }
           foreach ($u in $urls) {
             $ok = $false
@@ -533,7 +579,7 @@ jobs:
           $start = [DateTime]::UtcNow
           $c = ($env:GITHUB_TOKEN | tentmaker connect github --token-stdin --json) -join "`n"
           if (-not ($c | ConvertFrom-Json).ok) { Write-Output "::error::connect failed"; exit 1 }
-          $r = (tentmaker repo add $env:REPO --mode checks --allow-public --workflow .github/workflows/tentmaker-abuse.yml --branch $env:TM_BRANCH --json) -join "`n"
+          $r = (tentmaker repo add $env:REPO --mode checks --allow-public --workflow .github/workflows/tentmaker-abuse.yml --branch $env:TM_COPY_BRANCH --json) -join "`n"
           if (-not ($r | ConvertFrom-Json).ok) { Write-Output "::error::repo add failed: $r"; exit 1 }
           $jobs = @('abuse-sibling-windows', 'abuse-windows', 'abuse-oom-windows', 'abuse-pids-windows')
           $headers = @{ Authorization = "Bearer $env:GITHUB_TOKEN"; Accept = 'application/vnd.github+json'; 'User-Agent' = 'tentmaker-abuse' }
@@ -541,7 +587,7 @@ jobs:
           $statuses = @{}
           while ($true) {
             try {
-              $all = Invoke-RestMethod -TimeoutSec 30 -Headers $headers "https://api.github.com/repos/$env:REPO/commits/$env:TM_SHA/statuses?per_page=100"
+              $all = Invoke-RestMethod -TimeoutSec 30 -Headers $headers "https://api.github.com/repos/$env:REPO/commits/$env:TM_COPY_SHA/statuses?per_page=100"
             } catch { Start-Sleep -Seconds 10; continue }
             $statuses = @{}
             foreach ($s in $all) {
@@ -566,7 +612,7 @@ jobs:
           Get-Content "$env:RUNNER_TEMP\statuses.json"
           $dir = New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\abuse-logs"
           foreach ($j in $jobs) {
-            $log = "$env:ProgramData\Tentmaker\state\checks\$($env:REPO -replace '/', '_')-$($env:TM_SHA.Substring(0, 12))-$j.log"
+            $log = "$env:ProgramData\Tentmaker\state\checks\$($env:REPO -replace '/', '_')-$($env:TM_COPY_SHA.Substring(0, 12))-$j.log"
             Write-Output "== $log"
             if (Test-Path $log) { Copy-Item $log (Join-Path $dir "$j.log"); Get-Content $log } else { Write-Output '(no log)' }
           }
@@ -608,12 +654,12 @@ jobs:
           $h = "$env:RUNNER_TEMP\harness.txt"
           Get-NetFirewallRule -Group Tentmaker -ErrorAction SilentlyContinue | Remove-NetFirewallRule
           $r = (tentmaker repo add $env:REPO --mode checks --allow-public --workflow .github/workflows/tentmaker-abuse.yml `
-            --workflow .github/workflows/tentmaker-abuse-closed.yml --branch $env:TM_BRANCH --json) -join "`n"
+            --workflow .github/workflows/tentmaker-abuse-closed.yml --branch $env:TM_COPY_BRANCH --json) -join "`n"
           if (-not ($r | ConvertFrom-Json).ok) { Write-Output "::error::repo add failed: $r"; exit 1 }
-          $st = (bash scripts/abuse/wait-status.sh $env:REPO $env:TM_SHA tentmaker/abuse-closed-windows 300) | ConvertFrom-Json
+          $st = (bash scripts/abuse/wait-status.sh $env:REPO $env:TM_COPY_SHA tentmaker/abuse-closed-windows 300) | ConvertFrom-Json
           Write-Output "status: $($st.state) $($st.description)"
           $dir = New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\abuse-logs"
-          $log = "$env:ProgramData\Tentmaker\state\checks\$($env:REPO -replace '/', '_')-$($env:TM_SHA.Substring(0, 12))-abuse-closed-windows.log"
+          $log = "$env:ProgramData\Tentmaker\state\checks\$($env:REPO -replace '/', '_')-$($env:TM_COPY_SHA.Substring(0, 12))-abuse-closed-windows.log"
           $text = ''
           if (Test-Path $log) { Copy-Item $log (Join-Path $dir 'abuse-closed-windows.log'); $text = Get-Content -Raw $log; Write-Output $text }
           if ($st.state -in @('success', 'failure') -or $text -match 'ATTACK fail-closed SUCCEEDED') {
@@ -654,12 +700,12 @@ jobs:
           Write-Output "rules: $d"
           if ($d -notmatch 'allow_lan=true') { Write-Output "::error::the loaded rules do not say allow_lan=true, so this step proves nothing"; exit 1 }
           $r = (tentmaker repo add $env:REPO --mode checks --allow-public --workflow .github/workflows/tentmaker-abuse.yml `
-            --workflow .github/workflows/tentmaker-abuse-closed.yml --workflow .github/workflows/tentmaker-abuse-lan.yml --branch $env:TM_BRANCH --json) -join "`n"
+            --workflow .github/workflows/tentmaker-abuse-closed.yml --workflow .github/workflows/tentmaker-abuse-lan.yml --branch $env:TM_COPY_BRANCH --json) -join "`n"
           if (-not ($r | ConvertFrom-Json).ok) { Write-Output "::error::repo add failed: $r"; exit 1 }
-          $st = (bash scripts/abuse/wait-status.sh $env:REPO $env:TM_SHA tentmaker/abuse-lan-windows 600) | ConvertFrom-Json
+          $st = (bash scripts/abuse/wait-status.sh $env:REPO $env:TM_COPY_SHA tentmaker/abuse-lan-windows 600) | ConvertFrom-Json
           Write-Output "status: $($st.state) $($st.description)"
           @{ 'tentmaker/abuse-lan-windows' = @{ state = $st.state; description = $st.description } } | ConvertTo-Json | Set-Content "$env:RUNNER_TEMP\statuses-lan.json"
-          $log = "$env:ProgramData\Tentmaker\state\checks\$($env:REPO -replace '/', '_')-$($env:TM_SHA.Substring(0, 12))-abuse-lan-windows.log"
+          $log = "$env:ProgramData\Tentmaker\state\checks\$($env:REPO -replace '/', '_')-$($env:TM_COPY_SHA.Substring(0, 12))-abuse-lan-windows.log"
           if (Test-Path $log) { Copy-Item $log "$env:RUNNER_TEMP\abuse-logs\abuse-lan-windows.log"; Get-Content $log } else { Write-Output '(no log)' }
 
       - name: judge
@@ -697,3 +743,11 @@ jobs:
           if (Get-Service Tentmaker -ErrorAction SilentlyContinue) { $left += 'service' }
           if (Get-LocalUser tentmaker-runner -ErrorAction SilentlyContinue) { $left += 'user:tentmaker-runner' }
           if ($left.Count -gt 0) { Write-Output "::error::left after uninstall --purge: $($left -join ', ')"; exit 1 }
+
+      - name: delete the throwaway branch
+        if: always() && env.TM_COPY_BRANCH != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: timeout 30 gh api -X DELETE "repos/$REPO/git/refs/heads/$TM_COPY_BRANCH" >/dev/null || echo "::warning::could not delete $TM_COPY_BRANCH"

@@ -161,13 +161,20 @@ function TryPause([string]$Token = '') {
 # The relay port answers the job, so the pause attacks are refused by the
 # API, not cut off by the network (Tentmaker's WFP filters permit only it on
 # this host).
+# The source archive relay answers the job: on 7435 once it has a listener
+# of its own, on 7434 while it shares the control API's.
 $relayOk = $false
-try {
-    $c = [System.Net.Sockets.TcpClient]::new([System.Net.Sockets.AddressFamily]::InterNetwork)
-    $relayOk = $c.ConnectAsync('127.0.0.1', 7434).Wait(4000) -and $c.Connected
-    $c.Close()
-} catch { $relayOk = $false }
+foreach ($p in 7435, 7434) {
+    try {
+        $c = [System.Net.Sockets.TcpClient]::new([System.Net.Sockets.AddressFamily]::InterNetwork)
+        $relayOk = $c.ConnectAsync('127.0.0.1', $p).Wait(4000) -and $c.Connected
+        $c.Close()
+    } catch { $relayOk = $false }
+    if ($relayOk) { break }
+}
 if ($relayOk) { Write-Output 'CONTROL relay OK' } else { Write-Output 'CONTROL relay FAILED' }
+# The control API's GETs need no token, so the job must not reach it.
+Reach control-api-read 'http://127.0.0.1:7434/v1/status'
 if (TryPause) { Say pause-no-token SUCCEEDED } else { Say pause-no-token BLOCKED }
 $guessed = $false
 foreach ($t in @(('0' * 64), ('f' * 64), [Guid]::NewGuid().ToString('N') + [Guid]::NewGuid().ToString('N'))) {
@@ -197,6 +204,9 @@ Reach mesh-port-loopback 'http://127.0.0.1:7433/'
 Reach mesh-port-loopback-v6 'http://[::1]:7433/'
 Reach loopback-other-port 'http://127.0.0.1:8766/'
 Reach loopback-v6-other-port 'http://[::1]:8766/'
+# A host service bound to every address ([::] and 0.0.0.0), by loopback.
+Reach loopback-wildcard 'http://127.0.0.1:8767/'
+Reach loopback-v6-wildcard 'http://[::1]:8767/'
 # tailscaled's local API on its named pipe: Windows lets only
 # administrators and the signed-in owner use it.
 try {

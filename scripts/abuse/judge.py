@@ -21,11 +21,12 @@ import re
 import sys
 
 MAIN = [
-    "read-secrets", "read-control-token", "pause-no-token", "pause-guessed-token",
+    "read-secrets", "read-control-token", "control-api-read", "pause-no-token", "pause-guessed-token",
     "decoy-tailnet-v4", "decoy-tailnet-v6", "magicdns-http", "magicdns-dns", "decoy-lan-v4", "lan-multicast",
     "cloud-metadata", "host-own-v4", "host-own-v6", "host-ip-other-port",
     "mesh-port-host-ip", "mesh-port-lan", "mesh-port-tailnet", "mesh-port-tailnet-v6", "mesh-port-host-v6",
     "mesh-port-loopback", "mesh-port-loopback-v6", "loopback-other-port", "loopback-v6-other-port",
+    "loopback-wildcard", "loopback-v6-wildcard",
     "tailscaled-socket",
     "PRIV", "write-other-home", "write-state-dir", "signal-daemon", "read-other-job",
 ]

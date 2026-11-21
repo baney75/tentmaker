@@ -169,10 +169,17 @@ pause() { # pause [TOKEN]
 		${1:+-H "Authorization: Bearer $1"} -d '{"reason":"abuse test","for_s":600}' http://127.0.0.1:7434/v1/pause 2>/dev/null)
 	[ "$code" = 200 ]
 }
-# The relay port answers the job (a 401 for no token), so the pause attacks
-# are refused by the API, not cut off by the network.
-relay_code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 6 -X POST http://127.0.0.1:7434/v1/pause 2>/dev/null)
+# The source archive relay answers the job (a 404 for an unknown id): on
+# 7435 once it has a listener of its own, on 7434 while it shares the
+# control API's.
+relay_code=000
+for p in 7435 7434; do
+	relay_code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 6 "http://127.0.0.1:$p/v1/relay/$(printf 'ab%.0s' $(seq 32))" 2>/dev/null)
+	case "$relay_code" in "" | 000) ;; *) break ;; esac
+done
 case "$relay_code" in "" | 000) echo "CONTROL relay FAILED" ;; *) echo "CONTROL relay OK ($relay_code)" ;; esac
+# The control API's GETs need no token, so the job must not reach it.
+reach control-api-read http://127.0.0.1:7434/v1/status
 if pause; then say pause-no-token SUCCEEDED; else say pause-no-token BLOCKED; fi
 guessed=""
 for t in "$(printf '0%.0s' $(seq 64))" "$(printf 'f%.0s' $(seq 64))" "$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"; do
@@ -209,6 +216,9 @@ reach mesh-port-loopback http://127.0.0.1:7433/
 reach mesh-port-loopback-v6 'http://[::1]:7433/'
 reach loopback-other-port http://127.0.0.1:8766/
 reach loopback-v6-other-port 'http://[::1]:8766/'
+# A host service bound to every address ([::] and 0.0.0.0), by loopback.
+reach loopback-wildcard http://127.0.0.1:8767/
+reach loopback-v6-wildcard 'http://[::1]:8767/'
 # The LAN by its global IPv6 addresses: an on-link prefix setup saw, and
 # one the LAN gained after setup.
 reach lan-global-v6 'http://[2001:db8:78::1]:8080/'
