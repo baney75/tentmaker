@@ -7,7 +7,8 @@
 # Jobs coordinate through commit statuses on this workflow's head sha
 # (contexts tm-team/<run id>.<attempt>.<signal>, see .github/team/team.sh).
 # Broker A pushes throwaway tm-team-<run id>-<attempt>-* branches that carry
-# only .github/workflows/tentmaker-team.yml; the cleanup job deletes them.
+# a child of this commit that changes only .github/team/check/*; the cleanup
+# job deletes them.
 #
 # Scenarios (metrics/team-<scenario>.json, summary on broker A's page):
 #   1 pool            every device's pool lists A, B, C with platforms in 2 min
