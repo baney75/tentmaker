@@ -187,32 +187,45 @@ func readResolvers(path string) []netip.Addr {
 	return out
 }
 
-// policy is this host's NetPolicy: the runner's uid, the stub resolver,
-// every nameserver in resolv.conf and the upstream ones jobs query from
-// their own namespace.
-func (e *Executor) policy(uid int) NetPolicy {
+// policy is this host's NetPolicy: the runner's uid and subordinate uids,
+// the stub resolver, every nameserver in resolv.conf and the upstream ones
+// jobs query from their own namespace. With no subordinate uid range it
+// can't name every uid a rootless container's sockets use, so it fails and
+// no rules load (fail closed).
+func (e *Executor) policy(uid int) (NetPolicy, error) {
+	subs, err := subIDRanges(e.p.Subuid, User, uid)
+	if err != nil {
+		return NetPolicy{}, fmt.Errorf("can't read the subordinate uids of %s, so the network rules for CI jobs can't cover its containers: %v", User, err)
+	}
+	if len(subs) == 0 {
+		return NetPolicy{}, fmt.Errorf("%s gives %s no subordinate uid range, so the network rules for CI jobs can't cover its containers", e.p.Subuid, User)
+	}
 	rs := []netip.Addr{StubResolver}
 	for _, a := range append(readResolvers(e.p.ResolvConf), e.jobResolvers()...) {
 		if !slices.Contains(rs, a) {
 			rs = append(rs, a)
 		}
 	}
-	return NetPolicy{UID: uid, SubUIDs: subIDRanges(e.p.Subuid, User), Resolvers: rs, AllowLAN: e.o.AllowLAN,
-		TailscaleIfaces: tailscaleIfaces(e.p.IfInet6), OnLinkV6: onLinkV6(e.p.IPv6Route, tailscaleIfaces(e.p.IfInet6))}
+	return NetPolicy{UID: uid, SubUIDs: subs, Resolvers: rs, AllowLAN: e.o.AllowLAN,
+		TailscaleIfaces: tailscaleIfaces(e.p.IfInet6), OnLinkV6: onLinkV6(e.p.IPv6Route, tailscaleIfaces(e.p.IfInet6))}, nil
 }
 
-// subIDRanges reads name's ranges from a subuid file, in file order.
-func subIDRanges(file, name string) []IDRange {
+// subIDRanges reads the ranges of the user name, whose uid is uid, from a
+// subuid or subgid file, in file order. newuidmap and newgidmap take an
+// entry keyed by the name or by the numeric uid, so both count. A file it
+// can't read is an error.
+func subIDRanges(file, name string, uid int) ([]IDRange, error) {
 	f, err := os.Open(file)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	defer f.Close()
+	id := strconv.Itoa(uid)
 	var out []IDRange
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
 		p := strings.Split(strings.TrimSpace(sc.Text()), ":")
-		if len(p) != 3 || p[0] != name {
+		if len(p) != 3 || (p[0] != name && p[0] != id) {
 			continue
 		}
 		first, err1 := strconv.Atoi(p[1])
@@ -222,7 +235,7 @@ func subIDRanges(file, name string) []IDRange {
 		}
 		out = append(out, IDRange{first, first + n - 1})
 	}
-	return out
+	return out, sc.Err()
 }
 
 // procAddr6 parses the 32 hex digits /proc/net uses for an IPv6 address.
@@ -530,7 +543,10 @@ func (e *Executor) installNet(ctx context.Context, uid int) error {
 // loadNet writes the rules file for backend be from this host's current
 // facts and loads it. It returns the boot unit's command for that file.
 func (e *Executor) loadNet(ctx context.Context, uid int, be netBackend) (string, error) {
-	p := e.policy(uid)
+	p, err := e.policy(uid)
+	if err != nil {
+		return "", err
+	}
 	var file, exec string
 	var data []byte
 	var mode os.FileMode
@@ -589,7 +605,10 @@ func (e *Executor) checkNet(ctx context.Context, uid int) error {
 	if !ok {
 		return errors.New("the network rules for CI jobs are not installed")
 	}
-	p := e.policy(uid)
+	p, err := e.policy(uid)
+	if err != nil {
+		return err
+	}
 	if be == backendNft {
 		nft := e.tool("nft")
 		if nft == "" {

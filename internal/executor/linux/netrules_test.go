@@ -159,12 +159,17 @@ done
 func TestSubIDRanges(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "subuid")
 	must(t, os.WriteFile(p, []byte("alice:100000:65536\n"+User+":165536:65536\nbad\n"+User+":x:1\n"+User+":300000:0\n"+User+":400000:10\n"), 0o644))
-	got := subIDRanges(p, User)
-	if len(got) != 2 || got[0] != (IDRange{165536, 231071}) || got[1] != (IDRange{400000, 400009}) {
-		t.Errorf("ranges %v", got)
+	got, err := subIDRanges(p, User, testUID)
+	if err != nil || len(got) != 2 || got[0] != (IDRange{165536, 231071}) || got[1] != (IDRange{400000, 400009}) {
+		t.Errorf("ranges %v, %v", got, err)
 	}
-	if subIDRanges(filepath.Join(t.TempDir(), "missing"), User) != nil {
-		t.Error("a missing subuid file gave ranges")
+	// newuidmap also takes an entry keyed by the numeric uid.
+	must(t, os.WriteFile(p, []byte("1234:500000:5\n12345:600000:5\n"), 0o644))
+	if got, err := subIDRanges(p, User, testUID); err != nil || len(got) != 1 || got[0] != (IDRange{500000, 500004}) {
+		t.Errorf("ranges by uid %v, %v", got, err)
+	}
+	if got, err := subIDRanges(filepath.Join(t.TempDir(), "missing"), User, testUID); got != nil || err == nil {
+		t.Errorf("a missing subuid file gave %v, %v", got, err)
 	}
 }
 
@@ -329,11 +334,12 @@ func TestReadResolvers(t *testing.T) {
 	// resolver. Behind the stub, the upstream servers jobs query from their
 	// own namespace are allowed (resolved.conf's, not its loopback one).
 	v := newEnv(t)
-	if s := NftRules(v.e.policy(testUID)); strings.Contains(s, "100.100.100.100") || !strings.Contains(s, "{ 127.0.0.53, 192.0.2.53 } udp dport 53 accept") {
+	must(t, os.WriteFile(v.o.Paths.Subuid, []byte(User+":100000:65536\n"), 0o644))
+	if s := NftRules(policyOf(t, v.e)); strings.Contains(s, "100.100.100.100") || !strings.Contains(s, "{ 127.0.0.53, 192.0.2.53 } udp dport 53 accept") {
 		t.Errorf("default policy DNS:\n%s", s)
 	}
 	must(t, os.WriteFile(v.o.Paths.ResolvConf, []byte("nameserver 100.100.100.100\nnameserver 127.0.0.53\n"), 0o644))
-	if s := NftRules(v.e.policy(testUID)); !strings.Contains(s, "ip daddr { 127.0.0.53, 100.100.100.100 } udp dport 53 accept") {
+	if s := NftRules(policyOf(t, v.e)); !strings.Contains(s, "ip daddr { 127.0.0.53, 100.100.100.100 } udp dport 53 accept") {
 		t.Errorf("MagicDNS resolver missing:\n%s", s)
 	}
 }
@@ -492,11 +498,11 @@ func TestNoNetRulesNoJob(t *testing.T) {
 	// Loaded, but more open than the config (allow_lan rules on a host
 	// that wants the LAN blocked): Start rewrites and reloads them, then
 	// runs the job.
-	lan := v.e.policy(testUID)
+	lan := policyOf(t, v.e)
 	lan.AllowLAN = true
 	v.f.nft = NftRules(lan)
 	must(t, v.e.Start(ctx, spec("job-lan", "runner")))
-	if v.f.nft != NftRules(v.e.policy(testUID)) {
+	if v.f.nft != NftRules(policyOf(t, v.e)) {
 		t.Errorf("Start did not reload the strict rules:\n%s", v.f.nft)
 	}
 
@@ -515,7 +521,7 @@ func TestNoNetRulesNoJob(t *testing.T) {
 	}
 
 	// The stricter rules pass for a host with allow_lan.
-	v.f.nft = NftRules(v.e.policy(testUID))
+	v.f.nft = NftRules(policyOf(t, v.e))
 	must(t, os.WriteFile(v.e.nftRules(), []byte(v.f.nft), 0o644))
 	o := v.o
 	o.AllowLAN = true
@@ -617,6 +623,61 @@ func TestStartReloadsOnNewResolver(t *testing.T) {
 				t.Errorf("job resolv.conf:\n%s", b)
 			}
 			must(t, v.e.checkNet(ctx, testUID))
+		})
+	}
+}
+
+// shadow's newuidmap reads /etc/subuid entries keyed by the user's name or
+// by its numeric uid, so the fence must cover both.
+func TestStartFencesSubuidsKeyedByUID(t *testing.T) {
+	v := newEnv(t)
+	v.installed(t)
+	must(t, os.WriteFile(v.o.Paths.Subuid, []byte("alice:100000:65536\n1234:165536:65536\n"+User+":300000:10\n"), 0o644))
+	must(t, v.e.Start(context.Background(), spec("job-subuid", "runner")))
+	if want := "meta skuid { 1234, 165536-231071, 300000-300009 } jump runner"; !strings.Contains(v.f.nft, want) {
+		t.Errorf("rules lack %q:\n%s", want, v.f.nft)
+	}
+}
+
+// With no subordinate range the fence can't name the uids a rootless
+// container's sockets use: no rules load, no job starts, doctor says why.
+func TestNoSubuidsFailClosed(t *testing.T) {
+	for _, c := range []struct{ name, subuid string }{
+		{"missing", ""},
+		{"other-user", "alice:100000:65536\n"},
+		{"unreadable", "dir"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			v := newEnv(t)
+			v.installed(t)
+			must(t, os.Remove(v.o.Paths.Subuid))
+			switch c.subuid {
+			case "":
+			case "dir":
+				must(t, os.Mkdir(v.o.Paths.Subuid, 0o755))
+			default:
+				must(t, os.WriteFile(v.o.Paths.Subuid, []byte(c.subuid), 0o644))
+			}
+			loaded := v.f.nft
+			err := v.e.Start(context.Background(), spec("job-nosub", "runner"))
+			if err == nil || !strings.Contains(err.Error(), "subordinate uid") {
+				t.Errorf("Start: %v", err)
+			}
+			if unitIndex(v.f, unitName("job-nosub")) >= 0 {
+				t.Error("the job started")
+			}
+			if v.f.nft != loaded {
+				t.Errorf("rules were reloaded without the subordinate uids:\n%s", v.f.nft)
+			}
+			found := false
+			for _, p := range v.e.Preflight(context.Background()) {
+				if p.Check == "network" && strings.Contains(p.What, "subordinate uid") {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("Preflight did not say why: %+v", v.e.Preflight(context.Background()))
+			}
 		})
 	}
 }

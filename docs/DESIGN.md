@@ -249,7 +249,11 @@ physical LAN only, never what the tailnet routes.
   with `meta skuid { <runner uid>, <its subuid ranges> }` to a `runner` chain (accept relay and DNS,
   then reject). The subordinate uids are a second wall: a rootless container on the host network
   that runs as a non-root user opens its sockets as one of them, and none should share the host's
-  namespace (the podman namespace above). `oifname "lo"` covers the host's own addresses. Always rejected besides the ranges above: RFC 1918, CGNAT and ULA out a Tailscale
+  namespace (the podman namespace above). The ranges are the runner's `/etc/subuid` entries keyed
+  by its name or its numeric uid (newuidmap takes either). With none, or a file that can't be
+  read, no rules load: setup fails, `Start` refuses the job and doctor says why. `Reset` also
+  fails when the pause process's `/proc/<pid>/uid_map` maps a uid outside the runner's uid and
+  those ranges (newuidmap can take ranges from an nsswitch `subid` source the rules never read). `oifname "lo"` covers the host's own addresses. Always rejected besides the ranges above: RFC 1918, CGNAT and ULA out a Tailscale
   interface (other devices' subnet routes; public destinations stay open for an exit node), IPv4
   multicast and broadcast (224/4, 255.255.255.255) and ff00::/8. Tailscale interfaces are
   `tailscale0` plus any interface holding a tailnet IPv6 address (`/proc/net/if_inet6`); the

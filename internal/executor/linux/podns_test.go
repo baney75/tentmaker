@@ -116,6 +116,8 @@ func TestResetRefusesPodmanNamespace(t *testing.T) {
 		// the host's network namespace.
 		{name: "pause-in-host-netns", pause: "host-netns", want: "pause process is in the host's network namespace"},
 		{name: "manager-in-host-netns", pause: "manager-host-netns", want: "user manager is in the host's network namespace"},
+		// newuidmap took a range from somewhere the fence did not read.
+		{name: "unfenced-uid-map", pause: "uid-map", want: "podman maps uids 300000 (65536 of them)"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			v := resetEnv(t, tc.probe)
@@ -132,6 +134,8 @@ func TestResetRefusesPodmanNamespace(t *testing.T) {
 				setNetns(t, v, testPausePID, "net:[4026531840]")
 			case "manager-host-netns":
 				setNetns(t, v, testManagerPID, "net:[4026531840]")
+			case "uid-map":
+				must(t, os.WriteFile(filepath.Join(v.o.Paths.Proc, strconv.Itoa(testPausePID), "uid_map"), []byte("0 1234 1\n1 300000 65536\n"), 0o644))
 			}
 			err := v.e.Reset(context.Background())
 			if err == nil || !strings.Contains(err.Error(), tc.want) {

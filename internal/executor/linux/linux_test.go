@@ -290,6 +290,9 @@ func newEnv(t *testing.T) *env {
 		must(t, os.MkdirAll(filepath.Join(p.Proc, pid, "ns"), 0o755))
 		must(t, os.Symlink(ns, filepath.Join(p.Proc, pid, "ns", "user")))
 	}
+	// Its uid map: the runner's uid and the subordinate range installed()
+	// writes.
+	must(t, os.WriteFile(filepath.Join(p.Proc, strconv.Itoa(testPausePID), "uid_map"), []byte("         0       1234          1\n         1     100000      65536\n"), 0o644))
 	must(t, os.MkdirAll(filepath.Join(p.RunUser, strconv.Itoa(testUID), "libpod", "tmp"), 0o700))
 	must(t, os.WriteFile(filepath.Join(p.RunUser, strconv.Itoa(testUID), "libpod", "tmp", "pause.pid"), []byte(strconv.Itoa(testPausePID)), 0o600))
 	o := Options{
@@ -323,8 +326,9 @@ func (v *env) installed(t *testing.T) {
 	must(t, os.Symlink(tpl, filepath.Join(v.dir, "opt", "runner")))
 	must(t, os.MkdirAll(v.e.jobsDir(), 0o750))
 	must(t, os.MkdirAll(v.e.secretDir(), 0o700))
-	// The network rules, written and loaded.
-	rules := NftRules(v.e.policy(testUID))
+	// The runner's subordinate uids and the network rules, written and loaded.
+	must(t, os.WriteFile(v.o.Paths.Subuid, []byte(User+":100000:65536\n"), 0o644))
+	rules := NftRules(policyOf(t, v.e))
 	must(t, os.MkdirAll(v.o.Paths.Lib, 0o755))
 	must(t, os.WriteFile(v.e.nftRules(), []byte(rules), 0o644))
 	v.f.mu.Lock()
@@ -872,4 +876,11 @@ func TestCheckResultOutOfMemory(t *testing.T) {
 	if !strings.Contains(strings.Join(v.f.commands()[n:], "\n"), "systemctl reset-failed "+unitName("chk-oom")) {
 		t.Error("Clean left the failed unit loaded")
 	}
+}
+
+func policyOf(t *testing.T, e *Executor) NetPolicy {
+	t.Helper()
+	p, err := e.policy(testUID)
+	must(t, err)
+	return p
 }

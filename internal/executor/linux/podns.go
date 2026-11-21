@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -228,11 +229,48 @@ func (e *Executor) podnetProblem(ctx context.Context, uid int, strict bool) stri
 	return ""
 }
 
+// uidMapProblem says which uids podman's pause process maps that the
+// network rules don't name, or "" when it maps only the runner's uid and
+// subordinate uids. newuidmap may read ranges from elsewhere than
+// /etc/subuid (an nsswitch subid source); then the fence would miss them.
+func (e *Executor) uidMapProblem(uid int) string {
+	p, err := e.policy(uid)
+	if err != nil {
+		return err.Error()
+	}
+	b, _ := os.ReadFile(e.pausePIDFile(uid))
+	m, err := os.ReadFile(filepath.Join(e.p.Proc, strings.TrimSpace(string(b)), "uid_map"))
+	if err != nil {
+		return "read podman's uid map: " + err.Error()
+	}
+	covered := func(first, last int) bool {
+		if first == uid && last == uid {
+			return true
+		}
+		return slices.ContainsFunc(p.SubUIDs, func(r IDRange) bool { return first >= r.First && last <= r.Last })
+	}
+	for _, line := range strings.Split(string(m), "\n") {
+		f := strings.Fields(line)
+		if len(f) != 3 {
+			continue
+		}
+		out, err1 := strconv.Atoi(f[1])
+		n, err2 := strconv.Atoi(f[2])
+		if err1 != nil || err2 != nil || n <= 0 || !covered(out, out+n-1) {
+			return "podman maps uids " + f[1] + " (" + f[2] + " of them), which the network rules for CI jobs don't name"
+		}
+	}
+	return ""
+}
+
 // podnsProblem says what in podman's namespaces a job should not see, or ""
 // when they match a job's: its network namespace, then, through a podman
 // command, its mounts.
 func (e *Executor) podnsProblem(ctx context.Context, uid int) string {
 	if p := e.podnetProblem(ctx, uid, true); p != "" {
+		return p
+	}
+	if p := e.uidMapProblem(uid); p != "" {
 		return p
 	}
 	want, err := os.ReadFile(e.jobResolvConf())

@@ -60,7 +60,7 @@ func (e *Executor) Preflight(ctx context.Context) []core.Problem {
 		add("user", err.Error(), setup)
 	} else {
 		for _, f := range []string{e.p.Subuid, e.p.Subgid} {
-			if n := subIDs(f, User); n < subIDCount {
+			if n := subIDs(f, User, uid); n < subIDCount {
 				add("subordinate ids", fmt.Sprintf("%s gives %s %d ids; rootless podman needs %d", f, User, n, subIDCount), setup)
 			}
 		}
@@ -147,22 +147,12 @@ func (e *Executor) openHomes() []string {
 	return out
 }
 
-// subIDs returns how many subordinate ids file gives name.
-func subIDs(file, name string) int {
-	f, err := os.Open(file)
-	if err != nil {
-		return 0
-	}
-	defer f.Close()
+// subIDs returns how many subordinate ids file gives name, by name or uid.
+func subIDs(file, name string, uid int) int {
+	rs, _ := subIDRanges(file, name, uid)
 	total := 0
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		p := strings.Split(strings.TrimSpace(sc.Text()), ":")
-		if len(p) == 3 && p[0] == name {
-			if n, err := strconv.Atoi(p[2]); err == nil {
-				total += n
-			}
-		}
+	for _, r := range rs {
+		total += r.Last - r.First + 1
 	}
 	return total
 }
@@ -249,7 +239,7 @@ func Install(ctx context.Context, o Options) error {
 		return fmt.Errorf("read the groups of %s: %v", User, err)
 	}
 	for _, s := range []struct{ file, flag string }{{e.p.Subuid, "--add-subuids"}, {e.p.Subgid, "--add-subgids"}} {
-		if subIDs(s.file, User) >= subIDCount {
+		if subIDs(s.file, User, uid) >= subIDCount {
 			continue
 		}
 		next, err := nextSubID(s.file)
