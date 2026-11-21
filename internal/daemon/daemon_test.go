@@ -122,6 +122,8 @@ type rig struct {
 	cancel context.CancelFunc
 	done   chan error
 	hup    bool
+	// executors replaces the factory that always returns ex.
+	executors ExecutorFactory
 }
 
 func newRig(t *testing.T, edit func(*config.Config)) *rig {
@@ -173,6 +175,9 @@ func (r *rig) launch() {
 			return guards.Fake{Memory: 64 << 30, Disk: 500 << 30, Load: 0.1}
 		},
 		Executors: func(cfg config.Config, bin func(core.Platform) (string, error), log *slog.Logger) ([]core.Executor, []core.Problem) {
+			if r.executors != nil {
+				return r.executors(cfg, bin, log)
+			}
 			return []core.Executor{r.ex}, nil
 		},
 		NewForge: func(name string, f config.Forge, token func(context.Context) (string, error), log *slog.Logger) (core.Forge, core.StatusForge, error) {

@@ -589,8 +589,12 @@ func (d *Daemon) apply(cfg config.Config) {
 		d.keys["mesh"] = mkey
 	}
 
-	// Executors and worker.
-	wkey := keyOf(cfg.Device, cfg.Labels, cfg.Job, cfg.StateDir, cfg.CacheDir)
+	// Executors and worker. The key holds every config field the worker
+	// and the executor factory read: a change to any of them rebuilds both,
+	// so a new job never runs under the old settings. allow_lan sets the
+	// policy each executor checks the loaded network rules against before a
+	// job starts; leaving it out kept the old, weaker policy after a reload.
+	wkey := keyOf(cfg.Device, cfg.Labels, cfg.Job, cfg.StateDir, cfg.CacheDir, cfg.Guards.AllowLAN)
 	if wkey != d.keys["worker"] {
 		d.mu.Lock()
 		old, oldComp := d.worker, d.wComp
