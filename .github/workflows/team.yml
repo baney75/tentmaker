@@ -86,13 +86,15 @@ jobs:
         with:
           authkey: ${{ secrets.TS_AUTHKEY }}
           hostname: ${{ env.HOST_PREFIX }}-a
-          args: --advertise-tags=tag:tentmaker-ci
           retry: "3"
       - name: say why the tailnet login failed
         if: failure() && steps.ts.outcome == 'failure'
         env:
           GH_TOKEN: ${{ github.token }}
         run: bash .github/team/team.sh login-hint
+      - name: record this node's tailnet identity
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: bash .github/team/team.sh identity
       - &install-linux
         name: install with the one-liner from a fake release
         run: |
@@ -223,13 +225,15 @@ jobs:
         with:
           authkey: ${{ secrets.TS_AUTHKEY }}
           hostname: ${{ env.HOST_PREFIX }}-b
-          args: --advertise-tags=tag:tentmaker-ci
           retry: "3"
       - name: say why the tailnet login failed
         if: failure() && steps.ts.outcome == 'failure'
         env:
           GH_TOKEN: ${{ github.token }}
         run: bash .github/team/team.sh login-hint
+      - name: record this node's tailnet identity
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: bash .github/team/team.sh identity
       - *install-linux
       - *setup-linux
       - name: ready
@@ -272,13 +276,15 @@ jobs:
         with:
           authkey: ${{ secrets.TS_AUTHKEY }}
           hostname: ${{ env.HOST_PREFIX }}-c
-          args: --advertise-tags=tag:tentmaker-ci
           retry: "3"
       - name: say why the tailnet login failed
         if: failure() && steps.ts.outcome == 'failure'
         env:
           GH_TOKEN: ${{ github.token }}
         run: bash .github/team/team.sh login-hint
+      - name: record this node's tailnet identity
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: bash .github/team/team.sh identity
       # The runner ends a step's processes with the step, so the release
       # server and the install share one.
       - name: install with the one-liner from a fake release
@@ -371,13 +377,15 @@ jobs:
         with:
           authkey: ${{ secrets.TS_AUTHKEY }}
           hostname: ${{ env.HOST_PREFIX }}-d
-          args: --advertise-tags=tag:tentmaker-ci
           retry: "3"
       - name: say why the tailnet login failed
         if: failure() && steps.ts.outcome == 'failure'
         env:
           GH_TOKEN: ${{ github.token }}
         run: bash .github/team/team.sh login-hint
+      - name: record this node's tailnet identity
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: bash .github/team/team.sh identity
       - *install-linux
       - name: wait for scenario 4
         env: { GH_TOKEN: "${{ github.token }}" }
@@ -436,13 +444,16 @@ jobs:
         with:
           authkey: ${{ secrets.TS_AUTHKEY }}
           hostname: ${{ env.HOST_PREFIX }}-e
-          args: --advertise-tags=tag:tentmaker-ci --ssh
+          args: --ssh
           retry: "3"
       - name: say why the tailnet login failed
         if: failure() && steps.ts.outcome == 'failure'
         env:
           GH_TOKEN: ${{ github.token }}
         run: bash .github/team/team.sh login-hint
+      - name: record this node's tailnet identity
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: bash .github/team/team.sh identity
       - name: ready
         env: { GH_TOKEN: "${{ github.token }}" }
         run: bash .github/team/team.sh sig-post ready-e success "E is on the tailnet with Tailscale SSH"

@@ -192,6 +192,18 @@ login_hint() {
 	die "tailscale up failed (backend state ${state:-unknown}); see the Tailscale step's log"
 }
 
+# identity: which tags and owner the tailnet gave this node. A key tagged
+# tag:tentmaker-ci gives it that tag without --advertise-tags.
+identity() {
+	ts status --json | jqr --arg role "${ROLE:-?}" '{role: $role, host: .Self.HostName, dns: (.Self.DNSName | rtrimstr(".")),
+		tags: (.Self.Tags // []), owner: (.User[(.Self.UserID | tostring)].LoginName // ""), ips: .Self.TailscaleIPs}' >"$METRICS/tailnet-${ROLE:-x}.json"
+	jq -c '.' "$METRICS/tailnet-${ROLE:-x}.json" >&2
+	if ! jq -e --arg t "$TAG" '.tags | index($t)' "$METRICS/tailnet-${ROLE:-x}.json" >/dev/null; then
+		printf '::warning::this node is not tagged %s (%s). The auth key is not a %s key, so the mesh serves the CI nodes as devices of that owner, not as tagged devices.\n' \
+			"$TAG" "$(jq -c '{tags, owner}' "$METRICS/tailnet-${ROLE:-x}.json")" "$TAG"
+	fi
+}
+
 peer_ip() {
 	ts status --json | jqr -r --arg h "$1" \
 		'[(.Peer // {})[] | select((.HostName | ascii_downcase) == $h or (.DNSName | ascii_downcase | startswith($h + "."))) | .TailscaleIPs[]? | select(test("^[0-9.]+$"))] | first // ""'
@@ -638,8 +650,8 @@ b_loss() {
 	ts down
 	sig_post b-down success "daemon stopped, tailscale down"
 	sig_wait b-return 900 >/dev/null
-	if ! ts up --hostname="$(host b)" --accept-routes --advertise-tags="$TAG"; then
-		ts up --reset --hostname="$(host b)" --accept-routes --advertise-tags="$TAG" || login_hint
+	if ! ts up --hostname="$(host b)" --accept-routes; then
+		ts up --reset --hostname="$(host b)" --accept-routes || login_hint
 	fi
 	sudo timeout 60 systemctl start tentmaker
 	wait_mesh
@@ -664,6 +676,7 @@ sig-post) sig_post "$@" ;;
 sig-wait) sig_wait "$@" ;;
 abort) abort "$@" ;;
 login-hint) login_hint ;;
+identity) identity ;;
 wait-mesh) wait_mesh ;;
 ready)
 	wait_mesh
