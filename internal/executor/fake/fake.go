@@ -143,6 +143,14 @@ func (e *Executor) SetListErr(err error) {
 	e.listErr = err
 }
 
+// SetStopErr makes Stop fail with err, leaving the runner as it was (nil
+// clears it).
+func (e *Executor) SetStopErr(err error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.stopErr = err
+}
+
 // SetCleanErr makes Clean fail with err (nil clears it).
 func (e *Executor) SetCleanErr(err error) {
 	e.mu.Lock()

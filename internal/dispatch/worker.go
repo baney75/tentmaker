@@ -64,6 +64,7 @@ type Worker struct {
 	lastSaved    []byte
 	lastTick     time.Time
 	relays       map[string]*relayEntry // relay id -> archive; memory only
+	cleanErrs    map[string]string      // leftover runner -> why its Clean failed; memory only
 }
 
 // relayEntry lets one running check job fetch its source archive from the
@@ -122,6 +123,11 @@ type jobRec struct {
 	Platform core.Platform  `json:"platform"`
 	Started  time.Time      `json:"started"`
 	Limits   core.Resources `json:"limits"`
+	// Stopping is why the job is being stopped, set while its Stop has not
+	// been confirmed. Such a job may still run, so it stays counted and
+	// blocks its executor; pollJobs retries the stop.
+	Stopping string `json:"stopping,omitempty"`
+	StopErr  string `json:"stop_err,omitempty"`
 }
 
 // NewWorker builds a worker and loads state.json. It touches no executor;
@@ -277,28 +283,63 @@ func (w *Worker) reconcile(ctx context.Context) {
 	}
 }
 
+// stopAndClean stops and cleans a runner state.json doesn't track. Until
+// both work it stays a leftover, which blocks its executor and is retried.
 func (w *Worker) stopAndClean(ctx context.Context, e *execInfo, name string) {
-	sctx, cancel := context.WithTimeout(ctx, stopTimeout)
-	if err := e.ex.Stop(sctx, name); err != nil {
-		w.noteErr(e.name, "stop "+name, err)
+	err := w.stopped(ctx, e, name)
+	if err == nil {
+		cctx, cancel := context.WithTimeout(ctx, stopTimeout)
+		err = e.ex.Clean(cctx, name)
+		cancel()
+		if err != nil {
+			err = fmt.Errorf("its clean failed: %v", err)
+		}
+	} else {
+		err = fmt.Errorf("it did not stop: %v", err)
 	}
-	cancel()
-	cctx, cancel := context.WithTimeout(ctx, stopTimeout)
-	err := e.ex.Clean(cctx, name)
-	cancel()
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if err != nil {
-		if w.st.Leftovers == nil {
-			w.st.Leftovers = map[string]string{}
+		w.errs.add(w.now(), e.name, name+": "+err.Error())
+		if _, ok := w.st.Leftovers[name]; !ok {
+			w.log.Warn("runner left behind; retrying", "executor", e.name, "runner", name, "error", err)
 		}
-		w.st.Leftovers[name] = e.name
+		w.leftoverLocked(name, e.name, err.Error())
 		w.st.Dirty = true
-		w.errs.add(w.now(), e.name, "clean "+name+": "+err.Error())
-		w.log.Warn("clean failed; retrying", "executor", e.name, "runner", name, "error", err)
-	} else if w.st.Leftovers != nil {
+	} else {
 		delete(w.st.Leftovers, name)
+		delete(w.cleanErrs, name)
 	}
+}
+
+func (w *Worker) leftoverLocked(name, exName, why string) {
+	if w.st.Leftovers == nil {
+		w.st.Leftovers = map[string]string{}
+	}
+	if w.cleanErrs == nil {
+		w.cleanErrs = map[string]string{}
+	}
+	w.st.Leftovers[name] = exName
+	w.cleanErrs[name] = why
+}
+
+// stopped stops a runner and returns nil once the executor says it no
+// longer runs: Stop worked, or it failed but State reads exited or missing.
+func (w *Worker) stopped(ctx context.Context, e *execInfo, name string) error {
+	sctx, cancel := context.WithTimeout(ctx, stopTimeout)
+	err := e.ex.Stop(sctx, name)
+	cancel()
+	if err == nil {
+		return nil
+	}
+	w.noteErr(e.name, "stop "+name, err)
+	sctx, cancel = context.WithTimeout(ctx, execTimeout)
+	st, serr := e.ex.State(sctx, name)
+	cancel()
+	if serr == nil && (st == core.ExecExited || st == core.ExecMissing) {
+		return nil
+	}
+	return err
 }
 
 func (w *Worker) execByName(name string) *execInfo {
@@ -323,6 +364,10 @@ func (w *Worker) pollJobs(ctx context.Context, now time.Time) {
 			w.finish(ctx, nil, j, "the job's executor is no longer configured")
 			continue
 		}
+		if j.Stopping != "" {
+			w.stopJob(ctx, j, j.Stopping)
+			continue
+		}
 		sctx, cancel := context.WithTimeout(ctx, execTimeout)
 		st, err := e.ex.State(sctx, j.Name)
 		cancel()
@@ -338,12 +383,7 @@ func (w *Worker) pollJobs(ctx context.Context, now time.Time) {
 			maxd := w.o.Config.Job.MaxDuration.D()
 			if maxd > 0 && now.Sub(j.Started) > maxd+overrunGrace {
 				w.log.Warn("job ran past max_duration; stopping it", "runner", j.Name, "repo", j.Repo)
-				sctx, cancel := context.WithTimeout(ctx, stopTimeout)
-				if err := e.ex.Stop(sctx, j.Name); err != nil {
-					w.noteErr(e.name, "stop "+j.Name, err)
-				}
-				cancel()
-				w.finish(ctx, e, j, "the job ran past max_duration")
+				w.stopJob(ctx, j, "the job ran past max_duration")
 			}
 			continue
 		}
@@ -379,10 +419,7 @@ func (w *Worker) finish(ctx context.Context, e *execInfo, j *jobRec, why string)
 		if err != nil {
 			w.log.Warn("clean failed; retrying", "executor", e.name, "runner", j.Name, "error", err)
 			w.mu.Lock()
-			if w.st.Leftovers == nil {
-				w.st.Leftovers = map[string]string{}
-			}
-			w.st.Leftovers[j.Name] = e.name
+			w.leftoverLocked(j.Name, e.name, "its clean failed: "+err.Error())
 			w.errs.add(w.now(), e.name, "clean "+j.Name+": "+err.Error())
 			w.mu.Unlock()
 		}
@@ -430,14 +467,29 @@ func (w *Worker) evictAll(ctx context.Context, why string) {
 	}
 }
 
+// stopJob stops j and finishes it once its executor confirms it no longer
+// runs. A job whose stop fails may still use its slot and memory, so it stays
+// counted, its executor takes nothing new, and pollJobs retries the stop.
 func (w *Worker) stopJob(ctx context.Context, j *jobRec, why string) {
+	if why == "" {
+		why = "stopped"
+	}
 	e := w.execByName(j.Executor)
-	if e != nil {
-		sctx, cancel := context.WithTimeout(ctx, stopTimeout)
-		if err := e.ex.Stop(sctx, j.Name); err != nil {
-			w.noteErr(e.name, "stop "+j.Name, err)
+	if e == nil {
+		w.finish(ctx, nil, j, why)
+		return
+	}
+	if err := w.stopped(ctx, e, j.Name); err != nil {
+		w.mu.Lock()
+		first := j.Stopping == ""
+		j.Stopping, j.StopErr = why, err.Error()
+		w.st.Dirty = true
+		w.mu.Unlock()
+		if first {
+			w.log.Warn("stop failed; the job stays counted and its executor takes nothing new until it stops",
+				"executor", e.name, "runner", j.Name, "error", err)
 		}
-		cancel()
+		return
 	}
 	w.finish(ctx, e, j, why)
 }
@@ -457,14 +509,7 @@ func (w *Worker) retryLeftovers(ctx context.Context) {
 			w.mu.Unlock()
 			continue
 		}
-		cctx, cancel := context.WithTimeout(ctx, stopTimeout)
-		err := e.ex.Clean(cctx, name)
-		cancel()
-		if err == nil {
-			w.mu.Lock()
-			delete(w.st.Leftovers, name)
-			w.mu.Unlock()
-		}
+		w.stopAndClean(ctx, e, name)
 	}
 }
 
@@ -526,13 +571,56 @@ func (w *Worker) maybeReset(ctx context.Context, now time.Time) {
 	w.st.Dirty = false
 	w.st.Quarantined = nil
 	w.st.Leftovers = nil
+	w.cleanErrs = nil
 	w.lastReset = now
 	w.log.Info("node reset", "quarantines_lifted", lifted)
 }
 
 // usable reports whether an executor may start a job now.
 func (w *Worker) usableLocked(e *execInfo, now time.Time) bool {
-	return e.reconciled && !e.closed && !now.Before(e.blockedUntil)
+	return e.reconciled && !e.closed && !now.Before(e.blockedUntil) && len(w.stuckLocked(e.name)) == 0
+}
+
+// stuckLocked says which of an executor's runners may still hold resources
+// after a failed stop or clean. While any do, it takes nothing new.
+func (w *Worker) stuckLocked(exName string) []string {
+	var out []string
+	for _, j := range w.st.Jobs {
+		if j.Executor == exName && j.Stopping != "" {
+			out = append(out, fmt.Sprintf("runner %s did not stop: %s", j.Name, j.StopErr))
+		}
+	}
+	var left []string
+	for name, ex := range w.st.Leftovers {
+		if ex == exName {
+			left = append(left, name)
+		}
+	}
+	sort.Strings(left)
+	for _, name := range left {
+		why := w.cleanErrs[name]
+		if why == "" {
+			why = "it was left behind"
+		}
+		out = append(out, fmt.Sprintf("runner %s was not cleaned up: %s", name, why))
+	}
+	return out
+}
+
+// Problems lists what keeps an executor from taking jobs that the worker
+// knows of: a runner that did not stop or was not cleaned up.
+func (w *Worker) Problems() []core.Problem {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	var out []core.Problem
+	for _, e := range w.execs {
+		for _, why := range w.stuckLocked(e.name) {
+			out = append(out, core.Problem{Check: "worker",
+				What: fmt.Sprintf("%s takes no new jobs: %s", e.name, why),
+				Fix:  "Tentmaker retries every few seconds; if this persists, check the sandbox and the last errors in tentmaker status, then restart the service"})
+		}
+	}
+	return out
 }
 
 func (w *Worker) capacityLocked(e *execInfo) int {
@@ -1036,6 +1124,9 @@ type ExecutorStatus struct {
 	RetryAt      time.Time `json:"retry_at,omitempty"`
 	Closed       bool      `json:"closed"`
 	LastError    string    `json:"last_error,omitempty"`
+	// Stuck names runners that did not stop or were not cleaned up; the
+	// executor takes nothing new while any are listed.
+	Stuck []string `json:"stuck,omitempty"`
 }
 
 // SourceStatus is one broker's health as this worker sees it.
@@ -1065,7 +1156,7 @@ func (w *Worker) Status() WorkerStatus {
 	for _, e := range w.execs {
 		_, n := w.inUse(e.name)
 		es := ExecutorStatus{Name: e.name, MaxSlots: e.ex.MaxSlots(), InUse: n, Ready: w.usableLocked(e, now),
-			BootFailures: e.failures, Closed: e.closed, LastError: e.lastErr}
+			BootFailures: e.failures, Closed: e.closed, LastError: e.lastErr, Stuck: w.stuckLocked(e.name)}
 		if now.Before(e.blockedUntil) {
 			es.RetryAt = e.blockedUntil
 		}

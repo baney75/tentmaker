@@ -1077,7 +1077,12 @@ func (d *Daemon) Doctor(ctx context.Context) Report {
 		extra = append(extra, d.problems[k]...)
 	}
 	eps := d.problems["executor"]
+	w := d.worker
 	d.mu.RUnlock()
+	if w != nil {
+		// A runner that did not stop or was not cleaned up blocks its executor.
+		extra = append(extra, w.Problems()...)
+	}
 	_, statErr := os.Stat(d.o.ConfigPath)
 	in := DoctorInput{
 		Version: d.o.Version, Channel: cfg.Update.Channel, ConfigPath: d.o.ConfigPath,

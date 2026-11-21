@@ -267,6 +267,13 @@ evicts on `Evict`, resets the executor when nothing runs and the node is dirty, 
 is stopped and cleaned. Boot failures back off exponentially and close the worker after 5 in a
 row until restart.
 
+A job leaves the worker's count only when its executor confirms it no longer runs: `Stop`
+worked, or `State` reads exited or missing. A job whose stop failed stays in `state.json`
+(counted against the slots and the memory budget, `stopping` set), and each tick retries the
+stop. A runner whose stop or `Clean` failed blocks its executor: it takes nothing new until a
+retry or a reset works, `status` lists it under the executor's `stuck`, and `doctor` reports it
+as a `worker` problem (review r1 partA sol-F2).
+
 ## Checks mode (internal/checks, internal/forge/gitlab)
 
 Runner mode needs the forge's own runner (GitHub actions/runner, Forgejo act_runner). Checks mode
