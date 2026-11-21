@@ -1,0 +1,235 @@
+# Records the README's demo GIF on a real host. A throwaway runner stands in
+# for a user's machine: the job installs Tentmaker the way e2e.yml does (the
+# one-liner from a locally built fake release, then sudo tentmaker setup),
+# starts one real check job through the daemon, and while it runs records
+# scripts/demo/demo.tape with VHS. Nothing on screen is staged: every line is
+# printed by the binary this run built.
+#
+# Re-record: push to the demo-record branch, or run this workflow by hand.
+# The artifact "demo" holds demo.gif, status.png and each command's plain
+# output.
+#
+# Pinned tools: VHS v0.12.1 and ttyd 1.7.7 (release binaries, checked against
+# the sha256 sums below), ffmpeg and the JetBrains Mono font from the runner's
+# Ubuntu archive (the step prints the ffmpeg version).
+name: demo
+
+on:
+  push:
+    branches: [demo-record]
+  workflow_dispatch:
+
+# contents: write makes the throwaway commit and branch the check job tests
+# (tm-demo/<run>.<attempt>) and deletes them after.
+permissions:
+  contents: write
+  statuses: write
+
+concurrency:
+  group: demo-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  TM_VERSION: 0.0.0-demo.${{ github.run_number }}
+  TM_PORT: "8765"
+  TM_SHA: ${{ github.sha }}
+  VHS_VERSION: 0.12.1
+  VHS_SHA256: eb33787a5b1cebf91fe0b18bd231e2d71d36c1ff4babd99ddac1a6ab411efd10
+  TTYD_VERSION: 1.7.7
+  TTYD_SHA256: 8a217c968aba172e0dbf3f34447218dc015bc4d5e59bf51db2f2cd12b7be4f55
+
+jobs:
+  record:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+
+      - name: install VHS, ttyd, ffmpeg and the font
+        run: |
+          tmp=$RUNNER_TEMP/tools
+          mkdir -p "$tmp"
+          curl -fsSL --max-time 120 -o "$tmp/vhs.tar.gz" \
+            "https://github.com/charmbracelet/vhs/releases/download/v$VHS_VERSION/vhs_${VHS_VERSION}_Linux_x86_64.tar.gz"
+          echo "$VHS_SHA256  $tmp/vhs.tar.gz" | sha256sum -c -
+          tar -xzf "$tmp/vhs.tar.gz" -C "$tmp"
+          sudo install -m 0755 "$tmp/vhs_${VHS_VERSION}_Linux_x86_64/vhs" /usr/local/bin/vhs
+          curl -fsSL --max-time 120 -o "$tmp/ttyd" \
+            "https://github.com/tsl0922/ttyd/releases/download/$TTYD_VERSION/ttyd.x86_64"
+          echo "$TTYD_SHA256  $tmp/ttyd" | sha256sum -c -
+          sudo install -m 0755 "$tmp/ttyd" /usr/local/bin/ttyd
+          sudo timeout 300 apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive timeout 600 apt-get install -y -qq ffmpeg fonts-jetbrains-mono >/dev/null
+          vhs --version
+          ttyd --version
+          ffmpeg -hide_banner -version | head -1
+          fc-list | grep -i 'JetBrains Mono' | head -1
+
+      - name: build the release archives
+        run: scripts/build.sh "$TM_VERSION"
+
+      - name: serve dist/ as a fake release
+        run: |
+          srv=$RUNNER_TEMP/srv
+          mkdir -p "$srv/latest/download"
+          cp dist/* "$srv/latest/download/"
+          cp scripts/install.sh "$srv/install.sh"
+          nohup python3 -m http.server --bind 127.0.0.1 --directory "$srv" "$TM_PORT" >"$RUNNER_TEMP/http.log" 2>&1 &
+          for _ in $(seq 1 50); do
+            curl -fsS --max-time 2 -o /dev/null "http://127.0.0.1:$TM_PORT/latest/download/SHA256SUMS" && exit 0
+            sleep 0.2
+          done
+          echo "::error::the release server did not start"; cat "$RUNNER_TEMP/http.log"; exit 1
+
+      - name: install with the one-liner
+        run: |
+          curl -fsSL --max-time 60 "http://127.0.0.1:$TM_PORT/install.sh" |
+            sudo env TENTMAKER_DOWNLOAD_BASE="http://127.0.0.1:$TM_PORT" sh
+          command -v tentmaker
+          got=$(tentmaker version --json | jq -r .version)
+          test "$got" = "$TM_VERSION" || { echo "::error::installed $got, want $TM_VERSION"; exit 1; }
+
+      # The runner image leaves /home/linuxbrew world-readable, and setup
+      # refuses a host where the CI user could read a home. This is the fix
+      # setup and doctor print.
+      - name: close home directories
+        run: for h in /home/*; do sudo chmod o-rwx "$h"; done
+
+      - name: setup
+        id: setup
+        run: |
+          rc=0
+          sudo tentmaker setup --yes --json --no-mesh --no-gh --device workbench \
+            --memory 6GiB --boost-memory 12GiB --cpus 4 --boost-cpus 4 >"$RUNNER_TEMP/setup.json" || rc=$?
+          cat "$RUNNER_TEMP/setup.json"
+          test "$rc" = 0 || { echo "::error::setup exited $rc"; exit 1; }
+          jq -e '.ok == true and .service == "running"' "$RUNNER_TEMP/setup.json" >/dev/null || { echo "::error::setup did not finish with the service running"; exit 1; }
+          systemctl is-active tentmaker
+
+      - name: start a real check job
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          # A new commit with this commit's tree, on a throwaway branch, is one
+          # no run has tested. Commits made with GITHUB_TOKEN trigger no workflows.
+          tree=$(timeout 30 gh api "repos/$REPO/git/commits/$TM_SHA" --jq .tree.sha)
+          sha=$(timeout 30 gh api "repos/$REPO/git/commits" -f "tree=$tree" -f "parents[]=$TM_SHA" \
+            -f "message=tentmaker demo $GITHUB_RUN_ID.$GITHUB_RUN_ATTEMPT of $TM_SHA" --jq .sha)
+          branch="tm-demo/$GITHUB_RUN_ID.$GITHUB_RUN_ATTEMPT"
+          timeout 30 gh api "repos/$REPO/git/refs" -f "ref=refs/heads/$branch" -f "sha=$sha" >/dev/null
+          echo "TM_DEMO_BRANCH=$branch" >>"$GITHUB_ENV"
+          echo "TM_DEMO_SHA=$sha" >>"$GITHUB_ENV"
+          printf %s "$GITHUB_TOKEN" | sudo tentmaker connect github --token-stdin --json >"$RUNNER_TEMP/connect.json"
+          jq -e '.ok == true' "$RUNNER_TEMP/connect.json" >/dev/null || { cat "$RUNNER_TEMP/connect.json"; echo "::error::connect failed"; exit 1; }
+          # Only the demo workflow, and an author with no PRs keeps this run
+          # off other PRs' heads.
+          sudo tentmaker repo add "$REPO" --mode checks --allow-public --workflow .github/workflows/tentmaker-demo.yml \
+            --branch "$branch" --author tentmaker-demo-nobody --json >"$RUNNER_TEMP/repo.json"
+          jq -e '.ok == true' "$RUNNER_TEMP/repo.json" >/dev/null || { cat "$RUNNER_TEMP/repo.json"; echo "::error::repo add failed"; exit 1; }
+
+      - name: wait until the job runs
+        run: |
+          deadline=$((SECONDS + 360))
+          while :; do
+            n=$(tentmaker status --json | jq '.worker.running // [] | length')
+            echo "$(date -u +%T) running jobs: $n"
+            if [ "$n" -gt 0 ]; then break; fi
+            if [ "$SECONDS" -ge "$deadline" ]; then echo "::error::no job started within 6 minutes"; exit 1; fi
+            sleep 3
+          done
+          # A few seconds in, so the job's age reads naturally.
+          sleep 8
+
+      - name: record
+        run: |
+          out=$RUNNER_TEMP/demo
+          mkdir -p "$out"
+          cd "$out"
+          tentmaker status --json | jq -e '.worker.running | length > 0' >/dev/null || { echo "::error::the job ended before recording"; exit 1; }
+          timeout 300 vhs "$GITHUB_WORKSPACE/scripts/demo/demo.tape"
+          # The plain output of each command, right after the recording.
+          tentmaker status >status.txt
+          tentmaker budget >budget.txt
+          tentmaker pool >pool.txt
+          rc=0; tentmaker doctor >doctor.txt || rc=$?
+          echo "doctor exit $rc"
+          for f in status budget pool doctor; do echo "== $f"; cat "$f.txt"; done
+          ls -l
+
+      - name: check the recording
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          cd "$RUNNER_TEMP/demo"
+          size=$(stat -c %s demo.gif)
+          dur=$(ffprobe -v error -show_entries format=duration -of csv=p=0 demo.gif)
+          echo "demo.gif: $size bytes, ${dur}s; status.png: $(stat -c %s status.png) bytes"
+          test "$size" -lt 3000000 || { echo "::error::demo.gif is $size bytes, over 3 MB"; exit 1; }
+          awk -v d="$dur" 'BEGIN { exit !(d >= 12 && d <= 20) }' || { echo "::error::demo.gif runs ${dur}s, not 12 to 20"; exit 1; }
+          test -s status.png || { echo "::error::no status.png"; exit 1; }
+          grep -q '^service *running' status.txt || { echo "::error::status does not show the service running"; exit 1; }
+          grep -qE "^jobs +$GITHUB_REPOSITORY +demo " status.txt || { echo "::error::status shows no demo job"; exit 1; }
+          # Nothing secret or personal: not the token (read from the env,
+          # never argv), no token shapes, no email address, no tailnet name.
+          if printf '%s\n' "$GITHUB_TOKEN" | grep -qFf - ./*.txt; then echo "::error::the token is in the output"; exit 1; fi
+          if grep -nE 'gh[opsur]_[A-Za-z0-9]{20,}|github_pat_|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}|\.ts\.net' ./*.txt; then
+            echo "::error::the output holds a token, an email address or a tailnet name"; exit 1
+          fi
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: demo
+          path: |
+            ${{ runner.temp }}/demo/demo.gif
+            ${{ runner.temp }}/demo/status.png
+            ${{ runner.temp }}/demo/*.txt
+          if-no-files-found: error
+
+      - name: the job succeeds
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          ctx=tentmaker/demo
+          deadline=$((SECONDS + 300))
+          while :; do
+            st=$(timeout 30 gh api "repos/$REPO/commits/$TM_DEMO_SHA/statuses?per_page=100" \
+              --jq "[.[] | select(.context == \"$ctx\")][0] | if . == null then \"none\" else \"\(.state) \(.description)\" end") || st="api-error"
+            echo "$(date -u +%T) $ctx: $st"
+            case $st in
+              success*) break ;;
+              failure* | error*) echo "::error::$ctx is $st"; exit 1 ;;
+            esac
+            if [ "$SECONDS" -ge "$deadline" ]; then echo "::error::$ctx did not succeed within 5 minutes"; exit 1; fi
+            sleep 10
+          done
+
+      - name: dump on failure
+        if: failure()
+        run: |
+          echo "== status"; tentmaker status --json || true
+          echo "== daemon log"; sudo journalctl -u tentmaker --no-pager -n 400 || true
+          sudo find /var/lib/tentmaker \( -name log.txt -o -name result.json -o -name 'broker*.json' -o -name state.json \) -type f 2>/dev/null |
+            while read -r f; do echo "== $f"; sudo tail -c 20000 "$f"; echo; done || true
+
+      - name: delete the throwaway branch
+        if: always() && env.TM_DEMO_BRANCH != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: timeout 30 gh api -X DELETE "repos/$REPO/git/refs/heads/$TM_DEMO_BRANCH" || echo "::warning::could not delete $TM_DEMO_BRANCH"
+
+      - name: uninstall --purge
+        if: ${{ !cancelled() && steps.setup.outcome != 'skipped' }}
+        run: |
+          sudo tentmaker uninstall --purge --yes --json | jq -e '.ok == true and .purged == true'

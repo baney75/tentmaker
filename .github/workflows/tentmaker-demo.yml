@@ -1,0 +1,27 @@
+# The check demo.yml runs through Tentmaker in checks mode while it records
+# the README demo, so `tentmaker status` has a real job to show. Tentmaker
+# posts its result as the commit status tentmaker/demo.
+#
+# GitHub's own runners never run it: demo.yml pushes its throwaway tm-demo/*
+# branch with the GITHUB_TOKEN, and pushes made with it start no workflow. If
+# one ever does, the step sees no TENTMAKER=1 and exits at once.
+name: tentmaker-demo
+
+on:
+  push:
+    branches: ["tm-demo/**"]
+
+permissions:
+  contents: read
+
+jobs:
+  demo:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - run: |
+          if [ "${TENTMAKER:-}" != 1 ]; then echo "not under Tentmaker; nothing to do"; exit 0; fi
+          echo "tentmaker-demo RUNNER_OS=$RUNNER_OS"
+          # Long enough to stay running while demo.yml records.
+          sleep 150
+          echo "tentmaker-demo done"
