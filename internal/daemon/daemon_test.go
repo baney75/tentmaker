@@ -1,0 +1,408 @@
+package daemon
+
+import (
+	"context"
+	"errors"
+	"log/slog"
+	"net"
+	"net/netip"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/baney75/tentmaker/internal/config"
+	"github.com/baney75/tentmaker/internal/control"
+	"github.com/baney75/tentmaker/internal/core"
+	fakeexec "github.com/baney75/tentmaker/internal/executor/fake"
+	fakeforge "github.com/baney75/tentmaker/internal/forge/fake"
+	"github.com/baney75/tentmaker/internal/guards"
+	"github.com/baney75/tentmaker/internal/mesh"
+	"github.com/baney75/tentmaker/internal/power"
+	"github.com/baney75/tentmaker/internal/secrets"
+	"github.com/baney75/tentmaker/internal/update"
+)
+
+// memStore is an in-memory secrets.Store.
+type memStore struct {
+	mu sync.Mutex
+	m  map[string][]byte
+}
+
+func (s *memStore) Get(name string) ([]byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	v, ok := s.m[name]
+	if !ok {
+		return nil, secrets.ErrNotFound
+	}
+	return append([]byte(nil), v...), nil
+}
+func (s *memStore) Set(name string, v []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.m[name] = append([]byte(nil), v...)
+	return nil
+}
+func (s *memStore) Delete(name string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.m, name)
+	return nil
+}
+
+// fakeTS is a Tailscale that is down unless self is set.
+type fakeTS struct {
+	mu   sync.Mutex
+	self *mesh.Peer
+}
+
+func (f *fakeTS) Self(ctx context.Context) (mesh.Peer, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.self == nil {
+		return mesh.Peer{}, errors.New("tailscale: not running")
+	}
+	return *f.self, nil
+}
+func (f *fakeTS) Peers(ctx context.Context) ([]mesh.Peer, error) {
+	if _, err := f.Self(ctx); err != nil {
+		return nil, err
+	}
+	return nil, nil
+}
+func (f *fakeTS) WhoIs(ctx context.Context, addr string) (mesh.Identity, error) {
+	return mesh.Identity{}, errors.New("unknown peer")
+}
+
+type fakeUpdater struct {
+	newer   atomic.Bool
+	applied atomic.Int32
+}
+
+func (f *fakeUpdater) Check(ctx context.Context, channel, current string) (update.Release, bool, error) {
+	return update.Release{Version: "9.9.9", Channel: channel}, f.newer.Load(), nil
+}
+func (f *fakeUpdater) Download(ctx context.Context, rel update.Release, dir string) (string, error) {
+	p := filepath.Join(dir, "tentmaker")
+	return p, os.WriteFile(p, []byte("new"), 0o755)
+}
+func (f *fakeUpdater) Apply(ctx context.Context, newBin, curBin, want string) error {
+	f.applied.Add(1)
+	return nil
+}
+
+var linuxX64 = core.Platform{OS: "linux", Arch: "x64"}
+
+type rig struct {
+	t      *testing.T
+	dir    string
+	paths  Paths
+	cfg    config.Config
+	forge  *fakeforge.Forge
+	ex     *fakeexec.Executor
+	ts     *fakeTS
+	store  *memStore
+	up     *fakeUpdater
+	d      *Daemon
+	cancel context.CancelFunc
+	done   chan error
+	hup    bool
+}
+
+func newRig(t *testing.T, edit func(*config.Config)) *rig {
+	t.Helper()
+	dir := t.TempDir()
+	r := &rig{
+		t:   t,
+		dir: dir,
+		paths: Paths{
+			Config: filepath.Join(dir, "config.toml"), Secrets: filepath.Join(dir, "secrets"),
+			State: filepath.Join(dir, "state"), Cache: filepath.Join(dir, "cache"),
+		},
+		forge: fakeforge.New("github", nil),
+		ex:    fakeexec.New("fake-linux", 0, linuxX64),
+		ts:    &fakeTS{},
+		store: &memStore{m: map[string][]byte{"github-token": []byte("ghp_secret_test_token")}},
+		up:    &fakeUpdater{},
+	}
+	cfg := config.Default(16<<30, 8)
+	cfg.Device = "box"
+	cfg.Repos = []config.Repo{{Name: "baney75/app"}}
+	cfg.Budget.Everyday = config.Profile{Memory: 4 * config.GiB, CPUs: 4}
+	cfg.Budget.Boost = config.Profile{Memory: 8 * config.GiB, CPUs: 8}
+	cfg.Update.Auto = false
+	if edit != nil {
+		edit(&cfg)
+	}
+	r.cfg = cfg
+	r.save()
+	return r
+}
+
+func (r *rig) save() {
+	if err := config.Save(r.paths.Config, r.cfg); err != nil {
+		r.t.Fatal(err)
+	}
+}
+
+func (r *rig) start() {
+	r.t.Helper()
+	r.d = New(Options{
+		ConfigPath: r.paths.Config,
+		Paths:      r.paths,
+		Version:    "1.2.3",
+		Log:        slog.New(slog.NewTextHandler(testWriter{r.t}, nil)),
+		Power:      power.Fake{State: core.PowerState{Known: true, OnAC: true}},
+		Idle:       power.FakeIdle{Err: errors.New("not idle")},
+		Probe: func(string) guards.Probe {
+			return guards.Fake{Memory: 64 << 30, Disk: 500 << 30, Load: 0.1}
+		},
+		Executors: func(cfg config.Config, bin func(core.Platform) (string, error), log *slog.Logger) ([]core.Executor, []core.Problem) {
+			return []core.Executor{r.ex}, nil
+		},
+		NewForge: func(name string, f config.Forge, token func(context.Context) (string, error), log *slog.Logger) (core.Forge, core.StatusForge, error) {
+			return r.forge, r.forge, nil
+		},
+		Secrets:     r.store,
+		Tailscale:   r.ts,
+		ControlAddr: "127.0.0.1:0",
+		Updater:     r.up,
+		Hostname:    func() (string, error) { return "box", nil },
+		Executable:  func() (string, error) { return "/usr/local/bin/tentmaker", nil },
+		UpdateEvery: 50 * time.Millisecond,
+		ReloadOnHUP: r.hup,
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	r.cancel = cancel
+	r.done = make(chan error, 1)
+	go func() { r.done <- r.d.Run(ctx) }()
+	r.eventually("control API up", func() bool { return r.d.ControlAddress() != "" })
+}
+
+func (r *rig) client() *control.Client {
+	return &control.Client{Addr: r.d.ControlAddress(), TokenPath: control.TokenPath(r.paths.State)}
+}
+
+func (r *rig) stop() error {
+	r.cancel()
+	select {
+	case err := <-r.done:
+		return err
+	case <-time.After(ShutdownTimeout + 5*time.Second):
+		r.t.Fatal("daemon did not stop within the shutdown timeout")
+		return nil
+	}
+}
+
+func (r *rig) eventually(what string, cond func() bool) {
+	r.t.Helper()
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	r.t.Fatalf("timed out waiting for %s", what)
+}
+
+type testWriter struct{ t *testing.T }
+
+func (w testWriter) Write(p []byte) (int, error) {
+	if strings.Contains(string(p), "ghp_secret_test_token") {
+		w.t.Errorf("token in log: %s", p)
+	}
+	return len(p), nil
+}
+
+func TestDaemonEndToEnd(t *testing.T) {
+	r := newRig(t, nil)
+	r.forge.AddJob(core.Job{Repo: "baney75/app", Name: "build", Labels: []string{"self-hosted", "tentmaker", "linux"}})
+	r.start()
+
+	// A queued job becomes a started runner.
+	r.eventually("a runner to start", func() bool { return len(r.ex.Running()) == 1 })
+	if g := r.forge.Grants(); len(g) != 1 || g[0].Repo != "baney75/app" {
+		t.Fatalf("grants %+v", g)
+	}
+
+	ctx := context.Background()
+	c := r.client()
+	var st Status
+	if err := c.Get(ctx, "/v1/status", &st); err != nil {
+		t.Fatal(err)
+	}
+	if st.Device != "box" || st.Worker == nil || len(st.Worker.Running) != 1 || st.Broker == nil {
+		t.Fatalf("status %+v", st)
+	}
+	if st.Mesh.Up || !strings.Contains(st.Mesh.Warning, "local only") {
+		t.Errorf("mesh should be degraded to local only: %+v", st.Mesh)
+	}
+	if !strings.HasPrefix(st.Why, "boost: plugged in") {
+		t.Errorf("why %q", st.Why)
+	}
+	if st.InUse.MemoryBytes != 2<<30 {
+		t.Errorf("in use %+v", st.InUse)
+	}
+
+	// A reload changes the budget without touching the running job.
+	r.eventually("boost decision", func() bool {
+		return r.d.Status(ctx).Decision.Limit.MemoryBytes == 8<<30
+	})
+	r.cfg.Budget.Boost.Memory = 12 * config.GiB
+	r.save()
+	if err := c.Post(ctx, "/v1/reload", nil); err != nil {
+		t.Fatal(err)
+	}
+	r.eventually("the new budget", func() bool {
+		return r.d.Status(ctx).Decision.Limit.MemoryBytes == 12<<30
+	})
+	if n := len(r.ex.Calls("Stop")); n != 0 {
+		t.Errorf("reload stopped %d runners", n)
+	}
+
+	// A broken config is refused and the running one stays.
+	os.WriteFile(r.paths.Config, []byte("budget = 7\n"), 0o644)
+	if err := c.Post(ctx, "/v1/reload", nil); err == nil {
+		t.Error("broken config accepted")
+	}
+	r.save()
+
+	// A labels change rebuilds the worker, which adopts the running job.
+	r.cfg.Labels = []string{"gpu"}
+	r.save()
+	if err := c.Post(ctx, "/v1/reload", nil); err != nil {
+		t.Fatal(err)
+	}
+	r.eventually("the new worker to adopt the job", func() bool {
+		s := r.d.Status(ctx)
+		return s.Worker != nil && len(s.Worker.Running) == 1 && strings.Contains(strings.Join(s.Worker.Labels, ","), "gpu")
+	})
+	if n := len(r.ex.Calls("Stop")); n != 0 {
+		t.Errorf("worker rebuild stopped %d runners", n)
+	}
+
+	// Pause with a time limit, then it ends on its own.
+	if err := c.Post(ctx, "/v1/pause", control.PauseRequest{Reason: "video call", ForS: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if s := r.d.Status(ctx); !s.Paused || s.PauseReason != "video call" || s.PauseUntil == nil {
+		t.Errorf("not paused: %+v", s)
+	}
+	r.eventually("the pause to end", func() bool { return !r.d.Status(ctx).Paused })
+
+	// Doctor through the API.
+	var rep Report
+	if err := c.Get(ctx, "/v1/doctor", &rep); err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.Checks) == 0 {
+		t.Error("doctor returned no checks")
+	}
+
+	// Shutdown is clean and leaves the busy job running.
+	start := time.Now()
+	if err := r.stop(); err != nil {
+		t.Fatalf("run returned %v", err)
+	}
+	if time.Since(start) > ShutdownTimeout {
+		t.Errorf("shutdown took %s", time.Since(start))
+	}
+	if len(r.ex.Running()) != 1 {
+		t.Errorf("shutdown stopped the running job")
+	}
+	if v := r.ex.Violations(); len(v) > 0 {
+		t.Errorf("executor contract violations: %v", v)
+	}
+	if _, err := net.Dial("tcp", r.d.ControlAddress()); err == nil {
+		t.Error("control API still listening after shutdown")
+	}
+}
+
+func TestDaemonWithoutTokenIsWorkerOnly(t *testing.T) {
+	r := newRig(t, func(c *config.Config) { c.Mesh.Enabled = false })
+	r.store.m = map[string][]byte{}
+	r.start()
+	defer r.stop()
+	s := r.d.Status(context.Background())
+	if s.Broker != nil {
+		t.Error("broker without a token")
+	}
+	if s.Mesh.Enabled || len(s.Warnings) != 0 {
+		t.Errorf("mesh off should warn nothing: %+v", s)
+	}
+}
+
+func TestDaemonMeshUp(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	ln.Close()
+	r := newRig(t, func(c *config.Config) { c.Mesh.Port = port })
+	r.ts.self = &mesh.Peer{ID: "n1", HostName: "box", DNSName: "box.tail.ts.net", IPs: []netip.Addr{netip.MustParseAddr("127.0.0.1")}, Online: true, LoginName: "me@example.com"}
+	r.start()
+	defer r.stop()
+	s := r.d.Status(context.Background())
+	if !s.Mesh.Up || s.Mesh.Self != "box.tail.ts.net" || len(s.Warnings) != 0 {
+		t.Errorf("mesh %+v warnings %v", s.Mesh, s.Warnings)
+	}
+}
+
+func TestDaemonBrokenConfigStillServes(t *testing.T) {
+	r := newRig(t, nil)
+	os.WriteFile(r.paths.Config, []byte("nonsense = [\n"), 0o644)
+	r.start()
+	s := r.d.Status(context.Background())
+	if len(s.Problems) == 0 || s.Problems[0].Check != "config" || s.Worker != nil {
+		t.Errorf("status %+v", s)
+	}
+	// Fixing it and reloading brings everything up.
+	r.save()
+	if err := r.d.Reload(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if s := r.d.Status(context.Background()); s.Worker == nil {
+		t.Error("no worker after reload")
+	}
+	if err := r.stop(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDaemonAutoUpdateRestarts(t *testing.T) {
+	r := newRig(t, func(c *config.Config) { c.Update.Auto = true; c.Mesh.Enabled = false })
+	r.up.newer.Store(true)
+	r.start()
+	select {
+	case err := <-r.done:
+		if !errors.Is(err, ErrRestart) {
+			t.Fatalf("run returned %v, want ErrRestart", err)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("no restart after an update")
+	}
+	if r.up.applied.Load() != 1 {
+		t.Errorf("applied %d times", r.up.applied.Load())
+	}
+}
+
+func TestDaemonAutoUpdateWaitsForJobs(t *testing.T) {
+	r := newRig(t, func(c *config.Config) { c.Update.Auto = true; c.Mesh.Enabled = false })
+	r.forge.AddJob(core.Job{Repo: "baney75/app", Name: "build", Labels: []string{"self-hosted", "tentmaker", "linux"}})
+	r.start()
+	r.eventually("a runner to start", func() bool { return len(r.d.Status(context.Background()).Worker.Running) == 1 })
+	r.up.newer.Store(true)
+	time.Sleep(500 * time.Millisecond)
+	if r.up.applied.Load() != 0 {
+		t.Error("update applied while a job runs")
+	}
+	if err := r.stop(); err != nil {
+		t.Fatal(err)
+	}
+}

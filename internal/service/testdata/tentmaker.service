@@ -1,0 +1,17 @@
+[Unit]
+Description=Tentmaker CI device
+Documentation=https://github.com/baney75/tentmaker
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/tentmaker daemon
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=5
+KillMode=process
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
