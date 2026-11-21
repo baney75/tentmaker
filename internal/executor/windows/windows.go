@@ -38,7 +38,11 @@ const MinFreeDisk = 10 << 30
 
 // Options configures the executor. Zero values pick the defaults.
 type Options struct {
-	StateDir string // default %ProgramData%\Tentmaker; jobs live in <StateDir>\jobs\<name>
+	// BaseDir is Tentmaker's own folder (%ProgramData%\Tentmaker), which
+	// holds the config, state, logs and cache. Install makes it readable
+	// but not writable by other users; empty leaves it alone.
+	BaseDir  string
+	StateDir string // default %ProgramData%\Tentmaker\state; jobs live in <StateDir>\jobs\<name>
 	CacheDir string // downloads (<CacheDir>\dist); default <StateDir>\cache
 	Log      *slog.Logger
 	// Binary returns the tentmaker binary for a guest platform (KindCheck).
@@ -164,6 +168,14 @@ func (e *Executor) powershell() string {
 // adminACL is SYSTEM and Administrators only.
 func adminACL() []ACE {
 	return []ACE{{SIDSystem, AccessFull, true}, {SIDAdmins, AccessFull, true}}
+}
+
+// baseACL is for Tentmaker's own folder and its state folder: everyone may
+// read them, and only SYSTEM and Administrators may add or change a file.
+// Without it they inherit ProgramData's ACL, under which any user, a job
+// too, may add files to their subfolders.
+func baseACL() []ACE {
+	return append(adminACL(), ACE{SIDUsers, AccessReadAndExecute, true})
 }
 
 // jobACL lets the runner user change everything under its job directory.

@@ -175,7 +175,10 @@ setup`), idempotent and safe to rerun.
   macOS guests). Boot failures back off 1, 2, 4 min up to 1 h.
 - **windows-job**: local standard user `tentmaker-runner` (random password kept with DPAPI,
   machine scope, file ACL SYSTEM and Administrators only); per job a fresh runner copy under
-  `%ProgramData%\Tentmaker\jobs\<name>` ACLed to that user; the runner starts with
+  `%ProgramData%\Tentmaker\jobs\<name>` ACLed to that user. Setup gives `%ProgramData%\Tentmaker`
+  and the state folder a DACL of their own (SYSTEM and Administrators full, Users read): under
+  ProgramData's inherited one any user, a job too, could add files to the state, checks and logs
+  folders. The runner starts with
   `CreateProcessAsUser`/`LogonUser` inside a Job Object with `JOB_OBJECT_LIMIT_JOB_MEMORY`,
   CPU rate control and `KILL_ON_JOB_CLOSE`. Platforms: `windows/<arch>`. Linux jobs on Windows
   (WSL2) are roadmap, not v1.
@@ -255,8 +258,12 @@ physical LAN only, never what the tailnet routes.
     Every filter matches `FWPM_CONDITION_ALE_USER_ID` (the same SDDL) and the
     `FWP_CONDITION_FLAG_IS_LOOPBACK` flag, which Windows sets on traffic to any of its own
     addresses: permit TCP 127.0.0.1:7434 (the relay) and port 53 to the configured DNS servers,
-    then block the rest with `FWPM_FILTER_FLAG_CLEAR_ACTION_RIGHT`. The filters have fixed keys;
-    `SetWFP` deletes every Tentmaker key and adds the wanted filters in one transaction, and
+    then block the rest with `FWPM_FILTER_FLAG_CLEAR_ACTION_RIGHT`. Two more hard blocks drop the
+    loopback flag and take multicast and broadcast to any host (224.0.0.0/4 and 255.255.255.255
+    as `FWP_V4_ADDR_MASK`, ff00::/8 as `FWP_V6_ADDR_MASK`), which the firewall rules don't, and
+    which a live run reached. A live run proved the loopback blocks (127.0.0.1, ::1, wildcard
+    listeners, the mesh port, the host's own addresses). The filters have fixed keys; `SetWFP`
+    deletes every Tentmaker key and adds the wanted filters in one transaction, and
     reads them back by key. Each filter's description spells out all of its conditions.
   - `checkNet` reads the profiles, the group's rules and the DNS servers (`Get-DnsClientServerAddress`,
     the command setup used) in one PowerShell call, plus the WFP filters. A firewall profile that

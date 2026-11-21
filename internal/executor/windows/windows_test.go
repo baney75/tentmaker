@@ -454,6 +454,7 @@ func newEnv(t *testing.T) *tenv {
 		"DAEMON_ONLY":  "not-for-jobs",
 	}
 	o := Options{
+		BaseDir:    dir,
 		StateDir:   filepath.Join(dir, "state"),
 		CacheDir:   filepath.Join(dir, "cache"),
 		Log:        slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
@@ -561,6 +562,17 @@ func TestInstall(t *testing.T) {
 		if !slices.Equal(a.dacls[d], adminACL()) {
 			t.Fatalf("%s ACL = %v, want SYSTEM and Administrators only", d, a.dacls[d])
 		}
+	}
+	// Tentmaker's own folder and the state folder stop inheriting
+	// ProgramData's ACL, which lets any user add files: a job could plant
+	// a log or a state file the daemon reads. Users may only read them.
+	for _, d := range []string{v.dir, v.o.StateDir} {
+		if !slices.Equal(a.dacls[d], baseACL()) || slices.ContainsFunc(baseACL(), func(e ACE) bool { return e.SID == SIDUsers && e.Mask != AccessReadAndExecute }) {
+			t.Fatalf("%s ACL = %v, want Users read only", d, a.dacls[d])
+		}
+	}
+	if i, j := slices.Index(a.calls, "SetDACL "+v.dir), slices.Index(a.calls, "CreateUser "+User); i < 0 || i > j {
+		t.Fatalf("Tentmaker's folder was protected after the runner user existed: %v", a.calls)
 	}
 	if !slices.Equal(a.dacls[v.e.libDir()], libACL(testSID)) {
 		t.Fatalf("lib ACL = %v", a.dacls[v.e.libDir()])
