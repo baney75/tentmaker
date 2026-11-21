@@ -104,7 +104,8 @@ type Env struct {
 	Executable  func() (string, error)
 	// BinaryProblem says why someone other than root (Windows: SYSTEM and
 	// Administrators) could change the binary at path or a folder above it,
-	// or "" when no one can. Default binsafe.Problem.
+	// or "" when no one can. A path that resolves through a symlink is a
+	// problem, so callers pass the resolved path. Default binsafe.Problem.
 	BinaryProblem func(path string) (string, error)
 	// ServiceBinDirs are root-owned folders setup may copy the binary into
 	// when the service can't run it in place, in order of preference.

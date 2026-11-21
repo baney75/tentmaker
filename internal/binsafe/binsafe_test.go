@@ -124,3 +124,30 @@ func TestServiceDirs(t *testing.T) {
 		t.Errorf("windows %v", d)
 	}
 }
+
+// Problem judges only a canonical path. A user who can write /usr/local
+// can repoint a /usr/local/bin symlink after the check, so a path that
+// resolves elsewhere is refused even when its target is root-owned; the
+// caller must use the resolved path (review r2 partB sol-second-F7).
+func TestProblemRefusesAPathThroughASymlink(t *testing.T) {
+	look := fakeLookup(map[string]Entry{
+		"/": rootDir(), "/opt": rootDir(), "/opt/safe": rootDir(), "/opt/safe/tentmaker": rootFile(),
+		"/usr": rootDir(), "/usr/local": {UID: 1000, Mode: fs.ModeDir | 0o755},
+	})
+	eval := func(p string) (string, error) {
+		if filepath.ToSlash(p) == "/usr/local/bin/tentmaker" {
+			return filepath.FromSlash("/opt/safe/tentmaker"), nil
+		}
+		return p, nil
+	}
+	got, err := problem(filepath.FromSlash("/usr/local/bin/tentmaker"), eval, look, Unix)
+	if err != nil || !strings.Contains(got, filepath.FromSlash("/opt/safe/tentmaker")) || !strings.Contains(got, "symbolic link") {
+		t.Errorf("through a symlink: %q %v", got, err)
+	}
+	if got, err := problem(filepath.FromSlash("/opt/safe/tentmaker"), eval, look, Unix); err != nil || got != "" {
+		t.Errorf("canonical path: %q %v", got, err)
+	}
+	if _, err := problem("/missing", func(string) (string, error) { return "", errors.New("gone") }, look, Unix); err == nil {
+		t.Error("a path that doesn't resolve passed")
+	}
+}

@@ -125,6 +125,44 @@ func TestUnreadableSupplyFailsClosed(t *testing.T) {
 	}
 }
 
+// A peripheral battery (scope=Device) that is asleep returns EIO or ENODATA
+// on read. It is not the machine's own, so it is skipped and the machine's
+// own supplies decide (review r2 partB first-F1). An unscoped or System
+// supply with the same error still fails closed.
+func TestAsleepDeviceSupplyIsSkipped(t *testing.T) {
+	mouse := map[string]string{
+		"hidpp_battery_0/type": "Battery", "hidpp_battery_0/scope": "Device",
+		"hidpp_battery_0/status": "Discharging", "hidpp_battery_0/capacity": "5",
+		"hidpp_battery_0/online": "1",
+	}
+	desktop := ps(mouse)
+	laptopFiles := map[string]string{
+		"AC/type": "Mains", "AC/online": "1",
+		"BAT0/type": "Battery", "BAT0/scope": "System", "BAT0/status": "Charging", "BAT0/capacity": "62",
+	}
+	for k, v := range mouse {
+		laptopFiles[k] = v
+	}
+	laptop := ps(laptopFiles)
+	for _, bad := range []string{"hidpp_battery_0/capacity", "hidpp_battery_0/status", "hidpp_battery_0/online"} {
+		got, err := sysfsPower{fsys: failFS{desktop, bad}}.Power(context.Background())
+		if err != nil || got != (core.PowerState{Known: true, OnAC: true}) {
+			t.Errorf("desktop, %s unreadable: got %+v, err %v", bad, got, err)
+		}
+		got, err = sysfsPower{fsys: failFS{laptop, bad}}.Power(context.Background())
+		want := core.PowerState{Known: true, OnAC: true, HasBattery: true, BatteryPercent: 62}
+		if err != nil || got != want {
+			t.Errorf("laptop, %s unreadable: got %+v, err %v", bad, got, err)
+		}
+	}
+	for _, bad := range []string{"BAT0/capacity", "BAT0/scope"} {
+		got, err := sysfsPower{fsys: failFS{laptop, bad}}.Power(context.Background())
+		if err == nil || got.Known {
+			t.Errorf("laptop, %s unreadable: got %+v, err %v", bad, got, err)
+		}
+	}
+}
+
 const (
 	pmsetMacBookBattery = "Now drawing from 'Battery Power'\n -InternalBattery-0 (id=4653155)\t31%; discharging; 4:12 remaining present: true\n"
 	pmsetMacBookAC      = "Now drawing from 'AC Power'\n -InternalBattery-0 (id=36700259)\t100%; charged; 0:00 remaining present: true\n"

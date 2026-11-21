@@ -122,7 +122,9 @@ as busy. `Admit` is also false when
 
 Power per OS: Linux reads `/sys/class/power_supply/*/{type,online,capacity}` (Mains online, or no
 Battery present, means AC; a supply whose `type` can't be read, or any attribute read error other
-than a missing optional file, makes power unknown, not AC). macOS runs `pmset -g batt`. Windows calls `GetSystemPowerStatus`
+than a missing optional file, makes power unknown, not AC; `type` and `scope` are read first, and a
+supply whose scope is Device, a peripheral such as a sleeping Bluetooth mouse, is skipped along with
+its read errors). macOS runs `pmset -g batt`. Windows calls `GetSystemPowerStatus`
 (golang.org/x/sys/windows). Idle: macOS `ioreg -c IOHIDSystem` HIDIdleTime; Linux
 `loginctl show-session` IdleHint/IdleSinceHint for the active seat session; Windows: a daemon in
 session 0 can't see input, so it returns an error ("not idle") unless the user-mode tray helper
@@ -510,7 +512,10 @@ are rediscovered every 30 s; a peer failing 3 calls in a row is skipped for a mi
   to 30 min for running ones, because the restart ends them (on Windows the daemon's job object
   kills them). If they don't finish it resumes and changes nothing; `--force` (CLI only) skips the
   wait. It resumes after the new version reports healthy, or after a rollback, unless the device
-  was paused before the update (review r1 partB first-F5).
+  was paused before the update (review r1 partB first-F5). It skips the drain only when the
+  service manager positively reports the service not installed or stopped; if the manager's status
+  call fails, or the service runs but its control API doesn't answer, update changes nothing and
+  says to retry or pass `--force` (review r2 partB sol-F1).
 - Auto-update has no one watching, so the daemon guards itself: before it swaps the binary it
   writes `<state>/update-pending.json` (from, to, time), and if that write fails it does not
   update at all; a failed swap deletes the marker. The new binary deletes it once
@@ -529,7 +534,12 @@ are rediscovered every 30 s; a peer failing 3 calls in a row is skipped for a mi
   in one line that names the old copy to remove. With no safe folder setup refuses. `update` and
   `rollback` work only on that root-owned path, and `doctor` fails a service binary that a
   non-root user can change. A root service that runs a user-writable binary would let that user
-  run code as root (review r1 second-F7). (internal/binsafe, internal/cli)
+  run code as root (review r1 second-F7). Every check runs on the canonical path, and that same
+  resolved path is the one copied to, put in the service spec, updated and rolled back:
+  `binsafe.Problem` refuses a path that resolves through a symlink, because whoever can write the
+  folder holding the link (a user-writable `/usr/local` with `bin` pointing at a root-owned
+  folder) could repoint it after the check (review r2 partB sol-second-F7). (internal/binsafe,
+  internal/cli)
 
 Install:
 

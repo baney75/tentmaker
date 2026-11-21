@@ -239,7 +239,7 @@ There are two channels and no others.
 - **stable:** GitHub Releases tagged `vX.Y.Z`.
 - **dev:** one rolling prerelease tagged `dev`, rebuilt on every push to `main`, versioned like `0.1.1-dev.202611211530.abc1234`.
 
-With `update.auto` on (the default) a device checks every 6 hours and updates only between jobs. `tentmaker update` pauses new jobs and waits up to 30 minutes for running ones to finish, since the restart would end them; if they don't finish it changes nothing and resumes. `--force` updates without waiting and ends running jobs. An update verifies the sha256, checks the new binary runs, swaps it in, restarts the service, and rolls back if the service isn't healthy within 60 seconds. Updates and rollbacks change only the root-owned binary the service runs.
+With `update.auto` on (the default) a device checks every 6 hours and updates only between jobs. `tentmaker update` pauses new jobs and waits up to 30 minutes for running ones to finish, since the restart would end them; if they don't finish, or it can't tell whether the service is running jobs, it changes nothing and resumes. `--force` updates without waiting and ends running jobs. An update verifies the sha256, checks the new binary runs, swaps it in, restarts the service, and rolls back if the service isn't healthy within 60 seconds. Updates and rollbacks change only the root-owned binary the service runs.
 
 ```sh
 sudo tentmaker update --check

@@ -70,6 +70,7 @@ type fakeService struct {
 	spec      *service.Spec
 	installed bool
 	running   bool
+	statusErr error // Status fails with this when set
 	calls     []string
 }
 
@@ -101,6 +102,9 @@ func (s *fakeService) Restart(ctx context.Context) error { s.record("restart"); 
 func (s *fakeService) Status(ctx context.Context) (service.State, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.statusErr != nil {
+		return service.State{}, s.statusErr
+	}
 	return service.State{Installed: s.installed, Running: s.running}, nil
 }
 
@@ -164,11 +168,18 @@ type fakeDaemon struct {
 	resumes  int
 	isPaused bool
 	running  int // jobs the worker reports
+	// statusErrs makes the next n status calls fail, like a service
+	// that doesn't answer in time.
+	statusErrs int
 }
 
 func (d *fakeDaemon) Status(ctx context.Context) (any, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if d.statusErrs > 0 {
+		d.statusErrs--
+		return nil, errors.New("status timed out")
+	}
 	st := daemon.Status{Version: d.version, Device: "box", Why: "everyday: you are working", Paused: d.isPaused}
 	if d.running > 0 {
 		st.Worker = &dispatch.WorkerStatus{Paused: d.isPaused}
@@ -336,7 +347,16 @@ func newFixture(t *testing.T) *fixture {
 		},
 		Now:        time.Now,
 		Executable: func() (string, error) { return exe, nil },
+		// Like binsafe.Problem: a path that resolves through a symlink is
+		// refused, and the prefixes are matched on the resolved path. A
+		// path that doesn't exist yet is matched as is.
 		BinaryProblem: func(p string) (string, error) {
+			if r, err := filepath.EvalSymlinks(p); err == nil {
+				if r != filepath.Clean(p) {
+					return p + " resolves through a symbolic link to " + r, nil
+				}
+				p = r
+			}
 			for pre, why := range f.userWritable {
 				if p == pre || strings.HasPrefix(p, pre+string(filepath.Separator)) {
 					return why, nil

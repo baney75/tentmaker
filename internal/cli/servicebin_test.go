@@ -157,3 +157,49 @@ func TestUpdateAndRollbackUseRootOwnedCopy(t *testing.T) {
 		t.Fatalf("rollback: exit %d to %v, want %s", code, f.up.rollbackTo, target)
 	}
 }
+
+// symlinkedServiceDir makes the first service folder a symlink, in a
+// folder a user can write, to a root-owned folder: user-writable
+// /usr/local with bin -> /opt/safe. It returns the resolved folder.
+func (f *fixture) symlinkedServiceDir() string {
+	f.t.Helper()
+	safe := filepath.Join(f.root, "opt", "safe")
+	link := f.env.ServiceBinDirs[0]
+	if err := os.MkdirAll(safe, 0o755); err != nil {
+		f.t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+		f.t.Fatal(err)
+	}
+	if err := os.Symlink(safe, link); err != nil {
+		f.t.Skipf("can't make a symlink here: %v", err)
+	}
+	f.userWritable[filepath.Dir(link)] = filepath.Dir(link) + " is owned by uid 1000, not root"
+	return safe
+}
+
+// The service, update and rollback use the resolved folder, never the
+// path through a symlink a user could repoint after the check (review r2
+// partB sol-second-F7).
+func TestServiceBinaryUsesTheResolvedPath(t *testing.T) {
+	f := newFixture(t)
+	exe := f.writeExe("tm")
+	f.userWritable[filepath.Dir(exe)] = "user's"
+	safe := f.symlinkedServiceDir()
+	if code := f.run("", "setup", "--yes", "--no-mesh"); code != ExitOK {
+		t.Fatalf("exit %d\n%s\n%s", code, f.stdout, f.stderr)
+	}
+	want := filepath.Join(safe, "tentmaker")
+	if f.svc.spec == nil || f.svc.spec.Binary != want {
+		t.Fatalf("service spec %+v, want binary %s", f.svc.spec, want)
+	}
+	f.noUserWritable()
+	f.up.newer = true
+	f.svc.installed = false
+	if code := f.run("", "update", "--json"); code != ExitOK || len(f.up.appliedTo) != 1 || f.up.appliedTo[0] != want {
+		t.Fatalf("update: exit %d applied to %v, want %s\n%s%s", code, f.up.appliedTo, want, f.stdout, f.stderr)
+	}
+	if code := f.run("", "rollback", "--json"); code != ExitOK || len(f.up.rollbackTo) != 1 || f.up.rollbackTo[0] != want {
+		t.Fatalf("rollback: exit %d to %v, want %s", code, f.up.rollbackTo, want)
+	}
+}

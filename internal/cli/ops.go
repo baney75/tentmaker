@@ -430,11 +430,19 @@ func (a *app) update(ctx context.Context, channel string, checkOnly, force bool)
 	// The restart ends running jobs (on Windows the daemon's job object
 	// kills them), so new jobs pause and running ones finish first
 	// (review r1 partB first-F5).
+	// A status error is not "not installed": the service may be running
+	// jobs, so nothing changes unless --force says ending them is fine.
+	// With --force an unknown service is treated as installed (review r2
+	// partB sol-F1).
 	st, serr := a.env.Service.Status(ctx)
-	installed := serr == nil && st.Installed
+	if serr != nil && !force {
+		return v, fail("try again, or pass --force to restart anyway, which ends running jobs", "can't tell whether the service is running: %v; nothing changed", serr)
+	}
+	installed := serr != nil || st.Installed
+	stopped := serr == nil && !st.Running
 	undrain := func() string { return "" }
 	if installed {
-		if undrain, err = a.drain(ctx, rc, rel.Version, force); err != nil {
+		if undrain, err = a.drain(ctx, rc, rel.Version, force, stopped); err != nil {
 			return v, err
 		}
 	}
@@ -468,10 +476,11 @@ func (a *app) update(ctx context.Context, channel string, checkOnly, force bool)
 // drain pauses new jobs through the control API and waits, up to
 // UpdateDrainWait, for running jobs to finish; with force it does not
 // wait. It returns a function that resumes the pause it set (none when the
-// device was already paused) and says so for the update's note. A service
-// that doesn't answer has no worker taking jobs, so there is nothing to
-// drain.
-func (a *app) drain(ctx context.Context, cfg config.Config, version string, force bool) (func() string, error) {
+// device was already paused) and says so for the update's note. When the
+// control API doesn't answer, drain goes on only if the service manager
+// reported the service stopped, or with force; a running service that
+// doesn't answer may still have jobs, so the update changes nothing.
+func (a *app) drain(ctx context.Context, cfg config.Config, version string, force, stopped bool) (func() string, error) {
 	c := a.controlClient(cfg)
 	status := func() (daemon.Status, error) {
 		var st daemon.Status
@@ -487,7 +496,10 @@ func (a *app) drain(ctx context.Context, cfg config.Config, version string, forc
 	}
 	st, err := status()
 	if err != nil {
-		return func() string { return "" }, nil
+		if stopped || force {
+			return func() string { return "" }, nil
+		}
+		return nil, fail("try again, or pass --force to restart anyway, which ends running jobs", "the service is running but its control API did not answer, so running jobs can't be checked: %v; nothing changed", err)
 	}
 	was := st.Paused || (st.Worker != nil && st.Worker.Paused)
 	if !was {

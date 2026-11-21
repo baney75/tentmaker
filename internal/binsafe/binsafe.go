@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io/fs"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -142,13 +143,26 @@ func Windows(path string, level int, e Entry) string {
 
 // Problem says why someone other than root (Windows: SYSTEM and
 // Administrators) could change the binary at path or a folder above it, or
-// "" when no one can. Symbolic links are resolved first.
+// "" when no one can. path must be canonical (filepath.EvalSymlinks of
+// itself): a path that resolves through a symbolic link is a problem even
+// when its target passes, because whoever can write the folder holding the
+// link can repoint it after the check (user-writable /usr/local with bin
+// pointing at a root-owned folder). Callers resolve first and use the
+// resolved path for everything the check vouches for (review r2 partB
+// sol-second-F7).
 func Problem(path string) (string, error) {
-	resolved, err := filepath.EvalSymlinks(path)
+	return problem(path, filepath.EvalSymlinks, hostLookup, hostJudge)
+}
+
+func problem(path string, eval func(string) (string, error), look Lookup, judge Judge) (string, error) {
+	resolved, err := eval(path)
 	if err != nil {
 		return "", err
 	}
-	return Walk(resolved, hostLookup, hostJudge)
+	if !SameFile(runtime.GOOS, resolved, path) {
+		return fmt.Sprintf("%s resolves through a symbolic link to %s; use that path", path, resolved), nil
+	}
+	return Walk(resolved, look, judge)
 }
 
 // SameFile reports whether a and b name the same path, ignoring case on

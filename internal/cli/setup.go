@@ -666,28 +666,40 @@ func (a *app) serviceBinary() (bin, note string, err error) {
 }
 
 // copyRootOwned copies exe into dir, which it creates, unless someone other
-// than root could change dir or a folder above it. It returns the copy's
-// path once it has checked that only root can change it.
-func (a *app) copyRootOwned(exe, dir string) (string, error) {
-	existing := dir
+// than root could change dir or a folder above it. It works on dir's
+// resolved path and returns the copy's resolved path once it has checked
+// that only root can change it: a path through a symlink in a folder a user
+// can write could be repointed after the check (review r2 partB
+// sol-second-F7).
+func (a *app) copyRootOwned(exe, name string) (string, error) {
+	existing := name
 	for {
 		if _, err := os.Stat(existing); err == nil {
 			break
 		}
 		parent := filepath.Dir(existing)
 		if parent == existing {
-			return "", fmt.Errorf("%s has no existing parent", dir)
+			return "", fmt.Errorf("%s has no existing parent", name)
 		}
 		existing = parent
 	}
-	if why, err := a.env.BinaryProblem(existing); err != nil || why != "" {
-		return "", fmt.Errorf("%s: %s", dir, firstNonEmpty(why, fmt.Sprint(err)))
+	real, err := filepath.EvalSymlinks(existing)
+	if err != nil {
+		return "", fmt.Errorf("%s: resolve %s: %v", name, existing, err)
+	}
+	rest, err := filepath.Rel(existing, name)
+	if err != nil {
+		return "", fmt.Errorf("%s: %v", name, err)
+	}
+	dir := filepath.Join(real, rest)
+	if why, err := a.env.BinaryProblem(real); err != nil || why != "" {
+		return "", fmt.Errorf("%s: %s", name, firstNonEmpty(why, fmt.Sprint(err)))
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", fmt.Errorf("make %s: %v", dir, err)
 	}
 	if why, err := a.env.BinaryProblem(dir); err != nil || why != "" {
-		return "", fmt.Errorf("%s: %s", dir, firstNonEmpty(why, fmt.Sprint(err)))
+		return "", fmt.Errorf("%s: %s", name, firstNonEmpty(why, fmt.Sprint(err)))
 	}
 	target := filepath.Join(dir, binsafe.BinaryName(a.env.GOOS))
 	if !sameContent(exe, target) {
@@ -781,8 +793,10 @@ func (a *app) rootBinary() (string, error) {
 		return exe, nil
 	}
 	for _, dir := range a.env.ServiceBinDirs {
-		target := filepath.Join(dir, binsafe.BinaryName(a.env.GOOS))
-		if _, err := os.Stat(target); err != nil {
+		// The resolved path, as setup gave the service (review r2 partB
+		// sol-second-F7).
+		target, err := filepath.EvalSymlinks(filepath.Join(dir, binsafe.BinaryName(a.env.GOOS)))
+		if err != nil {
 			continue
 		}
 		if w, err := a.env.BinaryProblem(target); err == nil && w == "" {
