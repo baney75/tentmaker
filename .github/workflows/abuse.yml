@@ -160,7 +160,7 @@ jobs:
           ip addr show tmdecoy; ip -6 route; ip route
           sudo nohup python3 scripts/abuse/decoy.py 100.64.77.1:8080 10.77.0.1:8080 '[fd7a:115c:a1e0::77]:8080' \
             100.100.100.100:80 udp:100.100.100.100:53 0.0.0.0:8767 '[::]:8767' \
-            0.0.0.0:7433 '[::]:7433' 127.0.0.1:8766 '[::1]:8766' mcast:239.77.77.77:7777 ${meta} \
+            0.0.0.0:7433 '[::]:7433' 127.0.0.1:8766 '[::1]:8766' mcast:239.77.77.77:7777 abstract:tentmaker-abuse-decoy ${meta} \
             >"$RUNNER_TEMP/decoy.log" 2>&1 &
           sudo ip netns exec tmlan nohup python3 scripts/abuse/decoy.py 10.78.0.1:8080 10.78.0.1:7433 '[2001:db8:78::1]:8080' >"$RUNNER_TEMP/decoy-lan.log" 2>&1 &
           sudo ip netns exec tmts nohup python3 scripts/abuse/decoy.py 10.99.0.1:8080 >"$RUNNER_TEMP/decoy-ts.log" 2>&1 &
@@ -185,6 +185,15 @@ jobs:
           done
           curl -fsS --max-time 5 -H 'Sec-Tailscale: localapi' --unix-socket /run/tailscale/tailscaled.sock \
             http://local-tailscaled.sock/localapi/v0/status >/dev/null || { echo "::error::tailscaled's socket does not answer"; exit 1; }
+          # A host service on an abstract Unix socket: any process in the
+          # host's network namespace reaches it, whatever its uid.
+          ok=""
+          for _ in $(seq 1 50); do
+            sudo -u nobody curl -fsS --max-time 2 --abstract-unix-socket tentmaker-abuse-decoy http://decoy/ >/dev/null 2>&1 && { ok=1; break; }
+            sleep 0.2
+          done
+          test -n "$ok" || { echo "::error::the abstract socket decoy does not answer"; cat "$RUNNER_TEMP/decoy.log"; exit 1; }
+          echo "decoy up: abstract:tentmaker-abuse-decoy"
 
       - name: setup
         id: setup
@@ -385,6 +394,7 @@ jobs:
           echo "== daemon log"; sudo journalctl -u tentmaker --no-pager -n 300 || true
           echo "== job units"; sudo journalctl --no-pager -n 200 -u 'tentmaker-job-*' || true
           echo "== job namespaces"; sudo journalctl --no-pager -n 100 -u 'tentmaker-netns-*' -u 'tentmaker-uplink-*' || true
+          echo "== podman's namespace"; sudo journalctl --no-pager -n 60 -u tentmaker-podnet.service -u tentmaker-podnet-uplink.service || true
           echo "== nft"; sudo nft list ruleset 2>/dev/null | head -200 || true
           echo "== decoys"; cat "$RUNNER_TEMP"/decoy*.log || true
           echo "== routes"; ip route; ip -6 route

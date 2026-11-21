@@ -14,6 +14,9 @@ it.
   mcast:GROUP:PORT   joins an IPv4 multicast group and answers each
                      datagram to its sender
   unix:PATH          HTTP over a Unix socket, mode 0666 like tailscaled's
+  abstract:NAME      HTTP over an abstract Unix socket: no file, no
+                     permissions, reachable from anywhere in this network
+                     namespace (the containerd-shim CVE-2020-15257 class)
 """
 
 import errno
@@ -92,6 +95,8 @@ def serve(spec):
             pass
         srv = ServerUnix(rest, Handler)
         os.chmod(rest, 0o666)
+    elif kind == "abstract":
+        srv = ServerUnix("\0" + rest, Handler)
     elif kind in ("udp", "mcast"):
         host, _, port = rest.rpartition(":")
         host = host.strip("[]")
