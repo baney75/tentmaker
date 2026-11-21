@@ -1,0 +1,28 @@
+{
+  "Node": {
+    "ID": 123456789,
+    "StableID": "nLINUX00CNTRL",
+    "Name": "alice-linux.example-tailnet.ts.net.",
+    "User": 1001,
+    "Key": "nodekey:2222222222222222222222222222222222222222222222222222222222222222",
+    "KeyExpiry": "2027-01-01T00:00:00Z",
+    "DiscoKey": "discokey:8888888888888888888888888888888888888888888888888888888888888888",
+    "Addresses": ["100.64.0.2/32", "fd7a:115c:a1e0::2/128"],
+    "AllowedIPs": ["100.64.0.2/32", "fd7a:115c:a1e0::2/128"],
+    "Endpoints": ["192.0.2.10:41641"],
+    "Hostinfo": {"OS": "linux", "Hostname": "alice-linux", "Services": []},
+    "Created": "2026-01-01T00:00:00Z",
+    "MachineAuthorized": true,
+    "Capabilities": ["https://tailscale.com/cap/ssh"],
+    "CapMap": {"https://tailscale.com/cap/ssh": null},
+    "ComputedName": "alice-linux",
+    "ComputedNameWithHost": "alice-linux"
+  },
+  "UserProfile": {
+    "ID": 1001,
+    "LoginName": "alice@example.com",
+    "DisplayName": "Alice Example",
+    "ProfilePicURL": ""
+  },
+  "CapMap": null
+}
