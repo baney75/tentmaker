@@ -748,8 +748,22 @@ func (w *Worker) exchange(ctx context.Context, now time.Time, d core.Decision, a
 		}
 		var sent report
 		if r := w.st.Unacked[name]; r != nil {
-			sent.Ended = append([]string(nil), r.Ended...)
 			sent.Results = append([]core.CheckResult(nil), fitResults(r.Results)...)
+			// A runner whose result did not fit is reported running, not
+			// ended: ended without its result, the broker would post an
+			// error for it, and left out of both lists, it would end the
+			// grant all the same. It stays unacked until its result goes.
+			held := map[string]bool{}
+			for _, x := range r.Results[len(sent.Results):] {
+				held[x.Runner] = true
+			}
+			for _, n := range r.Ended {
+				if held[n] {
+					running = append(running, n)
+				} else {
+					sent.Ended = append(sent.Ended, n)
+				}
+			}
 		}
 		w.mu.Unlock()
 
