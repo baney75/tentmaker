@@ -20,7 +20,7 @@ curl -fsSL https://raw.githubusercontent.com/baney75/tentmaker/main/skills/tentm
   -o ~/.claude/skills/tentmaker/SKILL.md
 ```
 
-The skill tells the agent to stop and ask you before it spends money, serves a public repo, puts a forge token on a device, writes to your workflow files, or purges a device.
+The skill tells the agent to stop and ask you before it spends money, serves a public repo, puts a forge token on a device, writes to your workflow files, or purges a device. It never handles a token itself: for Forgejo, Gitea, Codeberg or GitLab it tells you which token to make and hands you the command that reads it from stdin.
 
 ## Sudo and Administrator
 
@@ -80,6 +80,6 @@ claude mcp add tentmaker -- tentmaker mcp
 | `resume` | yes | Take jobs again. |
 | `migrate_workflows` | yes, with `write` | Report (default) or rewrite `runs-on` lines in a local checkout. |
 | `install_on_device` | yes, on the other host | Install and set up Tentmaker on a tailnet host over Tailscale SSH. |
-| `update` | yes | Update to the newest release on a channel, with rollback. |
+| `update` | yes | Update to the newest release on a channel, with rollback. Passing `channel` also saves it for auto-updates (the CLI's `update --channel` does not; use `setup --yes --channel`). |
 
 Tools that change the device need the MCP server process to run as root or Administrator. Run as a normal user, they return an error saying so, and the read tools still work. For those changes, an agent can fall back to the CLI with `sudo`.

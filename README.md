@@ -50,6 +50,8 @@ irm https://raw.githubusercontent.com/baney75/tentmaker/main/scripts/install.ps1
 tentmaker setup
 ```
 
+A Windows device runs Windows jobs only (`runs-on: [self-hosted, tentmaker, Windows]`). v0.1 runs no Linux jobs on Windows.
+
 A piped script can't take parameters, so set these first, in the same session, when you need them:
 
 ```powershell
@@ -75,7 +77,9 @@ On a terminal, setup walks you through a short wizard. Every question shows its 
 
 Then it installs the sandbox for your OS and the system service, runs `tentmaker doctor`, and prints the next step. A device without a forge token is fine: it becomes a worker that takes jobs from other devices in its pool.
 
-Running setup again is safe. It keeps what you set before unless a flag changes it.
+Every question has a flag, so an agent can run setup with `--yes` and no questions: `--device`, `--memory`, `--boost-memory`, `--cpus`, `--boost-cpus`, `--on-battery`, `--repo`, `--forge`, `--forge-url`, `--mode`, `--token-stdin`, `--no-gh`, `--pool`, `--no-mesh` and `--channel`. `tentmaker setup --help` describes each. A device that should never hold a token gets `--no-gh` and no `--repo`.
+
+Running setup again is safe. It keeps what you set before unless a flag changes it. It also restarts the service; running jobs keep going.
 
 ## Add a second device
 
@@ -140,7 +144,7 @@ sudo tentmaker connect gitlab --url https://gitlab.example.com --token-stdin
 sudo tentmaker repo add group/app --forge gitlab
 ```
 
-`--token-stdin` reads the token from stdin: paste it, then press Enter and Ctrl-D.
+`--token-stdin` reads the token from stdin: paste it, then press Enter and Ctrl-D. Make the token yourself: on Forgejo, Gitea or Codeberg (`--url https://codeberg.org`) under user settings > Applications with scopes `write:repository` and `read:user`; on GitLab a personal access token with scope `api`.
 
 In v0.1 every Forgejo, Gitea and GitLab repo runs in checks mode. GitHub repos can use it too, which helps when hosted Actions won't start for a repo.
 
@@ -172,7 +176,7 @@ sudo tentmaker pause --for 2h video call
 sudo tentmaker resume
 ```
 
-Every key is in [docs/config.md](docs/config.md).
+The guards and the job size have no flags. Edit them in the config file (every key is in [docs/config.md](docs/config.md)), run `tentmaker doctor` to check it, and restart the service: `sudo systemctl restart tentmaker` on Linux, `sudo launchctl kickstart -k system/dev.tentmaker.daemon` on macOS, `Restart-Service Tentmaker` in an Administrator PowerShell.
 
 ## Let your agent do it
 
@@ -200,7 +204,7 @@ Its read tools (`status`, `pool`, `doctor`) work as any user. Tools that change 
 
 **Fork pull requests never run.** The broker refuses any job whose head repo differs from the repo, cancels the run if a fork job reaches a runner anyway, and deletes that runner. Checks mode never looks at forks.
 
-**Public repos are refused** unless you pass `--allow-public` and the repo requires approval before any outside contributor's workflow runs.
+**Public repos are refused** unless you pass `--allow-public` and the repo requires approval before any outside contributor's workflow runs. `sudo tentmaker repo add OWNER/NAME --allow-public --enable` sets that approval on GitHub for you. Approval for first-time contributors only is not enough.
 
 **Runners are single use.** On GitHub each runner gets a just-in-time config for one job, then the forge retires it and the sandbox is deleted. The JIT config reaches the runner on stdin or through a root-only file, never in argv, an environment variable or a log.
 
@@ -218,7 +222,7 @@ Its read tools (`status`, `pool`, `doctor`) work as any user. Tools that change 
 
 - A Linux or Windows job shares your kernel. A kernel or Windows privilege bug can let it out. Only macOS jobs run in a VM.
 - Linux and Windows jobs have the network, including your LAN and tailnet. Only the macOS VMs are fenced off from them.
-- Anyone who can push to a repo you serve can run code on your machines. So can an outside contributor whose run you approve on a public repo.
+- Anyone who can push to a repo you serve can run code on your machines. On a public repo, so can code you merge from outside contributors, and workflows they can trigger on the repo itself, such as one that runs on issue comments. Fork pull requests still never run.
 - A compromised forge account or token can queue jobs on your devices.
 
 Report a vulnerability through [SECURITY.md](SECURITY.md).
@@ -235,17 +239,25 @@ With `update.auto` on (the default) a device checks every 6 hours and updates on
 ```sh
 sudo tentmaker update --check
 sudo tentmaker update
-sudo tentmaker update --channel dev
 sudo tentmaker rollback
 tentmaker version
+```
+
+To move a device to the dev channel, save the channel with setup, then update. `update --channel dev` on its own installs one dev build and leaves auto-updates on the saved channel.
+
+```sh
+sudo tentmaker setup --yes --channel dev    # keeps every other value
+sudo tentmaker update
 ```
 
 ## Uninstall
 
 ```sh
 sudo tentmaker uninstall           # remove the service and the sandboxes
-sudo tentmaker uninstall --purge   # also delete config, secrets, state and cache
+sudo tentmaker uninstall --purge   # also delete config, secrets, state, cache and logs
 ```
+
+An agent adds `--yes`, since it has no terminal to confirm on. Workflows you pointed at the pool wait for a runner after the last device that serves them is gone, so change their `runs-on` back first.
 
 On Windows, run `tentmaker uninstall` in an Administrator PowerShell. If the binary is still there afterwards, delete it: `/usr/local/bin/tentmaker` (or `~/.local/bin/tentmaker`), or `C:\Program Files\Tentmaker\tentmaker.exe`.
 

@@ -5,7 +5,8 @@ This file is the contract for `internal/cli`, `internal/daemon`, `internal/contr
 any command change.
 
 Every command that prints takes `--json` and then prints exactly one JSON object on stdout
-(errors too: `{"error": "...", "fix": "..."}`) and nothing else. Exit codes: 0 ok, 1 failed,
+(errors too: `{"error": "...", "fix": "..."}`) and nothing else. Every command and subcommand
+takes `--help`, which prints its usage and exits 0. Exit codes: 0 ok, 1 failed,
 2 usage error, 3 needs root/Administrator, 4 not set up yet. No command ever prompts when
 stdin is not a terminal or `--yes` is given; a missing required answer is a usage error that
 names the flag. Secrets are read only from stdin (`--token-stdin`) or from `gh auth token`,
