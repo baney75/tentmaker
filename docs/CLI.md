@@ -163,8 +163,11 @@ within 20 s. Auto-update (update.auto): check every 6 h on the configured channe
 only when no job runs, then exit so the service manager restarts the new binary.
 
 The binary the executors put into sandboxes (`Binary(platform)`): this executable when the
-platform matches the host; otherwise `<cache>/bin/tentmaker_<os>_<arch>`, downloaded and
-verified with internal/update for the exact running version (dev builds: the dev release).
+platform matches the host; otherwise `<cache>/bin/tentmaker_<os>_<arch>-<version>`, downloaded
+and verified with internal/update for the exact running version (dev builds: the dev release).
+The version in the name makes an update fetch a fresh copy; copies for other versions are
+deleted. A hand build has no release and uses `<cache>/bin/tentmaker_<os>_<arch>` if one is put
+there.
 
 ## MCP
 

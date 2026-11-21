@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -180,7 +181,7 @@ func TestBinary(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if got != filepath.Join(cache, "bin", "tentmaker_linux_arm64") {
+	if got != filepath.Join(cache, "bin", "tentmaker_linux_arm64-1.4.0") {
 		t.Errorf("guest binary at %s", got)
 	}
 	if len(downloads) != 1 || downloads[0] != "linux/arm64@v1.4.0 "+ReleaseBase+"/v1.4.0/tentmaker_linux_arm64.tar.gz" {
@@ -196,9 +197,51 @@ func TestBinary(t *testing.T) {
 	if _, err := dev(core.Platform{OS: "linux", Arch: "arm64"}); err == nil || !strings.Contains(err.Error(), "offline") {
 		t.Errorf("dev error %v", err)
 	}
-	hand := NewBinary(BinaryOptions{Version: "0.0.0-dev", CacheDir: t.TempDir(), GOOS: "darwin", GOARCH: "arm64"})
+	handCache := t.TempDir()
+	hand := NewBinary(BinaryOptions{Version: "0.0.0-dev", CacheDir: handCache, GOOS: "darwin", GOARCH: "arm64"})
 	if _, err := hand(core.Platform{OS: "linux", Arch: "arm64"}); err == nil || !strings.Contains(err.Error(), "hand build") {
 		t.Errorf("hand build error %v", err)
+	}
+	// A hand build uses the binary put where the error says.
+	handBin := filepath.Join(handCache, "bin", "tentmaker_linux_arm64")
+	os.MkdirAll(filepath.Dir(handBin), 0o755)
+	os.WriteFile(handBin, []byte("hand"), 0o755)
+	if got, err := hand(core.Platform{OS: "linux", Arch: "arm64"}); err != nil || got != handBin {
+		t.Errorf("hand build with a binary in place: %s %v", got, err)
+	}
+}
+
+// After an update the guest binary is fetched again for the new version,
+// not served from the old version's cache, and the old copy goes (review
+// r1 partB first-F2, sol-F3).
+func TestBinaryCacheFollowsTheVersion(t *testing.T) {
+	cache := t.TempDir()
+	var tags []string
+	newBin := func(version string) func(core.Platform) (string, error) {
+		return NewBinary(BinaryOptions{Version: version, CacheDir: cache, GOOS: "darwin", GOARCH: "arm64",
+			Download: func(ctx context.Context, goos, goarch string, rel update.Release, dir string) (string, error) {
+				tags = append(tags, rel.Tag)
+				p := filepath.Join(dir, "tentmaker")
+				return p, os.WriteFile(p, []byte("build "+rel.Version), 0o755)
+			}})
+	}
+	linux := core.Platform{OS: "linux", Arch: "arm64"}
+	old, err := newBin("1.4.0")(linux)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := newBin("1.5.0")(linux)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(got); string(b) != "build 1.5.0" {
+		t.Fatalf("after the update check jobs get %q", b)
+	}
+	if !slices.Equal(tags, []string{"v1.4.0", "v1.5.0"}) {
+		t.Fatalf("downloads %v", tags)
+	}
+	if _, err := os.Stat(old); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the old version's copy is still there: %v", err)
 	}
 }
 

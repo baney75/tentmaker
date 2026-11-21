@@ -37,9 +37,13 @@ type BinaryOptions struct {
 }
 
 // NewBinary returns Binary(platform) from docs/CLI.md: this executable when
-// the platform matches the host, otherwise <cache>/bin/tentmaker_<os>_<arch>,
-// downloaded and verified with internal/update for the exact running
-// version (dev builds: the dev release).
+// the platform matches the host, otherwise
+// <cache>/bin/tentmaker_<os>_<arch>-<version>, downloaded and verified with
+// internal/update for the exact running version (dev builds: the dev
+// release). The version is in the name so an update fetches a new copy
+// instead of serving the old one to check jobs forever (review r1 partB
+// first-F2, sol-F3); copies for other versions are deleted. A hand build
+// has no release, so it uses a binary put at <cache>/bin/tentmaker_<os>_<arch>.
 func NewBinary(o BinaryOptions) func(core.Platform) (string, error) {
 	if o.Executable == nil {
 		o.Executable = os.Executable
@@ -74,19 +78,24 @@ func NewBinary(o BinaryOptions) func(core.Platform) (string, error) {
 			}
 			return exe, nil
 		}
-		name := "tentmaker_" + goos + "_" + goarch
+		ext := ""
 		if goos == "windows" {
-			name += ".exe"
+			ext = ".exe"
 		}
-		dst := filepath.Join(o.CacheDir, "bin", name)
+		base := "tentmaker_" + goos + "_" + goarch
 		mu.Lock()
 		defer mu.Unlock()
-		if st, err := os.Stat(dst); err == nil && st.Mode().IsRegular() {
-			return dst, nil
-		}
 		tag, err := releaseTag(o.Version)
 		if err != nil {
-			return "", fmt.Errorf("no %s/%s tentmaker for check jobs: %w; build one with GOOS=%s GOARCH=%s and put it at %s", goos, goarch, err, goos, goarch, dst)
+			hand := filepath.Join(o.CacheDir, "bin", base+ext)
+			if st, serr := os.Stat(hand); serr == nil && st.Mode().IsRegular() {
+				return hand, nil
+			}
+			return "", fmt.Errorf("no %s/%s tentmaker for check jobs: %w; build one with GOOS=%s GOARCH=%s and put it at %s", goos, goarch, err, goos, goarch, hand)
+		}
+		dst := filepath.Join(o.CacheDir, "bin", base+"-"+fileSafe(o.Version)+ext)
+		if st, err := os.Stat(dst); err == nil && st.Mode().IsRegular() {
+			return dst, nil
 		}
 		rel := update.Release{Tag: tag, Version: o.Version, Assets: map[string]string{}}
 		for _, a := range []string{update.ArchiveName(goos, goarch), update.SumsName} {
@@ -110,7 +119,35 @@ func NewBinary(o BinaryOptions) func(core.Platform) (string, error) {
 		if err := copyFile(got, dst, 0o755); err != nil {
 			return "", err
 		}
+		pruneGuestBinaries(filepath.Dir(dst), base+"-", filepath.Base(dst), o.Log)
 		return dst, nil
+	}
+}
+
+// fileSafe keeps a version usable in a file name.
+func fileSafe(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '.' || r == '-' || r == '+' {
+			return r
+		}
+		return '_'
+	}, s)
+}
+
+// pruneGuestBinaries deletes cached copies of one platform's binary for
+// other versions. A copy a running job still uses stays readable on Unix;
+// a failed delete only costs disk.
+func pruneGuestBinaries(dir, prefix, keep string, log *slog.Logger) {
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range ents {
+		if n := e.Name(); strings.HasPrefix(n, prefix) && n != keep && e.Type().IsRegular() {
+			if err := os.Remove(filepath.Join(dir, n)); err != nil {
+				log.Debug("old guest binary not deleted", "file", n, "error", err)
+			}
+		}
 	}
 }
 
