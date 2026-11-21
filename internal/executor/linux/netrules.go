@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -637,11 +638,50 @@ func (e *Executor) checkNet(ctx context.Context, uid int) error {
 				miss = append(miss, w.String())
 			}
 		}
+		var dns []string
+		for _, r := range have {
+			if r.dport == "53" && r.j == "ACCEPT" {
+				dns = append(dns, normElem(r.d))
+			}
+		}
+		var rs []netip.Addr
+		for _, a := range p.Resolvers {
+			if a.Is6() == (t.tool == "ip6tables") {
+				rs = append(rs, a)
+			}
+		}
+		if d := dnsDiff(dns, rs); d != "" {
+			miss = append(miss, d)
+		}
 		if len(miss) > 0 {
 			return &errStaleNet{t.tool + " lacks " + strings.Join(miss, ", ")}
 		}
 	}
 	return nil
+}
+
+// dnsDiff describes how the DNS servers the loaded rules allow (have, as
+// listed) differ from want, or is "" when they are the same set.
+func dnsDiff(have []string, want []netip.Addr) string {
+	h := map[string]bool{}
+	for _, a := range have {
+		h[normElem(a)] = true
+	}
+	w := map[string]bool{}
+	for _, a := range want {
+		w[a.String()] = true
+	}
+	if maps.Equal(h, w) {
+		return ""
+	}
+	return fmt.Sprintf("the DNS servers %s (the rules allow %s)", orNone(slices.Sorted(maps.Keys(w))), orNone(slices.Sorted(maps.Keys(h))))
+}
+
+func orNone(xs []string) string {
+	if len(xs) == 0 {
+		return "none"
+	}
+	return strings.Join(xs, " ")
 }
 
 // normElem spells an address or range the way both the rules file and the
@@ -713,6 +753,17 @@ func checkNft(out string, p NetPolicy) error {
 	want("loopback, unique local, link-local", HostV6...)
 	want("multicast, broadcast", MulticastV4...)
 	want("multicast", MulticastV6...)
+	// The DNS servers must be exactly the host's now: a laptop on a new
+	// network has a new DHCP resolver, which the LAN rule would reject.
+	var dns []string
+	for el := range rules["DNS"] {
+		if a, err := netip.ParseAddr(el); err == nil {
+			dns = append(dns, a.String())
+		}
+	}
+	if d := dnsDiff(dns, p.Resolvers); d != "" {
+		miss = append(miss, d)
+	}
 	if !p.AllowLAN {
 		want("LAN", LANv4...)
 		if len(p.OnLinkV6) > 0 {

@@ -241,6 +241,9 @@ const testNftListing = `table inet tentmaker {
 	chain runner {
 		ip daddr 127.0.0.1 tcp dport 7434 accept comment "source archive relay"
 		ip daddr { 127.0.0.53, 192.168.1.1 } udp dport 53 accept comment "DNS"
+		ip daddr { 127.0.0.53, 192.168.1.1 } tcp dport 53 accept comment "DNS"
+		ip6 daddr 2001:db8::53 udp dport 53 accept comment "DNS"
+		ip6 daddr 2001:db8::53 tcp dport 53 accept comment "DNS"
 		tcp dport 7433 reject comment "mesh port"
 		udp dport 7433 reject comment "mesh port"
 		oifname "lo" reject comment "this host"
@@ -565,5 +568,52 @@ func TestUserManagerHidesTailscale(t *testing.T) {
 		if !strings.Contains(userManagerDropIn, s) {
 			t.Errorf("user manager drop-in lacks %q:\n%s", s, userManagerDropIn)
 		}
+	}
+}
+
+// The host's DNS server changes under loaded rules (a laptop joins a new
+// network and DHCP hands it a new resolver). The old allow-list would send
+// a job's lookups to a server the LAN rule rejects and keep the old server
+// open, so Start reloads the rules and the job's resolv.conf with the new
+// one, on either backend.
+func TestStartReloadsOnNewResolver(t *testing.T) {
+	for _, be := range []string{"nft", "iptables"} {
+		t.Run(be, func(t *testing.T) {
+			v := newEnv(t)
+			v.installed(t)
+			ctx := context.Background()
+			loaded := func() string {
+				v.f.mu.Lock()
+				defer v.f.mu.Unlock()
+				if be == "nft" {
+					return v.f.nft
+				}
+				return v.f.ipt
+			}
+			if be == "iptables" {
+				must(t, os.Remove(v.o.Paths.Nft))
+				must(t, v.e.installNet(ctx, testUID))
+			}
+			must(t, v.e.checkNet(ctx, testUID))
+			if !strings.Contains(loaded(), "192.0.2.53") {
+				t.Fatalf("the first rules lack the first resolver:\n%s", loaded())
+			}
+
+			must(t, os.WriteFile(v.o.Paths.ResolvedConf, []byte("nameserver 10.0.0.1\n"), 0o644))
+			var se *errStaleNet
+			if err := v.e.checkNet(ctx, testUID); !errors.As(err, &se) || !strings.Contains(err.Error(), "10.0.0.1") {
+				t.Fatalf("checkNet after the resolver changed: %v, want stale naming 10.0.0.1", err)
+			}
+			must(t, v.e.Start(ctx, spec("job-dns", "")))
+			if r := loaded(); !strings.Contains(r, "10.0.0.1") || strings.Contains(r, "192.0.2.53") {
+				t.Errorf("reloaded rules do not allow exactly the new resolver:\n%s", r)
+			}
+			b, err := os.ReadFile(v.e.jobResolvConf())
+			must(t, err)
+			if string(b) != "# Written by tentmaker for CI jobs.\nnameserver 10.0.0.1\n" {
+				t.Errorf("job resolv.conf:\n%s", b)
+			}
+			must(t, v.e.checkNet(ctx, testUID))
+		})
 	}
 }
