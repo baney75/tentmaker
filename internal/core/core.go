@@ -52,10 +52,19 @@ type Job struct {
 	FromFork   bool      `json:"from_fork"` // head repo differs from base repo
 	Status     string    `json:"status"`    // queued, in_progress, completed, waiting
 	CreatedAt  time.Time `json:"created_at"`
+	// HeadSHA is the commit a check job (Event KindCheck) tests. Check jobs
+	// have no forge ID, so it and Name identify them.
+	HeadSHA string `json:"head_sha,omitempty"`
 }
 
-// Key identifies a job across the pool.
-func (j Job) Key() string { return j.Forge + ":" + j.Repo + ":" + itoa(j.ID) }
+// Key identifies a job across the pool. A check job's key is its commit and
+// job name, since every check job has ID 0.
+func (j Job) Key() string {
+	if j.Event == KindCheck && j.HeadSHA != "" {
+		return j.Forge + ":" + j.Repo + ":" + KindCheck + ":" + j.HeadSHA + ":" + j.Name
+	}
+	return j.Forge + ":" + j.Repo + ":" + itoa(j.ID)
+}
 
 // RepoInfo is what a forge reports about a repository's safety settings.
 type RepoInfo struct {

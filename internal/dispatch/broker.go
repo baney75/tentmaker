@@ -497,7 +497,7 @@ func (b *Broker) pickLocked(req core.WorkRequest, now time.Time) []*grantRec {
 					continue
 				}
 				job := core.Job{Forge: r.forge, Repo: r.cfg.Name, Name: cj.Name, Workflow: cj.Workflow,
-					Event: CheckEvent, HeadBranch: h.commit.Ref, Status: "queued", CreatedAt: now,
+					Event: CheckEvent, HeadBranch: h.commit.Ref, HeadSHA: h.commit.SHA, Status: "queued", CreatedAt: now,
 					Labels: PlatformLabels(req.Labels, p)}
 				rec := &grantRec{Name: b.newNameLocked(req.Device), Kind: core.KindCheck, Device: req.Device,
 					Forge: r.forge, Repo: r.cfg.Name, Job: job, Platform: p, Labels: job.Labels,
@@ -605,6 +605,25 @@ func (b *Broker) realizeCheck(ctx context.Context, req core.WorkRequest, rec *gr
 		drop("", nil)
 		return core.WorkOffer{}, false
 	}
+	// Another broker with this repo sees the same commit with no status
+	// yet. The claim, held by this broker rather than the worker, makes one
+	// of them grant it: a worker asks every broker, so a claim held by the
+	// worker would let each broker hand it the same check.
+	if b.o.Claimer != nil {
+		cctx, cancel := context.WithTimeout(ctx, forgeTimeout)
+		ok := b.o.Claimer.Claim(cctx, rec.Job, b.name, b.claimTTL())
+		cancel()
+		if !ok {
+			b.log.Debug("check claimed by another broker; skipped", "repo", rec.Repo, "sha", rec.SHA, "context", rec.Context, "device", req.Device)
+			drop("", nil)
+			return core.WorkOffer{}, false
+		}
+		claimed := drop
+		drop = func(why string, err error) {
+			b.releaseCheck(rec)
+			claimed(why, err)
+		}
+	}
 	// The bundle names the archive by an opaque ref the granted device
 	// redeems through FetchArchive; no forge URL or token leaves the broker.
 	b.mu.Lock()
@@ -639,6 +658,17 @@ func (b *Broker) realizeCheck(ctx context.Context, req core.WorkRequest, rec *gr
 }
 
 func (b *Broker) claimTTL() time.Duration { return b.idleTTL + 2*time.Minute }
+
+// releaseCheck drops this broker's claim on a check it did not grant after
+// all.
+func (b *Broker) releaseCheck(rec *grantRec) {
+	if b.o.Claimer == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), forgeTimeout)
+	defer cancel()
+	b.o.Claimer.Release(ctx, rec.Job, b.name)
+}
 
 func (b *Broker) release(rec *grantRec) {
 	if b.o.Claimer == nil || rec.Kind != core.KindRunner {

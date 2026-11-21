@@ -431,6 +431,7 @@ section is rewritten.
 - `StatusForge.PendingCommits(ctx, repo, branches...)` also returns the heads of `branches` (config `[[repos]] branches`, `repo add --branch`); a branch that doesn't exist is skipped. Branch heads, like the default branch, need no `authors` match: only people with push access move them.
 - The broker keeps each finished check's log tail under `<state>/checks` (newest 200). Before this, a failed `tentmaker/<job>` status pointed at nothing: the worker deletes the job dir and the tail was dropped after posting the status.
 - `CheckBundle.Ref` carries the branch.
+- A broker claims each check through its `Claimer` before it grants it, so two brokers with the same repo run a check once. Check jobs have no forge ID, so `Job.HeadSHA` (set on check offers) and the job name key the claim (`Job.Key`). The granting broker holds the claim, not the worker: a worker asks every broker, and a claim held by the worker let both brokers hand it the same check (found by the team test, two brokers).
 - `CheckBundle.ArchiveRef` replaces the forge URL and header the broker used to send (review finding: a check job could read the forge token from its bundle). `Header` stays in the struct only so a worker can recognize and refuse an older broker's bundle.
 - An empty `Platform.Arch` means any arch.
 - `ListDir` returns sorted entry names, and `ErrNotFound` for a missing folder.
