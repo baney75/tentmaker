@@ -272,7 +272,7 @@ func (e *Executor) Start(ctx context.Context, spec core.ExecSpec) error {
 		return fmt.Errorf("look up %s (run install): %w", User, err)
 	}
 	// Fail closed: no firewall rules for this user, no job.
-	if err := e.checkNet(ctx, sid); err != nil {
+	if err := e.ensureNet(ctx, sid); err != nil {
 		return fmt.Errorf("the network rules for CI jobs are not in force: %v; run tentmaker setup as an administrator", err)
 	}
 	pw, err := e.password()

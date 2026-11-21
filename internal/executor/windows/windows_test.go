@@ -91,6 +91,10 @@ type fakeAPI struct {
 	fw       map[string]string
 	profiles map[string]string
 	dns      []string
+	// addrs are the host's addresses (Get-NetIPAddress); self is what
+	// Tentmaker-Block-Self names.
+	addrs []string
+	self  []string
 	scripts  []string
 }
 
@@ -98,7 +102,8 @@ func newFakeAPI() *fakeAPI {
 	return &fakeAPI{admin: true, users: map[string]string{}, rights: map[string][]string{},
 		hidden: map[string]bool{}, dacls: map[string][]ACE{}, free: 100 << 30,
 		fw: map[string]string{}, profiles: map[string]string{"Domain": "True", "Private": "True", "Public": "True"},
-		dns: []string{"168.63.129.16", "fe80::1%4", "192.168.1.1"}}
+		dns:   []string{"168.63.129.16", "fe80::1%4", "192.168.1.1"},
+		addrs: []string{"127.0.0.1", "::1", "fe80::5%4", "192.168.1.20", "2001:db8:1::20"}}
 }
 
 // PowerShell plays the firewall scripts netrules.go runs.
@@ -111,8 +116,27 @@ func (f *fakeAPI) PowerShell(ctx context.Context, script string) (string, error)
 	switch first {
 	case "# tentmaker: DNS servers":
 		return strings.Join(f.dns, "\r\n") + "\r\n", nil
+	case "# tentmaker: host addresses":
+		return strings.Join(f.addrs, "\r\n") + "\r\n", nil
+	case "# tentmaker: host address rule":
+		_, ok := f.fw["Tentmaker-Block-Self"]
+		for _, l := range strings.Split(script, "\n") {
+			switch {
+			case strings.HasPrefix(l, "if ($r) { $r | Remove-NetFirewallRule }"):
+				delete(f.fw, "Tentmaker-Block-Self")
+				f.self = nil
+			case strings.HasPrefix(l, "if ($r) { Set-NetFirewallRule") && ok,
+				strings.HasPrefix(l, "New-NetFirewallRule -Name 'Tentmaker-Block-Self'") && !ok:
+				f.self = fakeAddrs(l)
+			}
+			if v, found := strings.CutPrefix(l, "$d = '"); found && !ok {
+				f.fw["Tentmaker-Block-Self"] = "Block " + strings.ReplaceAll(strings.TrimSuffix(v, "'"), "''", "'")
+			}
+		}
+		return "", nil
 	case "# tentmaker: install network rules":
 		clear(f.fw)
+		f.self = nil
 		desc := ""
 		for _, l := range strings.Split(script, "\n") {
 			if v, ok := strings.CutPrefix(l, "$d = '"); ok {
@@ -123,11 +147,15 @@ func (f *fakeAPI) PowerShell(ctx context.Context, script string) (string, error)
 				_, act, _ := strings.Cut(l, "-Action ")
 				act, _, _ = strings.Cut(act, " ")
 				f.fw[name] = act + " " + desc
+				if name == "Tentmaker-Block-Self" {
+					f.self = fakeAddrs(l)
+				}
 			}
 		}
 		return "", nil
 	case "# tentmaker: remove network rules":
 		clear(f.fw)
+		f.self = nil
 		return "", nil
 	case "# tentmaker: check network rules":
 		var b strings.Builder
@@ -144,9 +172,32 @@ func (f *fakeAPI) PowerShell(ctx context.Context, script string) (string, error)
 		for _, n := range names {
 			fmt.Fprintf(&b, "rule %s True Outbound %s\r\n", n, f.fw[n])
 		}
+		if _, ok := f.fw["Tentmaker-Block-Self"]; ok {
+			fmt.Fprintf(&b, "selfrule %s\r\n", strings.Join(f.self, " "))
+		}
+		for _, a := range f.addrs {
+			fmt.Fprintf(&b, "addr %s\r\n", a)
+		}
+		for _, a := range f.dns {
+			fmt.Fprintf(&b, "dns %s\r\n", a)
+		}
 		return b.String(), nil
 	}
 	return "", errors.New("fake PowerShell: unknown script " + first)
+}
+
+// fakeAddrs reads the -RemoteAddress @('a', 'b') list of a script line.
+func fakeAddrs(l string) []string {
+	_, v, ok := strings.Cut(l, "-RemoteAddress @(")
+	if !ok {
+		return nil
+	}
+	v, _, _ = strings.Cut(v, ")")
+	var out []string
+	for _, a := range strings.Split(v, ", ") {
+		out = append(out, strings.Trim(a, "'"))
+	}
+	return out
 }
 
 func (f *fakeAPI) rec(s string) {
