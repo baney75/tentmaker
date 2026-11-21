@@ -69,11 +69,27 @@ CPUAccounting=yes
 TasksAccounting=yes
 `
 
-const userManagerDropIn = `# Written by tentmaker setup. The CI user's manager (podman.service and every
-# rootless container) counts against the Tentmaker pool limit.
+// userManagerDropIn puts the CI user's manager (podman.service and every
+// rootless container) in the pool's slice, and hides tailscaled's socket
+// from it as the job units do. It starts after tailscaled so the socket
+// directory exists when its mount namespace is built.
+var userManagerDropIn = `# Written by tentmaker setup. The CI user's manager (podman.service and every
+# rootless container) counts against the Tentmaker pool limit and can't reach
+# tailscaled's local API.
+[Unit]
+After=tailscaled.service
+
 [Service]
 Slice=tentmaker.slice
-`
+` + inaccessible(TailscalePaths)
+
+func inaccessible(paths []string) string {
+	var b strings.Builder
+	for _, p := range paths {
+		b.WriteString("InaccessiblePaths=-" + p + "\n")
+	}
+	return b.String()
+}
 
 const rsharedUnit = `# Written by tentmaker setup. WSL mounts / private; rootless podman needs it shared.
 [Unit]

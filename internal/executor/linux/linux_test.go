@@ -35,6 +35,7 @@ type fakeHost struct {
 	nft     string
 	ipt     string
 	enabled map[string]bool
+	nftFail bool // nft -f fails (a broken nft, a bad rules file)
 }
 
 func (f *fakeHost) Run(ctx context.Context, c Cmd) (Result, error) {
@@ -59,6 +60,9 @@ func (f *fakeHost) firewallLocked(c Cmd) (Result, bool, error) {
 	fail := func(msg string) (Result, bool, error) { return Result{Code: 1, Stderr: msg}, true, errors.New(msg) }
 	switch base := filepath.Base(c.Path); {
 	case base == "nft" && len(c.Args) == 2 && c.Args[0] == "-f":
+		if f.nftFail {
+			return fail("Error: Could not process rule")
+		}
 		b, err := os.ReadFile(c.Args[1])
 		if err != nil {
 			return fail(err.Error())
@@ -94,7 +98,16 @@ func (f *fakeHost) firewallLocked(c Cmd) (Result, bool, error) {
 		}
 		switch {
 		case strings.Contains(a, "-S OUTPUT"):
-			return Result{Stdout: "-P OUTPUT ACCEPT\n-A OUTPUT -m owner --uid-owner 1234 -j TENTMAKER\n"}, true, nil
+			// One jump per owner the script's loop names.
+			out := "-P OUTPUT ACCEPT\n"
+			for _, l := range strings.Split(f.ipt, "\n") {
+				if o, ok := strings.CutPrefix(strings.TrimSpace(l), "for o in "); ok {
+					for _, u := range strings.Fields(strings.TrimSuffix(o, "; do")) {
+						out += "-A OUTPUT -m owner --uid-owner " + u + " -j TENTMAKER\n"
+					}
+				}
+			}
+			return Result{Stdout: out}, true, nil
 		case strings.Contains(a, "-S TENTMAKER"):
 			var out []string
 			for _, l := range strings.Split(f.ipt, "\n") {
@@ -219,6 +232,8 @@ func newEnv(t *testing.T) *env {
 		PodmanSocketUnit:  "/usr/lib/systemd/user/podman.socket",
 		DockerCLI:         filepath.Join(dir, "docker"),
 		ResolvConf:        filepath.Join(dir, "resolv.conf"),
+		IfInet6:           filepath.Join(dir, "proc", "if_inet6"),
+		IPv6Route:         filepath.Join(dir, "proc", "ipv6_route"),
 		Nft:               filepath.Join(dir, "sbin", "nft"),
 		Iptables:          filepath.Join(dir, "sbin", "iptables"),
 		Ip6tables:         filepath.Join(dir, "sbin", "ip6tables"),
@@ -339,6 +354,8 @@ func TestStartRunner(t *testing.T) {
 		"-p", "TasksMax=4096", "-p", "Nice=10", "-p", "IOSchedulingClass=idle", "-p", "RuntimeMaxSec=5400",
 		"-p", "TimeoutStopSec=30", "-p", "NoNewPrivileges=yes", "-p", "PrivateTmp=yes",
 		"-p", "InaccessiblePaths=-" + rt + "/bus", "-p", "InaccessiblePaths=-" + rt + "/systemd",
+		"-p", "InaccessiblePaths=-/run/tailscale", "-p", "InaccessiblePaths=-/var/run/tailscale", "-p", "InaccessiblePaths=-/var/lib/tailscale",
+		"-p", "InaccessiblePaths=-" + filepath.Join(v.dir, "home"), "-p", "InaccessiblePaths=-/root",
 		"-p", "StandardInput=file:" + v.e.secretPath("job-abc"),
 		"-p", "StandardOutput=journal", "-p", "StandardError=journal",
 	}

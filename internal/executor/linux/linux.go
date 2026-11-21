@@ -61,6 +61,8 @@ type Paths struct {
 	PodmanSocketUnit  string // /usr/lib/systemd/user/podman.socket
 	DockerCLI         string // /usr/bin/docker, the real docker CLI behind the shim
 	ResolvConf        string // /etc/resolv.conf: the DNS servers jobs may query
+	IfInet6           string // /proc/net/if_inet6: finds the Tailscale interfaces
+	IPv6Route         string // /proc/net/ipv6_route: the on-link IPv6 prefixes (the LAN)
 	// Nft, Iptables and Ip6tables are the firewall tools; empty means look
 	// them up in SystemPath.
 	Nft, Iptables, Ip6tables string
@@ -86,6 +88,8 @@ func (p Paths) withDefaults() Paths {
 	set(&p.PodmanSocketUnit, "/usr/lib/systemd/user/podman.socket")
 	set(&p.DockerCLI, "/usr/bin/docker")
 	set(&p.ResolvConf, "/etc/resolv.conf")
+	set(&p.IfInet6, "/proc/net/if_inet6")
+	set(&p.IPv6Route, "/proc/net/ipv6_route")
 	return p
 }
 
@@ -276,7 +280,7 @@ func (e *Executor) Start(ctx context.Context, spec core.ExecSpec) (err error) {
 		return err
 	}
 	// Fail closed: no job runs unless its traffic is confined.
-	if err := e.checkNet(ctx, uid); err != nil {
+	if err := e.ensureNet(ctx, uid); err != nil {
 		return fmt.Errorf("%v; run sudo tentmaker setup", err)
 	}
 	dir := e.jobDir(spec.Name)
@@ -397,10 +401,23 @@ func (e *Executor) unitArgs(spec core.ExecSpec, kind string, uid, gid int, stdin
 		// job on them could point podman.service at a config it wrote.
 		"-p", "InaccessiblePaths=-" + filepath.Join(rt, "bus"),
 		"-p", "InaccessiblePaths=-" + filepath.Join(rt, "systemd"),
-		"-p", "StandardInput=file:" + stdinFile,
+	}
+	for _, p := range TailscalePaths {
+		args = append(args, "-p", "InaccessiblePaths=-"+p)
+	}
+	// Other users' homes are closed by setup already; hiding them is a
+	// second wall. Not ProtectHome=yes: that also hides /run/user, the
+	// job's XDG_RUNTIME_DIR and podman socket.
+	for _, p := range []string{e.p.Homes, "/root"} {
+		if !strings.HasPrefix(dir+"/", strings.TrimSuffix(p, "/")+"/") {
+			args = append(args, "-p", "InaccessiblePaths=-"+p)
+		}
+	}
+	args = append(args,
+		"-p", "StandardInput=file:"+stdinFile,
 		"-p", "StandardOutput=journal",
 		"-p", "StandardError=journal",
-	}
+	)
 	for _, kv := range e.jobEnv(spec, uid) {
 		args = append(args, "--setenv="+kv)
 	}
