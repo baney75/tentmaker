@@ -9,7 +9,9 @@
 # read from the masked GH_TOKEN env and reaches curl on stdin, never argv.
 #
 # Env: REPO, TEAM_SHA, RUN_KEY, POOL, HOST_PREFIX, BR_PREFIX, GH_TOKEN.
-set -euo pipefail
+set -Eeuo pipefail
+# set -e ends the step without a word; say which command failed.
+trap 'rc=$?; printf "::error::team.sh line %s: %s exited %s\n" "$LINENO" "$BASH_COMMAND" "$rc" >&2' ERR
 
 : "${REPO:?}" "${TEAM_SHA:?}" "${RUN_KEY:?}" "${POOL:?}" "${HOST_PREFIX:?}" "${BR_PREFIX:?}"
 
@@ -415,8 +417,10 @@ wait_done() {
 	done
 }
 
-check_device() { # SHA JOB: the device the broker's kept check log names
-	sudo sed -n 's/^device: //p' "$CHECKS/${REPO//\//_}-${1:0:12}-$2.log" 2>/dev/null | head -1
+# check_device SHA JOB: the device the broker's kept check log names, or
+# nothing. A check that ended "device went offline" has no log.
+check_device() {
+	sudo sed -n 's/^device: //p' "$CHECKS/${REPO//\//_}-${1:0:12}-$2.log" 2>/dev/null | head -1 || true
 }
 
 # audit SCENARIO BRANCH SHA: one JSON line per context on SHA with how many
