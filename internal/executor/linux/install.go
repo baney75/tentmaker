@@ -76,6 +76,9 @@ func (e *Executor) Preflight(ctx context.Context) []core.Problem {
 		if _, err := os.Stat(filepath.Join(e.runtimeDir(uid), "podman", "podman.sock")); err != nil {
 			add("podman socket", "the rootless podman socket of "+User+" is not up", setup)
 		}
+		if p := e.podnetProblem(ctx, uid, false); p != "" {
+			add("podman network", p, "sudo systemctl restart tentmaker (its reset moves podman into a network namespace of its own)")
+		}
 		for _, p := range e.netProblems(ctx, uid) {
 			add("network", p, setup)
 		}
@@ -390,9 +393,10 @@ func Install(ctx context.Context, o Options) error {
 	if err := run(Cmd{Path: "loginctl", Args: []string{"enable-linger", User}}); err != nil {
 		return err
 	}
-	// Restart the manager so the slice drop-in and environment.d apply.
-	u := strconv.Itoa(uid)
-	if err := run(Cmd{Path: "systemctl", Args: []string{"restart", "user@" + u + ".service"}}); err != nil {
+	// Restart the manager so the slice drop-in and environment.d apply, in
+	// podman's network namespace, and make podman's namespaces before any
+	// podman command does.
+	if err := e.startPodman(ctx, uid, gid); err != nil {
 		return err
 	}
 	bus := filepath.Join(e.runtimeDir(uid), "bus")
@@ -519,6 +523,7 @@ func Uninstall(ctx context.Context, o Options, purge bool) error {
 	// A pattern only matches loaded units, so this is a no-op when none run.
 	h.Run(ctx, Cmd{Path: "systemctl", Args: []string{"stop", UnitPrefix + "*.service"}, Timeout: 2 * time.Minute})
 	e.stopPodns(ctx)
+	e.stopPodnet(ctx)
 	if _, err := os.Stat(filepath.Join(e.p.Systemd, "tentmaker-rshared.service")); err == nil {
 		h.Run(ctx, Cmd{Path: "systemctl", Args: []string{"disable", "--now", "tentmaker-rshared.service"}})
 		note(rmIfExists(filepath.Join(e.p.Systemd, "tentmaker-rshared.service")))
@@ -528,6 +533,8 @@ func Uninstall(ctx context.Context, o Options, purge bool) error {
 		dropDir := filepath.Join(e.p.Systemd, "user@"+strconv.Itoa(uid)+".service.d")
 		note(rmIfExists(filepath.Join(dropDir, "50-tentmaker.conf")))
 		os.Remove(dropDir) // only if empty
+		note(rmIfExists(e.managerDropIn(uid)))
+		os.Remove(filepath.Dir(e.managerDropIn(uid)))
 	}
 	note(rmIfExists(filepath.Join(e.p.Systemd, Slice)))
 	for _, err := range e.uninstallNet(ctx) {

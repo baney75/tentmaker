@@ -147,40 +147,46 @@ func (e *Executor) startNetns(ctx context.Context, name string, uid, gid int) (_
 			e.stopNetns(context.WithoutCancel(ctx), name)
 		}
 	}()
-	hold := helperArgs(netnsUnit(name), "exec", uid, gid, holderProps,
+	return e.startNetUnits(ctx, netnsUnit(name), uplinkUnit(name), uid, gid)
+}
+
+// startNetUnits starts hold, a namespace holder, and up, its pasta uplink,
+// both as the runner, and returns the path of the holder's network
+// namespace. On error the caller stops both.
+func (e *Executor) startNetUnits(ctx context.Context, hold, up string, uid, gid int) (string, error) {
+	args := helperArgs(hold, "exec", uid, gid, holderProps,
 		e.tool("unshare"), "--user", "--map-root-user", "--net", "--", "sleep", "infinity")
-	if _, err := e.h.Run(ctx, Cmd{Path: "systemd-run", Args: hold, Timeout: time.Minute}); err != nil {
-		return "", fmt.Errorf("start %s: %v", netnsUnit(name), err)
+	if _, err := e.h.Run(ctx, Cmd{Path: "systemd-run", Args: args, Timeout: time.Minute}); err != nil {
+		return "", fmt.Errorf("start %s: %v", hold, err)
 	}
-	pid, err := e.netnsPID(ctx, name)
+	pid, err := e.netnsPID(ctx, hold)
 	if err != nil {
 		return "", err
 	}
-	up := helperArgs(uplinkUnit(name), "forking", uid, gid, nil, append([]string{e.tool("pasta")}, PastaArgs(pid)...)...)
-	if _, err := e.h.Run(ctx, Cmd{Path: "systemd-run", Args: up, Timeout: time.Minute}); err != nil {
-		return "", fmt.Errorf("start %s: %v", uplinkUnit(name), err)
+	args = helperArgs(up, "forking", uid, gid, nil, append([]string{e.tool("pasta")}, PastaArgs(pid)...)...)
+	if _, err := e.h.Run(ctx, Cmd{Path: "systemd-run", Args: args, Timeout: time.Minute}); err != nil {
+		return "", fmt.Errorf("start %s: %v", up, err)
 	}
 	// The holder must still be the process pasta joined.
-	if again, err := e.netnsPID(ctx, name); err != nil || again != pid {
-		return "", fmt.Errorf("%s ended while its uplink started", netnsUnit(name))
+	if again, err := e.netnsPID(ctx, hold); err != nil || again != pid {
+		return "", fmt.Errorf("%s ended while its uplink started", hold)
 	}
 	return filepath.Join(e.p.Proc, strconv.Itoa(pid), "ns", "net"), nil
 }
 
 // netnsPID waits until the holder unit's process has left the host's network
-// namespace and returns its pid. Until then a job entering it would share
+// namespace and returns its pid. Until then a unit entering it would share
 // the host's.
-func (e *Executor) netnsPID(ctx context.Context, name string) (int, error) {
+func (e *Executor) netnsPID(ctx context.Context, unit string) (int, error) {
 	host, err := os.Readlink(filepath.Join(e.p.Proc, "self", "ns", "net"))
 	if err != nil {
 		return 0, fmt.Errorf("read this host's network namespace: %v", err)
 	}
 	for i := 0; i < 100; i++ {
-		res, err := e.h.Run(ctx, Cmd{Path: "systemctl", Args: []string{"show", "--property=MainPID", "--value", netnsUnit(name)}, Timeout: 30 * time.Second})
+		pid, err := e.mainPID(ctx, unit)
 		if err != nil {
-			return 0, fmt.Errorf("read the pid of %s: %v", netnsUnit(name), err)
+			return 0, err
 		}
-		pid, _ := strconv.Atoi(strings.TrimSpace(res.Stdout))
 		if pid > 0 {
 			ns, err := os.Readlink(filepath.Join(e.p.Proc, strconv.Itoa(pid), "ns", "net"))
 			if err == nil && ns != host {
@@ -192,7 +198,17 @@ func (e *Executor) netnsPID(ctx context.Context, name string) (int, error) {
 		}
 		e.o.Sleep(100 * time.Millisecond)
 	}
-	return 0, fmt.Errorf("%s did not make a network namespace in 10s%s", netnsUnit(name), e.unitLog(ctx, netnsUnit(name)))
+	return 0, fmt.Errorf("%s did not make a network namespace in 10s%s", unit, e.unitLog(ctx, unit))
+}
+
+// mainPID is a unit's main process, or 0 when it has none.
+func (e *Executor) mainPID(ctx context.Context, unit string) (int, error) {
+	res, err := e.h.Run(ctx, Cmd{Path: "systemctl", Args: []string{"show", "--property=MainPID", "--value", unit}, Timeout: 30 * time.Second})
+	if err != nil {
+		return 0, fmt.Errorf("read the pid of %s: %v", unit, err)
+	}
+	pid, _ := strconv.Atoi(strings.TrimSpace(res.Stdout))
+	return pid, nil
 }
 
 // unitLog is the tail of a unit's journal, for an error that says why the
@@ -209,10 +225,15 @@ func (e *Executor) unitLog(ctx context.Context, unit string) string {
 	return " (its log: " + out + ")"
 }
 
-// stopNetns stops a job's uplink and namespace. Units that aren't loaded make
-// stop fail; that is fine.
+// stopNetns stops a job's uplink and namespace.
 func (e *Executor) stopNetns(ctx context.Context, name string) {
-	for _, u := range []string{uplinkUnit(name), netnsUnit(name)} {
+	e.stopUnits(ctx, uplinkUnit(name), netnsUnit(name))
+}
+
+// stopUnits stops units in order and forgets their failures. Units that
+// aren't loaded make stop fail; that is fine.
+func (e *Executor) stopUnits(ctx context.Context, units ...string) {
+	for _, u := range units {
 		e.h.Run(ctx, Cmd{Path: "systemctl", Args: []string{"stop", u}, Timeout: 30 * time.Second})
 		e.h.Run(ctx, Cmd{Path: "systemctl", Args: []string{"reset-failed", u}, Timeout: 30 * time.Second})
 	}

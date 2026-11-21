@@ -725,19 +725,9 @@ func (e *Executor) Reset(ctx context.Context) error {
 		e.h.Run(ctx, Cmd{Path: "systemctl", Args: []string{"stop", u}, Timeout: 30 * time.Second})
 		e.h.Run(ctx, Cmd{Path: "systemctl", Args: []string{"reset-failed", u}, Timeout: 30 * time.Second})
 	}
-	e.stopPodns(ctx)
-	u := strconv.Itoa(uid)
-	steps := []Cmd{
-		{Path: "systemctl", Args: []string{"stop", "user@" + u + ".service", "user-runtime-dir@" + u + ".service"}, Timeout: 2 * time.Minute},
-		{Path: "systemctl", Args: []string{"start", "user@" + u + ".service"}, Timeout: 2 * time.Minute},
-	}
-	for _, c := range steps {
-		if _, err := e.h.Run(ctx, c); err != nil {
-			return fmt.Errorf("reset: %v", err)
-		}
-	}
-	// Before any podman command, or one would make podman's namespaces.
-	if err := e.startPodns(ctx, uid, gid); err != nil {
+	// Restart the user manager, in podman's network namespace, and make
+	// podman's namespaces before any podman command, or one would make them.
+	if err := e.startPodman(ctx, uid, gid); err != nil {
 		return fmt.Errorf("reset: %v", err)
 	}
 	wipe := [][]string{

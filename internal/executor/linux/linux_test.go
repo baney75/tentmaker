@@ -50,6 +50,13 @@ const testNetnsPID = 4242
 // testPausePID is podman's fake pause process.
 const testPausePID = 4343
 
+// testPodnetPID holds the fake network namespace podman's namespaces and
+// the runner's user manager (testManagerPID) share.
+const testPodnetPID, testManagerPID = 4545, 4646
+
+// testPodnetNS is that namespace; the host's is net:[4026531840].
+const testPodnetNS = "net:[4026533100]"
+
 func (f *fakeHost) Run(ctx context.Context, c Cmd) (Result, error) {
 	f.mu.Lock()
 	f.cmds = append(f.cmds, c)
@@ -140,6 +147,10 @@ func (f *fakeHost) firewallLocked(c Cmd) (Result, bool, error) {
 			pid = testNetnsPID
 		}
 		return Result{Stdout: strconv.Itoa(pid) + "\n"}, true, nil
+	case c.Path == "systemctl" && len(c.Args) == 4 && a == "show --property=MainPID --value tentmaker-podnet.service":
+		return Result{Stdout: strconv.Itoa(testPodnetPID) + "\n"}, true, nil
+	case c.Path == "systemctl" && len(c.Args) == 4 && a == "show --property=MainPID --value user@"+strconv.Itoa(testUID)+".service":
+		return Result{Stdout: strconv.Itoa(testManagerPID) + "\n"}, true, nil
 	case c.Path == "systemctl" && len(c.Args) == 2 && c.Args[0] == "enable":
 		if f.enabled == nil {
 			f.enabled = map[string]bool{}
@@ -266,8 +277,10 @@ func newEnv(t *testing.T) *env {
 	}
 	must(t, os.WriteFile(p.ResolvConf, []byte("# managed\nnameserver 127.0.0.53\noptions edns0\n"), 0o644))
 	must(t, os.WriteFile(p.ResolvedConf, []byte("nameserver 192.0.2.53\nnameserver 127.0.0.1\n"), 0o644))
-	// The host's network namespace and the fake holder's.
-	for pid, ns := range map[string]string{"self": "net:[4026531840]", strconv.Itoa(testNetnsPID): "net:[4026532999]"} {
+	// The host's network namespace, the fake job holder's, and podman's,
+	// which its holder, the user manager and the pause process share.
+	for pid, ns := range map[string]string{"self": "net:[4026531840]", strconv.Itoa(testNetnsPID): "net:[4026532999]",
+		strconv.Itoa(testPodnetPID): testPodnetNS, strconv.Itoa(testManagerPID): testPodnetNS, strconv.Itoa(testPausePID): testPodnetNS} {
 		must(t, os.MkdirAll(filepath.Join(p.Proc, pid, "ns"), 0o755))
 		must(t, os.Symlink(ns, filepath.Join(p.Proc, pid, "ns", "net")))
 	}
