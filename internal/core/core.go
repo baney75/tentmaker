@@ -214,6 +214,7 @@ type CheckBundle struct {
 	SHA        string   `json:"sha"`
 	ArchiveURL string   `json:"archive_url"`      // tar.gz of the repo at SHA
 	Header     string   `json:"header,omitempty"` // optional "Authorization: ..." for the download
+	Ref        string   `json:"ref,omitempty"`    // branch name, for github.ref_name
 	Job        CheckJob `json:"job"`
 }
 

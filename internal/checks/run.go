@@ -62,6 +62,7 @@ func RunBundle(ctx context.Context, b core.CheckBundle, outDir string, log io.Wr
 	}
 	r := &runner{
 		b:      b,
+		ref:    b.Ref,
 		out:    out,
 		src:    filepath.Join(out, "src"),
 		log:    lf,

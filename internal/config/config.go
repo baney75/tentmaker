@@ -26,7 +26,7 @@ const (
 	GiB Size = 1 << 30
 )
 
-var sizeRe = regexp.MustCompile(`^\s*([0-9]+(?:\.[0-9]+)?)\s*([KMGT]?)(i?B?)\s*$`)
+var sizeRe = regexp.MustCompile(`^\s*([0-9]+(?:\.[0-9]+)?)\s*([KMGT]?)(I?B?)\s*$`)
 
 // ParseSize reads "4GiB", "4G", "4GB" (all binary), "512MiB" or "0".
 func ParseSize(s string) (Size, error) {

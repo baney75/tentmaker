@@ -601,7 +601,7 @@ func (b *Broker) realizeCheck(ctx context.Context, req core.WorkRequest, rec *gr
 		drop("archive", err)
 		return core.WorkOffer{}, false
 	}
-	secret, err := json.Marshal(core.CheckBundle{Repo: rec.Repo, SHA: rec.SHA, ArchiveURL: url, Header: header, Job: cj})
+	secret, err := json.Marshal(core.CheckBundle{Repo: rec.Repo, SHA: rec.SHA, Ref: rec.Ref, ArchiveURL: url, Header: header, Job: cj})
 	if err != nil {
 		drop("bundle", err)
 		return core.WorkOffer{}, false
