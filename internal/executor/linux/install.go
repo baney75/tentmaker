@@ -365,6 +365,9 @@ func Install(ctx context.Context, o Options) error {
 	if err := writeRoot(h, filepath.Join(e.root, ".config", "environment.d", "10-tentmaker.conf"), []byte(envd), 0o644); err != nil {
 		return err
 	}
+	if err := writeRoot(h, e.podmanConf(), []byte(podmanConfText), 0o644); err != nil {
+		return err
+	}
 	link := filepath.Join(e.root, ".config", "systemd", "user", "sockets.target.wants", "podman.socket")
 	if err := replaceSymlink(e.p.PodmanSocketUnit, link); err != nil {
 		return err

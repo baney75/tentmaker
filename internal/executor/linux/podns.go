@@ -21,6 +21,22 @@ import (
 // with the mounts a job's unit gets, so the pause process is born there.
 const PodnsUnit = "tentmaker-podns.service"
 
+// podmanConf is the runner's containers.conf. Setup writes it, owned by
+// root. The runner's podman (Reset, PodnsUnit, podman.service) reads it from
+// XDG_CONFIG_HOME, a job's through CONTAINERS_CONF_OVERRIDE.
+func (e *Executor) podmanConf() string {
+	return filepath.Join(e.root, ".config", "containers", "containers.conf")
+}
+
+// podmanConfText makes containers use the cgroupfs manager. The systemd one
+// needs the user bus, which no podman command sees (PodnsUnit hides it), and
+// crun would ask the system bus instead, which refuses. With cgroupfs a
+// job's containers stay in the job's cgroup and count against its limits.
+const podmanConfText = `# Written by tentmaker setup.
+[engine]
+cgroup_manager = "cgroupfs"
+`
+
 // jobMounts are the mount properties a job's unit and PodnsUnit share: the
 // jobs' resolv.conf, and the paths a job must not reach. home is the
 // directory whose homes root stays visible.

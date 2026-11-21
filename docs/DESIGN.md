@@ -223,8 +223,10 @@ physical LAN only, never what the tailnet routes.
   pause process is born with a job's view: no user bus or manager socket (a process started
   through them would run outside the job's unit and network namespace), no tailscaled socket, and
   DNS servers the job's namespace can reach. `Reset` then checks that view through `podman
-  unshare` and fails on any difference. Without the bus, podman falls back to the cgroupfs
-  manager.
+  unshare` and fails on any difference. Without the bus the systemd cgroup manager cannot work
+  (crun would ask the system bus, which refuses), so setup writes the runner's
+  `~/.config/containers/containers.conf` (root-owned) with `cgroup_manager = "cgroupfs"`, and jobs
+  load it through `CONTAINERS_CONF_OVERRIDE`. A job's containers then stay in the job's cgroup.
 - Linux (`netrules.go`): nftables table `inet tentmaker`, an output hook that sends every packet
   with `meta skuid { <runner uid>, <its subuid ranges> }` to a `runner` chain (accept relay and DNS,
   then reject). The subordinate uids matter: a rootless container on the host network that runs as

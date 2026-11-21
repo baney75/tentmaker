@@ -420,7 +420,7 @@ func TestStartRunner(t *testing.T) {
 		t.Fatalf("exec: %q want %q", tailArgs, wantTail)
 	}
 	args := strings.Join(c.Args, " ")
-	for _, s := range []string{"--setenv=HOME=" + jd + "/home", "--setenv=DOCKER_HOST=unix://" + rt + "/podman/podman.sock", "--setenv=TENTMAKER_JOBS=4", "--setenv=RUNNER_TOOL_CACHE=" + jd + "/toolcache"} {
+	for _, s := range []string{"--setenv=HOME=" + jd + "/home", "--setenv=DOCKER_HOST=unix://" + rt + "/podman/podman.sock", "--setenv=CONTAINERS_CONF_OVERRIDE=" + v.e.root + "/.config/containers/containers.conf", "--setenv=TENTMAKER_JOBS=4", "--setenv=RUNNER_TOOL_CACHE=" + jd + "/toolcache"} {
 		if !strings.Contains(args, s) {
 			t.Errorf("missing %s", s)
 		}

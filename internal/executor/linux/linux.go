@@ -372,6 +372,8 @@ func (e *Executor) jobEnv(spec core.ExecSpec, uid int) []string {
 		"RUNNER_TOOL_CACHE=" + filepath.Join(dir, "toolcache"),
 		"AGENT_TOOLSDIRECTORY=" + filepath.Join(dir, "toolcache"),
 		"DOCKER_HOST=unix://" + filepath.Join(e.runtimeDir(uid), "podman", "podman.sock"),
+		// The job's XDG_CONFIG_HOME is its own; this adds the runner's.
+		"CONTAINERS_CONF_OVERRIDE=" + e.podmanConf(),
 		"PATH=" + e.shimDir() + ":/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
 		"LANG=C.UTF-8",
 	}
