@@ -1,8 +1,11 @@
 package dispatch
 
 import (
+	"context"
 	"testing"
 	"time"
+
+	"github.com/baney75/tentmaker/internal/core"
 )
 
 // tickWithin runs one rig tick and fails if it does not return within d of
@@ -79,5 +82,56 @@ func TestSlowStartKeepsHeartbeat(t *testing.T) {
 	}
 	if g := r.grantFor(runs[0]); g.Started.IsZero() {
 		t.Fatalf("broker never saw the runner running: %+v", g)
+	}
+}
+
+// holdingSource takes the worker's Hold after the broker answers with an
+// offer and before the worker starts it: the window between admission and
+// the job record.
+type holdingSource struct {
+	*source
+	w       *Worker
+	jobs    int
+	release func()
+}
+
+func (s *holdingSource) Work(ctx context.Context, req core.WorkRequest) (core.WorkResponse, error) {
+	resp, err := s.source.Work(ctx, req)
+	if err == nil && len(resp.Offers) > 0 && s.release == nil {
+		s.jobs, s.release = s.w.Hold()
+	}
+	return resp, err
+}
+
+// A Hold that counted zero jobs means no job starts until release, even an
+// offer that passed admission before the hold (review r2 partA sol-F1).
+func TestHoldDuringOfferBlocksStart(t *testing.T) {
+	r := newRig(t, runnerRepo(repoApp))
+	w := r.addWorker("alpha", 2)
+	src := &holdingSource{source: &source{inner: r.broker}, w: w.w}
+	w.sources = []core.WorkSource{src}
+	r.addJob(repoApp)
+	r.tick()
+	if src.release == nil {
+		t.Fatalf("the broker made no offer")
+	}
+	defer src.release()
+	if src.jobs != 0 {
+		t.Fatalf("Hold counted %d jobs, want 0", src.jobs)
+	}
+	if n := len(w.w.Status().Running); n != 0 {
+		t.Fatalf("a job started under a hold that counted zero jobs: %d running", n)
+	}
+	if n := len(started(w.ex)); n != 0 {
+		t.Fatalf("executor started %d runners under the hold", n)
+	}
+	r.run(4*time.Second, 2*time.Second)
+	if n := len(r.broker.Status().Runners); n != 0 {
+		t.Fatalf("broker still tracks %d runners after the decline", n)
+	}
+	src.release()
+	r.run(4*time.Second, 2*time.Second)
+	if n := len(started(w.ex)); n != 1 {
+		t.Fatalf("starts = %d after release, want the job offered again", n)
 	}
 }
