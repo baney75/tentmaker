@@ -951,6 +951,8 @@ func (d *Daemon) Status(ctx context.Context) Status {
 		s.Warnings = append(s.Warnings, s.Mesh.Warning)
 	}
 	s.Next = NextStep(s)
+	rt := readRuntime(started, d.o.Now())
+	s.Runtime = &rt
 	return s
 }
 

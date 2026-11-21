@@ -134,6 +134,7 @@ func planGitLab(path string, src []byte) ([]core.CheckJob, []Skip, error) {
 func gitlabDoc(src []byte) (*val, bool, error) {
 	dec := yaml.NewDecoder(bytes.NewReader(src))
 	var docs []*val
+	budget := maxNodes
 	for len(docs) < 2 {
 		var n yaml.Node
 		err := dec.Decode(&n)
@@ -143,7 +144,7 @@ func gitlabDoc(src []byte) (*val, bool, error) {
 		if err != nil {
 			return nil, false, err
 		}
-		v, err := convert(&n, 0)
+		v, err := convert(&n, 0, &budget)
 		if err != nil {
 			return nil, false, err
 		}
@@ -423,7 +424,7 @@ func gitlabDuration(s string) (time.Duration, bool) {
 	if len(parts) == 0 {
 		return 0, false
 	}
-	var d time.Duration
+	var total float64 // nanoseconds, summed as a float so a huge value can't wrap
 	for _, p := range parts {
 		n, err := strconv.ParseFloat(p[1], 64)
 		if err != nil {
@@ -444,9 +445,12 @@ func gitlabDuration(s string) (time.Duration, bool) {
 		default:
 			return 0, false
 		}
-		d += time.Duration(n * float64(unit))
+		total += n * float64(unit)
 	}
-	return d, true
+	if total > float64(100*365*24*time.Hour) {
+		total = float64(100 * 365 * 24 * time.Hour)
+	}
+	return time.Duration(total), true
 }
 
 func isBoolText(s string) bool {

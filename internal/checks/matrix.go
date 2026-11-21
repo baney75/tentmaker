@@ -8,6 +8,9 @@ import (
 // matrixCombos expands strategy.matrix the way GitHub does: the cartesian
 // product of the plain keys, minus exclude, plus include. Each combination
 // is a mapping in key order.
+// maxCombos caps a matrix before it is expanded (GitHub itself stops at 256 jobs).
+const maxCombos = 4096
+
 func matrixCombos(m *val) ([]*val, error) {
 	if m.isScalar() {
 		if strings.Contains(m.s, "${{") {
@@ -17,6 +20,19 @@ func matrixCombos(m *val) ([]*val, error) {
 	}
 	if !m.isMap() {
 		return nil, fmt.Errorf("matrix must be a mapping")
+	}
+	// Count before expanding: twelve keys of ten values is a trillion.
+	product := 1
+	for _, k := range m.keys {
+		if k == "include" || k == "exclude" {
+			continue
+		}
+		if vs := m.m[k]; vs.isSeq() {
+			product *= max(len(vs.seq), 1)
+			if product > maxCombos {
+				return nil, fmt.Errorf("the matrix has more than %d combinations; checks mode runs only a single one", maxCombos)
+			}
+		}
 	}
 	combos := []*val{newMap()}
 	var plain []string

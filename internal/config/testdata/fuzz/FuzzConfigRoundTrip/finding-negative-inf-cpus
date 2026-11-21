@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("[budget.everyday]\ncpus = -inf\n")

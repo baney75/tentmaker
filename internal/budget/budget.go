@@ -57,6 +57,9 @@ func (e *Engine) WithLocation(loc *time.Location) *Engine {
 // idle enough (boost); on battery (on_battery); everyday. Slots, the guards
 // and the running count can then only lower the answer.
 func (e *Engine) Decide(ctx context.Context, now time.Time, running int) core.Decision {
+	if running < 0 {
+		running = 0 // a bad count must not open a slot that isn't there
+	}
 	d := core.Decision{Admit: true}
 	why := func(format string, a ...any) { d.Reasons = append(d.Reasons, fmt.Sprintf(format, a...)) }
 	b := e.cfg.Budget

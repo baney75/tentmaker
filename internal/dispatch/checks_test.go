@@ -362,3 +362,36 @@ func TestCheckLogsPruned(t *testing.T) {
 		t.Error("the new log was pruned")
 	}
 }
+
+// Soak finding: in checks mode the broker remembered every commit it
+// ignored (fork PR heads, outside authors) forever, so a busy public repo
+// grew the map with every fork push for as long as the daemon ran.
+func TestChecksNotedCommitsArePruned(t *testing.T) {
+	r := newRig(t, checksRepo(repoSite))
+	notedFor := func() int {
+		r.broker.mu.Lock()
+		defer r.broker.mu.Unlock()
+		n := 0
+		for k := range r.broker.noted {
+			if strings.HasPrefix(k, "github:"+repoSite+"@") {
+				n++
+			}
+		}
+		return n
+	}
+	for i := 0; i < 50; i++ {
+		sha := fmt.Sprintf("%040x", i+1)
+		r.forge.SetCommits(repoSite, []core.Commit{
+			{SHA: sha, Ref: "fork", PR: 100 + i, Author: "mallory", FromFork: true},
+			{SHA: sha, Ref: "outside", PR: 200 + i, Author: "mallory"},
+		})
+		r.clk.Add(time.Minute) // past any poll backoff
+		r.tick()
+		if n := notedFor(); n > 2 {
+			t.Fatalf("after %d polls the broker remembers %d ignored commits, want at most the 2 it sees now", i+1, n)
+		}
+	}
+	if n := notedFor(); n == 0 {
+		t.Fatal("the commits it ignores now are not remembered (the log would repeat every poll)")
+	}
+}

@@ -321,7 +321,7 @@ func makeSymlink(dst, rel, target, link string) error {
 		return fmt.Errorf("archive symlink %s points to an absolute path; refusing the archive", rel)
 	}
 	resolved := path.Clean(path.Join(path.Dir(rel), link))
-	if resolved == ".." || strings.HasPrefix(resolved, "../") {
+	if resolved == ".." || strings.HasPrefix(resolved, "../") || dotDotAfterName(link) {
 		return fmt.Errorf("archive symlink %s points outside the archive; refusing the archive", rel)
 	}
 	if runtime.GOOS == "windows" && strings.ContainsAny(link, `\:`) {
@@ -342,6 +342,27 @@ func makeSymlink(dst, rel, target, link string) error {
 		return os.WriteFile(target, []byte(link), 0o644)
 	}
 	return nil
+}
+
+// dotDotAfterName reports whether a link target climbs with ".." after
+// naming something. The OS resolves "up/.." by following up first, so if up
+// is itself a link the lexical check above is wrong about where it lands.
+// Leading ".." parts climb real folders (every parent was checked to be no
+// symlink) and are safe to check lexically.
+func dotDotAfterName(link string) bool {
+	named := false
+	for _, p := range strings.Split(link, "/") {
+		switch p {
+		case "", ".":
+		case "..":
+			if named {
+				return true
+			}
+		default:
+			named = true
+		}
+	}
+	return false
 }
 
 func writeFile(target string, r io.Reader, size int64, mode os.FileMode) error {
