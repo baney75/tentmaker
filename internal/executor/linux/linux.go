@@ -387,7 +387,6 @@ func (e *Executor) jobEnv(spec core.ExecSpec, uid int) []string {
 // unitArgs is the systemd-run argv for one job. It holds no secret.
 func (e *Executor) unitArgs(spec core.ExecSpec, kind string, uid, gid int, stdinFile, netns string) []string {
 	dir := e.jobDir(spec.Name)
-	rt := e.runtimeDir(uid)
 	args := []string{
 		// No --collect: a failed unit stays loaded until Clean, so
 		// CheckResult can read why it ended (Result=oom-kill).
@@ -412,22 +411,10 @@ func (e *Executor) unitArgs(spec core.ExecSpec, kind string, uid, gid int, stdin
 		// Its own network namespace and loopback (netns.go), and DNS servers
 		// it can reach from there.
 		"-p", "NetworkNamespacePath=" + netns,
-		"-p", "BindReadOnlyPaths=" + e.jobResolvConf() + ":/etc/resolv.conf",
-		// The user bus and manager sockets sit at fixed paths this uid owns; a
-		// job on them could point podman.service at a config it wrote.
-		"-p", "InaccessiblePaths=-" + filepath.Join(rt, "bus"),
-		"-p", "InaccessiblePaths=-" + filepath.Join(rt, "systemd"),
 	}
-	for _, p := range TailscalePaths {
-		args = append(args, "-p", "InaccessiblePaths=-"+p)
-	}
-	// Other users' homes are closed by setup already; hiding them is a
-	// second wall. Not ProtectHome=yes: that also hides /run/user, the
-	// job's XDG_RUNTIME_DIR and podman socket.
-	for _, p := range []string{e.p.Homes, "/root"} {
-		if !strings.HasPrefix(dir+"/", strings.TrimSuffix(p, "/")+"/") {
-			args = append(args, "-p", "InaccessiblePaths=-"+p)
-		}
+	// The same mounts as podman's namespaces (podns.go).
+	for _, p := range e.jobMounts(uid, dir) {
+		args = append(args, "-p", p)
 	}
 	args = append(args,
 		"-p", "StandardInput=file:"+stdinFile,
@@ -714,7 +701,7 @@ func (e *Executor) jobUnits(ctx context.Context) (map[string]string, error) {
 // networks (and images unless KeepImages) and every job directory, then fail
 // if a user unit is loaded that wasn't there at install.
 func (e *Executor) Reset(ctx context.Context) error {
-	uid, _, err := e.ids()
+	uid, gid, err := e.ids()
 	if err != nil {
 		return err
 	}
@@ -736,6 +723,7 @@ func (e *Executor) Reset(ctx context.Context) error {
 		e.h.Run(ctx, Cmd{Path: "systemctl", Args: []string{"stop", u}, Timeout: 30 * time.Second})
 		e.h.Run(ctx, Cmd{Path: "systemctl", Args: []string{"reset-failed", u}, Timeout: 30 * time.Second})
 	}
+	e.stopPodns(ctx)
 	u := strconv.Itoa(uid)
 	steps := []Cmd{
 		{Path: "systemctl", Args: []string{"stop", "user@" + u + ".service", "user-runtime-dir@" + u + ".service"}, Timeout: 2 * time.Minute},
@@ -745,6 +733,10 @@ func (e *Executor) Reset(ctx context.Context) error {
 		if _, err := e.h.Run(ctx, c); err != nil {
 			return fmt.Errorf("reset: %v", err)
 		}
+	}
+	// Before any podman command, or one would make podman's namespaces.
+	if err := e.startPodns(ctx, uid, gid); err != nil {
+		return fmt.Errorf("reset: %v", err)
 	}
 	wipe := [][]string{
 		{"podman", "pod", "rm", "-af"},
@@ -759,6 +751,9 @@ func (e *Executor) Reset(ctx context.Context) error {
 		e.h.Run(ctx, e.asRunner(uid, 10*time.Minute, args...)) // checked below
 	}
 	var problems []string
+	if p := e.podnsProblem(ctx, uid); p != "" {
+		problems = append(problems, p)
+	}
 	if res, err := e.h.Run(ctx, e.asRunner(uid, time.Minute, "podman", "ps", "-aq")); err != nil || strings.TrimSpace(res.Stdout) != "" {
 		problems = append(problems, "containers left after reset")
 	}

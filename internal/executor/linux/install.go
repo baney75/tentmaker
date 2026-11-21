@@ -515,6 +515,7 @@ func Uninstall(ctx context.Context, o Options, purge bool) error {
 	}
 	// A pattern only matches loaded units, so this is a no-op when none run.
 	h.Run(ctx, Cmd{Path: "systemctl", Args: []string{"stop", UnitPrefix + "*.service"}, Timeout: 2 * time.Minute})
+	e.stopPodns(ctx)
 	if _, err := os.Stat(filepath.Join(e.p.Systemd, "tentmaker-rshared.service")); err == nil {
 		h.Run(ctx, Cmd{Path: "systemctl", Args: []string{"disable", "--now", "tentmaker-rshared.service"}})
 		note(rmIfExists(filepath.Join(e.p.Systemd, "tentmaker-rshared.service")))

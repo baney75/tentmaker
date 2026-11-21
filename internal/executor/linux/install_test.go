@@ -252,7 +252,7 @@ func TestUninstall(t *testing.T) {
 
 	must(t, Uninstall(ctx, v.o, true))
 	cmds := strings.Join(v.f.commands(), "\n")
-	for _, s := range []string{"systemctl stop tentmaker-job-*.service", "loginctl disable-linger tentmaker-runner", "userdel tentmaker-runner"} {
+	for _, s := range []string{"systemctl stop tentmaker-job-*.service", "systemctl stop tentmaker-podns.service", "loginctl disable-linger tentmaker-runner", "userdel tentmaker-runner"} {
 		if !strings.Contains(cmds, s) {
 			t.Errorf("purge did not run %q", s)
 		}

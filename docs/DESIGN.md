@@ -214,6 +214,17 @@ physical LAN only, never what the tailnet routes.
   `Clean` and `Reset` stop the units. The namespace is isolation; the rules below are the policy.
   A job owns its namespace's user namespace, so it can reconfigure its own namespace; everything
   still leaves through pasta as the runner.
+- Linux podman namespace (`podns.go`): rootless podman runs every command, a job's included, in
+  the user and mount namespaces of its pause process, not the caller's. `Reset` starts
+  `tentmaker-podns.service` (the runner, `podman unshare sleep infinity`, the job unit's mounts:
+  its resolv.conf and every `InaccessiblePaths`; no `NoNewPrivileges`, which newuidmap needs)
+  before any podman command, after restarting the user manager, and waits until
+  `$XDG_RUNTIME_DIR/libpod/tmp/pause.pid` names a process outside the host's user namespace. So the
+  pause process is born with a job's view: no user bus or manager socket (a process started
+  through them would run outside the job's unit and network namespace), no tailscaled socket, and
+  DNS servers the job's namespace can reach. `Reset` then checks that view through `podman
+  unshare` and fails on any difference. Without the bus, podman falls back to the cgroupfs
+  manager.
 - Linux (`netrules.go`): nftables table `inet tentmaker`, an output hook that sends every packet
   with `meta skuid { <runner uid>, <its subuid ranges> }` to a `runner` chain (accept relay and DNS,
   then reject). The subordinate uids matter: a rootless container on the host network that runs as

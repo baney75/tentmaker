@@ -47,6 +47,9 @@ type fakeHost struct {
 // namespace other than the host's.
 const testNetnsPID = 4242
 
+// testPausePID is podman's fake pause process.
+const testPausePID = 4343
+
 func (f *fakeHost) Run(ctx context.Context, c Cmd) (Result, error) {
 	f.mu.Lock()
 	f.cmds = append(f.cmds, c)
@@ -268,6 +271,14 @@ func newEnv(t *testing.T) *env {
 		must(t, os.MkdirAll(filepath.Join(p.Proc, pid, "ns"), 0o755))
 		must(t, os.Symlink(ns, filepath.Join(p.Proc, pid, "ns", "net")))
 	}
+	// The host's user namespace and podman's pause process, which
+	// tentmaker-podns.service holds.
+	for pid, ns := range map[string]string{"self": "user:[4026531837]", strconv.Itoa(testPausePID): "user:[4026533001]"} {
+		must(t, os.MkdirAll(filepath.Join(p.Proc, pid, "ns"), 0o755))
+		must(t, os.Symlink(ns, filepath.Join(p.Proc, pid, "ns", "user")))
+	}
+	must(t, os.MkdirAll(filepath.Join(p.RunUser, strconv.Itoa(testUID), "libpod", "tmp"), 0o700))
+	must(t, os.WriteFile(filepath.Join(p.RunUser, strconv.Itoa(testUID), "libpod", "tmp", "pause.pid"), []byte(strconv.Itoa(testPausePID)), 0o600))
 	o := Options{
 		StateDir: filepath.Join(dir, "state"),
 		CacheDir: filepath.Join(dir, "cache"),
