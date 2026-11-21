@@ -505,7 +505,10 @@ are rediscovered every 30 s; a peer failing 3 calls in a row is skipped for a mi
   to 30 min for running ones, because the restart ends them (on Windows the daemon's job object
   kills them). If they don't finish it resumes and changes nothing; `--force` (CLI only) skips the
   wait. It resumes after the new version reports healthy, or after a rollback, unless the device
-  was paused before the update (review r1 partB first-F5).
+  was paused before the update (review r1 partB first-F5). It skips the drain only when the
+  service manager positively reports the service not installed or stopped; if the manager's status
+  call fails, or the service runs but its control API doesn't answer, update changes nothing and
+  says to retry or pass `--force` (review r2 partB sol-F1).
 - Auto-update has no one watching, so the daemon guards itself: before it swaps the binary it
   writes `<state>/update-pending.json` (from, to, time), and if that write fails it does not
   update at all; a failed swap deletes the marker. The new binary deletes it once
