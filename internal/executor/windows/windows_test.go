@@ -611,6 +611,40 @@ func TestStartCheck(t *testing.T) {
 	v.assertNoSecret()
 }
 
+// Install copies the tentmaker binary for check jobs once. After an update
+// the copy is stale, so Start replaces it when it differs, even while an
+// older check still runs the old one.
+func TestStartCheckRefreshesGuestBinary(t *testing.T) {
+	v := newEnv(t)
+	v.install()
+	bin, _ := v.o.Binary(core.Platform{})
+	guest := v.e.guestBinary()
+	if b, _ := os.ReadFile(guest); string(b) != "guest-binary" {
+		t.Fatalf("install copied %q", b)
+	}
+	must(t, os.WriteFile(bin, []byte("guest-binary v2, newer"), 0o755))
+	must(t, v.e.Start(context.Background(), spec("check-1", core.KindCheck)))
+	if b, _ := os.ReadFile(guest); string(b) != "guest-binary v2, newer" {
+		t.Fatalf("guest binary is %q", b)
+	}
+	st1, err := os.Stat(guest)
+	must(t, err)
+	// Unchanged: left alone.
+	must(t, v.e.Start(context.Background(), spec("check-2", core.KindCheck)))
+	st2, err := os.Stat(guest)
+	must(t, err)
+	if !os.SameFile(st1, st2) {
+		t.Fatal("an up-to-date guest binary was replaced")
+	}
+	// Nothing but the binary is left in the folder.
+	entries, _ := os.ReadDir(filepath.Dir(guest))
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), filepath.Base(guest)+".") {
+			t.Errorf("leftover %s", e.Name())
+		}
+	}
+}
+
 func TestStartRefuses(t *testing.T) {
 	v := newEnv(t)
 	v.install()

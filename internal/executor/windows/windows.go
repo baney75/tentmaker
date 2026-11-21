@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/baney75/tentmaker/internal/core"
+	"github.com/baney75/tentmaker/internal/executor/guestbin"
 )
 
 // Name is the executor's name.
@@ -66,6 +67,8 @@ type Executor struct {
 
 	mu   sync.Mutex
 	jobs map[string]*job
+
+	guest guestbin.Syncer
 }
 
 // job is one tracked job. p is nil while Start is still setting it up;
@@ -234,6 +237,11 @@ func (e *Executor) Start(ctx context.Context, spec core.ExecSpec) error {
 	if spec.Limits.MemoryBytes <= 0 || spec.Limits.CPUs <= 0 {
 		return errors.New("a job needs a memory and CPU limit")
 	}
+	if kind == core.KindCheck {
+		if err := e.syncGuestBinary(); err != nil {
+			return err
+		}
+	}
 	dir := e.jobDir(spec.Name)
 	e.mu.Lock()
 	_, tracked := e.jobs[spec.Name]
@@ -379,6 +387,55 @@ func copyTree(src, dst string) error {
 		}
 		return fmt.Errorf("%s is not a regular file", p)
 	})
+}
+
+// syncGuestBinary refreshes the check jobs' tentmaker binary when it
+// differs from the daemon's (install copied it; an update made it stale).
+func (e *Executor) syncGuestBinary() error {
+	if e.o.Binary == nil {
+		return errors.New("no tentmaker binary for check jobs (Options.Binary is nil)")
+	}
+	src, err := e.o.Binary(core.Platform{OS: "windows", Arch: e.arch})
+	if err != nil {
+		return fmt.Errorf("find the tentmaker binary for windows/%s: %w", e.arch, err)
+	}
+	copied, err := e.guest.Sync(src, e.guestBinary(), replaceExe)
+	if copied {
+		e.log.Info("refreshed the tentmaker binary for check jobs", "executor", Name, "path", e.guestBinary())
+	}
+	return err
+}
+
+// replaceExe puts a copy of src at dst. Windows can't replace an exe that
+// a running check still uses, but it can rename it, so the old one moves
+// aside first and is deleted when nothing runs it any more. The copy
+// inherits the lib folder's ACL (SYSTEM and Administrators write; the
+// runner user reads and runs).
+func replaceExe(src, dst string) error {
+	if olds, _ := filepath.Glob(dst + ".old-*"); len(olds) > 0 {
+		for _, o := range olds {
+			os.Remove(o) // still running: try again next time
+		}
+	}
+	tmp := dst + ".new"
+	os.Remove(tmp)
+	if err := copyFile(src, tmp); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	old := fmt.Sprintf("%s.old-%d", dst, time.Now().UnixNano())
+	moved := os.Rename(dst, old) == nil
+	if err := os.Rename(tmp, dst); err != nil {
+		os.Remove(tmp)
+		if moved {
+			os.Rename(old, dst)
+		}
+		return err
+	}
+	if moved {
+		os.Remove(old)
+	}
+	return nil
 }
 
 func copyFile(src, dst string) error {

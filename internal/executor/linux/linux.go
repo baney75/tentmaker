@@ -28,6 +28,7 @@ import (
 
 	"github.com/baney75/tentmaker/internal/config"
 	"github.com/baney75/tentmaker/internal/core"
+	"github.com/baney75/tentmaker/internal/executor/guestbin"
 )
 
 // Name is the executor's name.
@@ -117,6 +118,7 @@ type Executor struct {
 	uid   int
 	gid   int
 	known bool
+	guest guestbin.Syncer
 }
 
 // New returns the executor. It touches nothing until a method is called.
@@ -251,6 +253,11 @@ func (e *Executor) Start(ctx context.Context, spec core.ExecSpec) (err error) {
 	if spec.Limits.MemoryBytes <= 0 || spec.Limits.CPUs <= 0 {
 		return errors.New("a job needs a memory and CPU limit")
 	}
+	if kind == core.KindCheck {
+		if err := e.syncGuestBinary(); err != nil {
+			return err
+		}
+	}
 	uid, gid, err := e.ids()
 	if err != nil {
 		return err
@@ -283,6 +290,29 @@ func (e *Executor) Start(ctx context.Context, spec core.ExecSpec) (err error) {
 	e.log.Info("job started", "executor", Name, "name", spec.Name, "kind", kind,
 		"memory", spec.Limits.MemoryBytes, "cpus", spec.Limits.CPUs)
 	return nil
+}
+
+// syncGuestBinary refreshes the check jobs' tentmaker binary when it
+// differs from the daemon's (setup copied it; an update made it stale).
+func (e *Executor) syncGuestBinary() error {
+	if e.o.Binary == nil {
+		return errors.New("no tentmaker binary for linux checks (Options.Binary is nil)")
+	}
+	src, err := e.o.Binary(core.Platform{OS: "linux", Arch: e.arch})
+	if err != nil {
+		return fmt.Errorf("tentmaker binary for linux/%s: %w", e.arch, err)
+	}
+	copied, err := e.guest.Sync(src, e.guestBinary(), func(src, dst string) error {
+		bin, err := os.ReadFile(src)
+		if err != nil {
+			return err
+		}
+		return writeRoot(e.h, dst, bin, 0o755)
+	})
+	if copied {
+		e.log.Info("refreshed the tentmaker binary for check jobs", "executor", Name, "path", e.guestBinary())
+	}
+	return err
 }
 
 func cpuQuota(cpus float64) string {

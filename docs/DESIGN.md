@@ -404,6 +404,7 @@ section is rewritten.
 - No cache promotion between jobs in v1.
 - The JIT config reaches the runner as `ACTIONS_RUNNER_INPUT_JITCONFIG`, set inside the sandbox by the job script from its stdin hand-off (the runner reads and clears it); never in the daemon's environment or argv.
 - `SetPoolLimit` is a no-op on macOS and Windows.
+- Linux and Windows keep a copy of the tentmaker binary for check jobs. Setup writes it, and each check `Start` compares it with `Binary(platform)` (size, then sha256; equal pairs are remembered by size and mtime) and replaces it atomically when they differ, so an update never leaves check jobs on the old binary. Linux writes it root-owned 0755; Windows renames the old exe aside first (a running check may hold it) and deletes it once free. (internal/executor/guestbin)
 - The Windows runner password uses machine-scope DPAPI, protected by the file ACL (SYSTEM and Administrators).
 
 **mesh**

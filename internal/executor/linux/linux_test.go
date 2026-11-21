@@ -307,6 +307,54 @@ func TestStartCheck(t *testing.T) {
 	assertNoSecret(t, v.f, v.logs)
 }
 
+// Setup copies the tentmaker binary for check jobs once. After an update
+// the copy is stale, so Start refreshes it (root-owned, 0755) when it
+// differs from the daemon's binary.
+func TestStartCheckRefreshesGuestBinary(t *testing.T) {
+	v := newEnv(t)
+	src := filepath.Join(v.dir, "daemon-bin")
+	must(t, os.WriteFile(src, []byte("tentmaker v1"), 0o755))
+	v.o.Binary = func(core.Platform) (string, error) { return src, nil }
+	v.e = New(v.o)
+	v.installed(t)
+	guest := v.e.guestBinary()
+	must(t, os.MkdirAll(filepath.Dir(guest), 0o755))
+	must(t, os.WriteFile(guest, []byte("tentmaker v1"), 0o755))
+
+	// An update replaced the daemon's binary.
+	must(t, os.WriteFile(src, []byte("tentmaker v2, newer"), 0o755))
+	must(t, v.e.Start(context.Background(), spec("chk-001", core.KindCheck)))
+	if b, _ := os.ReadFile(guest); string(b) != "tentmaker v2, newer" {
+		t.Fatalf("guest binary is %q", b)
+	}
+	if st, err := os.Stat(guest); err != nil || st.Mode().Perm() != 0o755 {
+		t.Fatalf("guest binary mode: %v %v", st.Mode(), err)
+	}
+	v.f.mu.Lock()
+	owner, ok := v.f.chowns[guest]
+	delete(v.f.chowns, guest)
+	v.f.mu.Unlock()
+	if !ok || owner != [2]int{0, 0} {
+		t.Fatalf("guest binary not root-owned: %v %v", owner, ok)
+	}
+
+	// Unchanged: not copied again.
+	must(t, v.e.Start(context.Background(), spec("chk-002", core.KindCheck)))
+	v.f.mu.Lock()
+	_, again := v.f.chowns[guest]
+	v.f.mu.Unlock()
+	if again {
+		t.Fatal("an up-to-date guest binary was rewritten")
+	}
+
+	// Same size, different bytes: replaced.
+	must(t, os.WriteFile(src, []byte("tentmaker v3, newer"), 0o755))
+	must(t, v.e.Start(context.Background(), spec("chk-003", core.KindCheck)))
+	if b, _ := os.ReadFile(guest); string(b) != "tentmaker v3, newer" {
+		t.Fatalf("guest binary is %q", b)
+	}
+}
+
 func TestStartRefuses(t *testing.T) {
 	v := newEnv(t)
 	v.installed(t)
