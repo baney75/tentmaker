@@ -1,0 +1,9 @@
+{
+ "case": "mcp-claude",
+ "responder": "haiku",
+ "sample": 1,
+ "models": [
+  "claude-haiku-5-5"
+ ],
+ "text": "I'll check that Claude Code is present and that the installed binary responds, then register the server.\n\n```sh\nclaude --version\n/usr/local/bin/tentmaker version --json\nclaude mcp add --scope user tentmaker -- /usr/local/bin/tentmaker mcp\nclaude mcp get tentmaker\n```\n\nI'm using the absolute path `/usr/local/bin/tentmaker` because the MCP server is launched by Claude Code, which may not have the same `PATH` as your shell. I'm also using `--scope user`, so the server is available in every project. Without it, `claude mcp add` registers the server only for the current directory.\n\nBefore I run these, I'd check with you on two things:\n\n1. **Scope.** Do you want `user` (every project, my default here) or `local` (only this directory)?\n2. **Write-access tools.** The MCP server runs as your user, not as root. The read tools (`status`, `pool`, `doctor`) will work. Tools that change the device will return an error saying they need root. If you want those tools available, I'd have to run the server under `sudo`, which I don't recommend registering with Claude Code. Use the CLI with `sudo` for changes instead.\n\nIf the scope is fine, I'll run the commands. Then I'll start a new Claude Code session and confirm that the `tentmaker` tools appear."
+}

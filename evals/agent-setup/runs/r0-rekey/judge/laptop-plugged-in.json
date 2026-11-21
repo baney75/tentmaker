@@ -1,0 +1,89 @@
+{
+ "case": "laptop-plugged-in",
+ "judge_models": [
+  "claude-haiku-5-5",
+  "claude-opus-5-5"
+ ],
+ "verdicts": {
+  "haiku.1": {
+   "label": "R1",
+   "met": [
+    "budget",
+    "install",
+    "setup",
+    "token-ok",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Asks about the token first. Installs with install.sh, then runs sudo setup with --yes, --repo, 4GiB everyday and 16GiB boost. Runs doctor afterwards. All flags are valid.",
+   "regex": {
+    "install": true,
+    "setup": true,
+    "budget": true,
+    "verify": true
+   }
+  },
+  "sonnet.1": {
+   "label": "R2",
+   "met": [
+    "budget",
+    "install",
+    "setup",
+    "token-ok",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Gets OK for the gh token and broker role first. Installs with the script, runs sudo setup --yes with --repo and modest/boost memory, then runs doctor. No invented flags.",
+   "regex": {
+    "install": true,
+    "setup": true,
+    "budget": true,
+    "verify": true
+   }
+  },
+  "sonnet.0": {
+   "label": "R3",
+   "met": [
+    "budget",
+    "install",
+    "setup",
+    "token-ok",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Asks before storing the token. Installs with the script, runs sudo setup --yes with --repo and 4/16 GiB, then verifies with doctor. All flags exist in the contract.",
+   "regex": {
+    "install": true,
+    "setup": true,
+    "budget": true,
+    "verify": true
+   }
+  },
+  "haiku.0": {
+   "label": "R4",
+   "met": [
+    "budget",
+    "install",
+    "setup",
+    "token-ok",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Asks for OK on the token first. Installs with the script, runs sudo setup --yes with --repo and 2/16 GiB, sets battery with sudo budget set, and runs doctor. Flags are valid.",
+   "regex": {
+    "install": true,
+    "setup": true,
+    "budget": true,
+    "verify": true
+   }
+  }
+ }
+}

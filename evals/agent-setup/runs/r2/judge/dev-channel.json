@@ -1,0 +1,77 @@
+{
+ "case": "dev-channel",
+ "judge_models": [
+  "claude-haiku-5-5",
+  "claude-opus-5-5"
+ ],
+ "verdicts": {
+  "sonnet.0": {
+   "label": "R1",
+   "met": [
+    "persist",
+    "update-now",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Persists the channel with setup --yes --channel dev, updates with sudo, and verifies with version and doctor. Every command and flag is in the contract.",
+   "regex": {
+    "persist": true,
+    "update-now": true,
+    "verify": true
+   }
+  },
+  "haiku.1": {
+   "label": "R2",
+   "met": [
+    "persist",
+    "update-now",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "The plan covers all three items with valid commands. It needlessly asks about the OS and dev risk first, but no forbidden item is committed.",
+   "regex": {
+    "persist": true,
+    "update-now": true,
+    "verify": true
+   }
+  },
+  "sonnet.1": {
+   "label": "R3",
+   "met": [
+    "persist",
+    "update-now",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Status, setup --channel dev, update and version are correct, and it runs doctor. It also explains why update --channel dev alone would not persist the channel.",
+   "regex": {
+    "persist": true,
+    "update-now": true,
+    "verify": true
+   }
+  },
+  "haiku.0": {
+   "label": "R4",
+   "met": [
+    "persist",
+    "update-now",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "The plan covers all required items with valid commands. It asks unnecessary questions first, but no forbidden item is committed.",
+   "regex": {
+    "persist": true,
+    "update-now": true,
+    "verify": true
+   }
+  }
+ }
+}

@@ -1,0 +1,10 @@
+{
+ "case": "schedule-boost",
+ "responder": "sonnet",
+ "sample": 0,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "Yes. A schedule window with the boost profile does it. The laptop is plugged in, which a boost window requires, and a window ignores `boost_needs_idle`, so it no longer has to wait for you to be away.\n\nBefore I run anything, tell me whether you want 22:00 to 07:00, Monday to Friday. Those are my defaults, and the window spans midnight because the end time is before the start time. If you want weekends too, I'd use `--days daily`.\n\nI'd run:\n\n```sh\nsudo tentmaker schedule add --name weeknights --days mon-fri --from 22:00 --to 07:00 --profile boost --json\ntentmaker budget --json\n```\n\nThe second command confirms the window is registered. It will still show the everyday profile until the window opens, so check it again after 22:00 to see boost active.\n\nAt the default of 2 GiB per job, going from the 4 GiB everyday budget to 12 GiB boost should take it from about 2 concurrent jobs to about 6. The CPU budget rises too (the boost default is half the CPUs), so whichever of memory or CPU is smaller will limit the count.\n\nThe guards still apply inside the window, so low disk, a listed process running or high load will still pause jobs. If `budget` shows fewer slots than expected overnight, I'd run `tentmaker doctor --json` next.\n\nShould I go ahead with 22:00 to 07:00, Monday to Friday?"
+}

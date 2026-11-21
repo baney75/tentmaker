@@ -1,0 +1,10 @@
+{
+ "case": "public-repo",
+ "responder": "sonnet",
+ "sample": 0,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "I haven't changed anything yet. Making a public repo run CI on your machines needs your explicit yes first.\n\n**Please confirm these two things for acme/site:**\n\n1. **Risk.** Tentmaker never runs jobs from fork pull requests. But code you merge from outside contributors would run on this desktop. So would any workflow they can trigger on the repo itself, such as one that runs on issue comments. Linux jobs share your kernel and can reach your LAN and tailnet.\n2. **A GitHub setting change.** GitHub's default only requires approval for first-time contributors, and Tentmaker refuses that. The `--enable` flag changes acme/site to require approval before any outside contributor's workflow runs. It uses the GitHub token already stored on this device, so that token must be a repo admin.\n\n**Read-only checks I'll run now:**\n\n```sh\ntentmaker status --json\ntentmaker doctor --json\n```\n\n**After your yes, I'll run:**\n\n```sh\nsudo tentmaker repo add acme/site --allow-public --enable --json\ntentmaker repo list --json\ntentmaker doctor --json\n```\n\nI'll consider it done once `repo list` shows acme/site and `doctor` exits 0. If the same problem survives two fixes, I'll stop and report it.\n\n**Workflows (a separate step):**\n\nJobs only reach your machines if their `runs-on` points at the pool. I'd first run a report that changes nothing, from your checkout of acme/site:\n\n```sh\ntentmaker migrate PATH --json\n```\n\nI'd show you that report. Only if you say yes would I run `tentmaker migrate PATH --write --json` and put the diff on a branch for you to review. Migrated jobs send fork PRs to GitHub-hosted runners.\n\n**Questions:**\n- Do you approve both items above (running public-repo code on this desktop, and the `--enable` setting change)?\n- Where is your local checkout of acme/site, so I can run the migrate report?"
+}

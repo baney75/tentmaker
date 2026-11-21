@@ -1,0 +1,10 @@
+{
+ "case": "pause-gaming",
+ "responder": "sonnet",
+ "sample": 0,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "No approval is needed for a pause, so I'd run it right away. I'd pick a duration myself, since you said \"tonight\". Say if you want a different one.\n\n```sh\nsudo tentmaker pause --for 6h --json gaming\ntentmaker budget --json\n```\n\n- The first command pauses CI for 6 hours with the reason \"gaming\". Jobs already running will finish, but no new ones start. If a job is in flight, it may use CPU and memory for a while.\n- The second command confirms the device shows as paused.\n\nTo end the pause early:\n\n```sh\nsudo tentmaker resume\n```\n\n**One question:** is 6 hours enough? If you'll game longer, I'd use `--for 10h` instead. I'd also ask whether you want CI to pause automatically whenever the game is running. That has no CLI flag. It would mean listing the game's process name under `[guards]` in `/etc/tentmaker/config.toml` and restarting the service with `sudo systemctl restart tentmaker`. I wouldn't touch the config unless you ask."
+}

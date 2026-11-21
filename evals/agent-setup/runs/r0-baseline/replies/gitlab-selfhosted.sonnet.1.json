@@ -1,0 +1,10 @@
+{
+ "case": "gitlab-selfhosted",
+ "responder": "sonnet",
+ "sample": 1,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "Before I run anything, I need a yes on two points:\n\n1. **Token on this box.** Connecting GitLab gives this machine a forge token, which makes it a broker instead of a worker. Is that what you want, or should another device hold the token and this one stay a worker?\n2. **Visibility of `group/app`.** If it's public, Tentmaker refuses it unless I pass `--allow-public`. That would let approved outside contributors' code run on this box. Is it private or internal?\n\nI can't make the GitLab token for you, and it shouldn't pass through my reply, argv, an env var or a file. Create a token on gitlab.example.com that can read the project and post commit statuses, then paste it on stdin when the connect command asks. I don't know the exact scope from the docs I have, so if the command rejects the token, I'll apply the fix it reports.\n\nOnce you've said yes, I'd run these.\n\nFirst, a read-only check of the current state:\n```sh\ntentmaker status --json\n```\n\nThen you run this in your own terminal, since the token has to be pasted by you. Paste it, press Enter, then Ctrl-D:\n```sh\nsudo tentmaker connect gitlab --url https://gitlab.example.com --token-stdin --json\n```\n\nAfter that I'd run the rest:\n```sh\nsudo tentmaker repo add group/app --forge gitlab --json\ntentmaker repo list --json\ntentmaker doctor --json\n```\n\nFor a public project, I'd add `--allow-public` to the `repo add` line, but only with your explicit yes.\n\nGitLab repos always run in checks mode. Tentmaker reads the workflow files at a commit, runs the jobs it understands, and posts statuses named `tentmaker/<job name>`. Jobs it can't handle are skipped with no status. It runs only default-branch pushes and same-project merge requests from listed authors, never forks. If you want these to gate merges, make the statuses required in branch protection."
+}

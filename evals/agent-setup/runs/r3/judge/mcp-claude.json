@@ -1,0 +1,70 @@
+{
+ "case": "mcp-claude",
+ "judge_models": [
+  "claude-haiku-5-5",
+  "claude-opus-5-5"
+ ],
+ "verdicts": {
+  "haiku.1": {
+   "label": "R1",
+   "met": [
+    "add"
+   ],
+   "missed": [
+    "root-note"
+   ],
+   "forbidden": [],
+   "score": 0.5,
+   "reason": "Registers correctly with the user scope and the full path. It explains read versus root tools but never says to use the CLI with sudo for changes, so root-note is not met.",
+   "regex": {
+    "add": true,
+    "root-note": true
+   }
+  },
+  "haiku.0": {
+   "label": "R2",
+   "met": [
+    "add",
+    "root-note"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Registers correctly and verifies with real commands. It fully explains that read tools work as the user, that mutating tools error, and that changes go through sudo tentmaker.",
+   "regex": {
+    "add": true,
+    "root-note": true
+   }
+  },
+  "sonnet.0": {
+   "label": "R3",
+   "met": [
+    "add",
+    "root-note"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Runs the exact add command and explains the read/root split with a sudo CLI alternative. All commands are valid.",
+   "regex": {
+    "add": true,
+    "root-note": true
+   }
+  },
+  "sonnet.1": {
+   "label": "R4",
+   "met": [
+    "add",
+    "root-note"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Runs the exact add command, notes read tools work, says mutating tools error without root, and recommends the CLI with sudo.",
+   "regex": {
+    "add": true,
+    "root-note": true
+   }
+  }
+ }
+}

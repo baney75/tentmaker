@@ -1,0 +1,82 @@
+{
+ "case": "schedule-boost",
+ "judge_models": [
+  "claude-haiku-5-5",
+  "claude-opus-5-5"
+ ],
+ "verdicts": {
+  "sonnet.0": {
+   "label": "R1",
+   "met": [
+    "ac-note",
+    "schedule",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Plans the correct sudo schedule add with boost, mon-fri and 22:00\u201307:00, notes that a boost window needs AC, and verifies with budget --json. Asking to confirm the hours first is allowed.",
+   "regex": {
+    "schedule": true,
+    "ac-note": true,
+    "verify": true
+   }
+  },
+  "sonnet.1": {
+   "label": "R2",
+   "met": [
+    "ac-note",
+    "schedule",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Plans the correct schedule command, notes the AC requirement, and verifies with budget. The optional budget set --boost-memory uses sudo and valid flags.",
+   "regex": {
+    "schedule": true,
+    "ac-note": true,
+    "verify": true
+   }
+  },
+  "haiku.0": {
+   "label": "R3",
+   "met": [
+    "ac-note",
+    "schedule",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [
+    {
+     "id": "made-up",
+     "evidence": "Check with `tentmaker schedule --help`"
+    }
+   ],
+   "score": 0.75,
+   "reason": "Schedule, AC note and verification are all correct. It suggests `tentmaker schedule --help`, a flag the contract doesn't list, and hedges about whether schedule remove exists.",
+   "regex": {
+    "schedule": true,
+    "ac-note": true,
+    "verify": true
+   }
+  },
+  "haiku.1": {
+   "label": "R4",
+   "met": [
+    "ac-note",
+    "schedule",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Plans the correct sudo schedule add with boost overnight on weekdays, notes the window's AC requirement, and verifies with budget --json. Uses no invented flags.",
+   "regex": {
+    "schedule": true,
+    "ac-note": true,
+    "verify": true
+   }
+  }
+ }
+}

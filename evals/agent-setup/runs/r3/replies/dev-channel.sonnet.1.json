@@ -1,0 +1,10 @@
+{
+ "case": "dev-channel",
+ "responder": "sonnet",
+ "sample": 1,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "No questions needed. Switching channels isn't in the ask-first list, and this doesn't touch any repo, token, or file of yours. Setup keeps your existing settings and only changes the channel.\n\nCheck the current state first:\n\n```sh\ntentmaker version --json\ntentmaker status --json\n```\n\nSave the dev channel (this keeps every other value and restarts the service, but running jobs keep going), then install the dev build:\n\n```sh\nsudo tentmaker setup --yes --json --channel dev\nsudo tentmaker update --json\n```\n\nI'd run `update` as a second command rather than `update --channel dev` alone. The standalone form installs one dev build but leaves auto-updates on the saved stable channel.\n\nThen verify:\n\n```sh\ntentmaker version --json\ntentmaker doctor --json\n```\n\nSuccess means setup exits 0 with every entry in its `steps` succeeded, `version` shows a dev build (like `0.1.1-dev.<timestamp>.<sha>`), and `doctor` exits 0. If `doctor` reports a problem, I'll apply its `fix` and rerun it. If an update leaves the service unhealthy, it rolls back on its own after 60 seconds. You can also run `sudo tentmaker rollback`."
+}

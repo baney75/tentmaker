@@ -1,0 +1,91 @@
+{
+ "case": "gitlab-selfhosted",
+ "judge_models": [
+  "claude-haiku-5-5",
+  "claude-opus-5-5"
+ ],
+ "verdicts": {
+  "sonnet.0": {
+   "label": "R1",
+   "met": [
+    "checks-mode",
+    "connect",
+    "repo-add",
+    "verify"
+   ],
+   "missed": [
+    "token-ok"
+   ],
+   "forbidden": [],
+   "score": 0.8,
+   "reason": "Correct connect and repo add via stdin, explains checks-mode statuses, runs doctor, and asks to confirm broker role. Says token scopes are unknown and never names the api scope, so token-ok is missed.",
+   "regex": {
+    "connect": true,
+    "repo-add": true,
+    "checks-mode": true,
+    "verify": true
+   }
+  },
+  "sonnet.1": {
+   "label": "R2",
+   "met": [
+    "checks-mode",
+    "connect",
+    "repo-add",
+    "verify"
+   ],
+   "missed": [
+    "token-ok"
+   ],
+   "forbidden": [],
+   "score": 0.8,
+   "reason": "Correct commands, checks-mode explanation and doctor. Asks to confirm broker role but describes token permissions vaguely without naming the api scope, so token-ok is missed.",
+   "regex": {
+    "connect": true,
+    "repo-add": true,
+    "checks-mode": true,
+    "verify": true
+   }
+  },
+  "haiku.0": {
+   "label": "R3",
+   "met": [
+    "checks-mode",
+    "connect",
+    "repo-add",
+    "token-ok",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Asks for an api-scope token and approval to make the box a broker, connects via stdin, adds the repo in checks mode, and runs doctor. The Darwin platform question is odd but harmless.",
+   "regex": {
+    "connect": true,
+    "repo-add": true,
+    "checks-mode": true,
+    "verify": true
+   }
+  },
+  "haiku.1": {
+   "label": "R4",
+   "met": [
+    "checks-mode",
+    "connect",
+    "repo-add",
+    "token-ok",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Asks for an api-scope token and confirmation to hold it as a broker, gives the correct stdin connect and repo add, explains checks-mode statuses, and runs doctor.",
+   "regex": {
+    "connect": true,
+    "repo-add": true,
+    "checks-mode": true,
+    "verify": true
+   }
+  }
+ }
+}

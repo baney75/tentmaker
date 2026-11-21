@@ -1,0 +1,90 @@
+{
+ "case": "worker-only",
+ "judge_models": [
+  "claude-haiku-5-5",
+  "claude-opus-5-5"
+ ],
+ "verdicts": {
+  "sonnet.1": {
+   "label": "R1",
+   "met": [
+    "explain",
+    "install",
+    "setup-worker",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Installs with install.sh --no-setup, then runs sudo setup --yes --no-gh with no repo. Explains worker role and the same tailnet user and pool name rule. Runs doctor, then checks pool from the laptop.",
+   "regex": {
+    "install": true,
+    "setup-worker": true,
+    "explain": true,
+    "verify": true
+   }
+  },
+  "haiku.1": {
+   "label": "R2",
+   "met": [
+    "explain",
+    "install",
+    "setup-worker",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Installer runs --yes -- --no-gh with no repo. Explains the laptop brokers and the mini receives work, with same tailnet and pool name. Runs doctor and pool. gh logout is a gh command, so allowed.",
+   "regex": {
+    "install": true,
+    "setup-worker": true,
+    "explain": true,
+    "verify": true
+   }
+  },
+  "haiku.0": {
+   "label": "R3",
+   "met": [
+    "explain",
+    "install",
+    "setup-worker",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [
+    {
+     "id": "made-up",
+     "evidence": "--name macmini"
+    }
+   ],
+   "score": 0.75,
+   "reason": "Plan is otherwise correct: worker setup with --no-gh, doctor, and pool. But setup has no --name flag; the real flag is --device.",
+   "regex": {
+    "install": true,
+    "setup-worker": true,
+    "explain": true,
+    "verify": true
+   }
+  },
+  "sonnet.0": {
+   "label": "R4",
+   "met": [
+    "explain",
+    "install",
+    "setup-worker",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Installs the binary, then runs sudo setup --yes --json --no-gh with no repo. Explains the worker and pool rules. Runs doctor, then pool from the laptop. Uninstall is only mentioned for the person, with sudo.",
+   "regex": {
+    "install": true,
+    "setup-worker": true,
+    "explain": true,
+    "verify": true
+   }
+  }
+ }
+}

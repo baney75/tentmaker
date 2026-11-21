@@ -1,0 +1,9 @@
+{
+ "case": "doctor-low-disk",
+ "responder": "haiku",
+ "sample": 1,
+ "models": [
+  "claude-haiku-5-5"
+ ],
+ "text": "Doctor is blocking jobs on one check: `/var/lib/tentmaker` has 11.4 GiB free, and the guard requires 20 GiB. The other checks pass. I need about 8.6 GiB more free space, or a lower guard, before jobs start.\n\nMy shell here is macOS, so these commands need to run on the Linux desktop, in its terminal or over Tailscale SSH. They only read state.\n\n```sh\ndf -h /var/lib/tentmaker\nsudo du -xh --max-depth=1 /var/lib/tentmaker | sort -h\ngrep -n min_free_disk /etc/tentmaker/config.toml\ntentmaker budget --json\n```\n\nThe first command shows which filesystem the guard checks. If it's the root filesystem, the guard counts everything on it, not just Tentmaker's data. The second shows what under `/var/lib/tentmaker` is taking space. The third shows the current `min_free_disk` value, if it's set explicitly.\n\nOnce you've freed space, run:\n\n```sh\ntentmaker doctor --json\n```\n\nIt should exit 0 with `disk` at `ok`. If `disk` still fails, the guard hasn't been cleared yet.\n\nBefore I do anything beyond those reads, I need your decision on two things:\n\n1. **Deleting files.** If the output shows big items under `/var/lib/tentmaker`, tell me which ones you want removed, or confirm that I can clear the Tentmaker cache. I won't delete anything without a yes for the specific paths.\n2. **Lowering the guard.** You can set `min_free_disk` to a smaller value in `/etc/tentmaker/config.toml`, but this guard exists to keep the desktop from filling up. I'd only lower it with your explicit OK, and I'd suggest a value that leaves room for your own use. Then I'd restart the service with `sudo systemctl restart tentmaker` and re-run doctor.\n\nWhich one do you want: free space, lower the guard, or both? And send me the output of the first three commands if you'd like me to read it and recommend specific paths."
+}

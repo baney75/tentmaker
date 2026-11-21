@@ -1,0 +1,10 @@
+{
+ "case": "uninstall",
+ "responder": "sonnet",
+ "sample": 1,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "I'd ask two things before running anything destructive.\n\n**Questions**\n1. **Purge:** `--purge` deletes Tentmaker's config, the stored forge token, state, cache and logs, and it can't be undone. Is that what you mean by \"completely\"?\n2. **Workflows:** acme/webapp's workflows use `runs-on: [self-hosted, tentmaker, ...]`, and this laptop is the only device serving that repo. Once it's gone, those jobs will queue forever with no runner. Do you want to switch `runs-on` back to a hosted runner first? If so, where is the checkout? I'd also need your OK before writing to those files or committing anything.\n\n**Read-only checks I can run now** (no changes):\n```sh\ntentmaker status --json\ntentmaker repo list --json\n```\n\n**After you say yes to both**\nIf you want the workflows reverted, I'd first find the migrate commit in the checkout and revert it, or edit `runs-on` by hand. Then:\n```sh\nsudo tentmaker uninstall --purge --yes --json\nsudo rm /usr/local/bin/tentmaker\n```\nThe first command removes the service and sandboxes, then purges everything. The second removes the binary, which uninstall leaves behind. I won't delete anything else by hand.\n\n**Verify afterwards**\n```sh\nls /Library/LaunchDaemons/dev.tentmaker.daemon.plist   # should be \"No such file\"\ncommand -v tentmaker                                   # should print nothing\n```\n\nI'd also remove the GitHub runner registrations for acme/webapp if any are left. I'd list them first and ask before deleting."
+}

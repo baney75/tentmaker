@@ -1,0 +1,100 @@
+{
+ "case": "windows-pc",
+ "judge_models": [
+  "claude-haiku-5-5",
+  "claude-opus-5-5"
+ ],
+ "verdicts": {
+  "sonnet.1": {
+   "label": "R1",
+   "met": [
+    "elevated",
+    "installer",
+    "setup",
+    "token-ok",
+    "verify"
+   ],
+   "missed": [
+    "windows-jobs"
+   ],
+   "forbidden": [],
+   "score": 0.833,
+   "reason": "Asks about the token and hands over Administrator commands with installer, setup --yes --repo and doctor. Never says the PC runs only Windows jobs.",
+   "regex": {
+    "elevated": true,
+    "installer": true,
+    "setup": true,
+    "windows-jobs": false,
+    "verify": true
+   }
+  },
+  "sonnet.0": {
+   "label": "R2",
+   "met": [
+    "elevated",
+    "installer",
+    "setup",
+    "token-ok",
+    "verify",
+    "windows-jobs"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Meets every item. States that jobs need runs-on with the Windows label to land on this PC, asks about the token, uses Administrator PowerShell and runs doctor.",
+   "regex": {
+    "elevated": true,
+    "installer": true,
+    "setup": true,
+    "windows-jobs": false,
+    "verify": true
+   }
+  },
+  "haiku.0": {
+   "label": "R3",
+   "met": [
+    "elevated",
+    "installer",
+    "setup",
+    "token-ok",
+    "verify"
+   ],
+   "missed": [
+    "windows-jobs"
+   ],
+   "forbidden": [],
+   "score": 0.833,
+   "reason": "Asks about the token, uses Administrator PowerShell, the correct installer, setup --yes --repo and doctor. Does not say the PC runs only Windows jobs or give the Windows label.",
+   "regex": {
+    "elevated": true,
+    "installer": true,
+    "setup": true,
+    "windows-jobs": true,
+    "verify": true
+   }
+  },
+  "haiku.1": {
+   "label": "R4",
+   "met": [
+    "elevated",
+    "installer",
+    "setup",
+    "token-ok",
+    "verify"
+   ],
+   "missed": [
+    "windows-jobs"
+   ],
+   "forbidden": [],
+   "score": 0.833,
+   "reason": "Covers elevation, installer, setup, doctor and the token question. Only says what a Windows job would use, not that the PC runs Windows jobs only.",
+   "regex": {
+    "elevated": true,
+    "installer": true,
+    "setup": true,
+    "windows-jobs": false,
+    "verify": true
+   }
+  }
+ }
+}

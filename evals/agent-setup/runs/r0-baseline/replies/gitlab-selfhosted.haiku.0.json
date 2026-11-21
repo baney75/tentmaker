@@ -1,0 +1,9 @@
+{
+ "case": "gitlab-selfhosted",
+ "responder": "haiku",
+ "sample": 0,
+ "models": [
+  "claude-haiku-5-5"
+ ],
+ "text": "I'll connect `group/app` on `gitlab.example.com` in checks mode, which posts `tentmaker/<job>` commit statuses. I need a few things from you first.\n\n**Questions before I run anything:**\n\n1. **Token.** Connecting GitLab gives this machine a forge token, which makes it a broker. Do you approve that for this device? If so, create a token in GitLab with the `api` scope (commit statuses need it). Don't paste it into this chat. You'll enter it on stdin when I run the command, or run the command yourself.\n2. **Platform.** You said Linux, but the environment reports Darwin (macOS). Which is it? The commands below are the same either way, but `doctor` results and sandbox behavior differ by OS.\n3. **Repo visibility.** Is `group/app` private? If it's public, I'll stop, because `--allow-public` lets outside contributors' code run on this machine.\n\n**Once you approve, I'll run:**\n\n```sh\n# Paste the token on stdin, then press Enter and Ctrl-D.\nsudo tentmaker connect gitlab --url https://gitlab.example.com --token-stdin --json\n\nsudo tentmaker repo add group/app --forge gitlab --json\n\ntentmaker repo list --json\ntentmaker doctor --json\n```\n\n`repo add` picks checks mode automatically for GitLab. Only `run` steps and the setup actions Tentmaker maps are executed. Any job using other `uses:`, `services`, `container`, a job-level `if`, or a multi-combination matrix is skipped and gets no status.\n\n**After that**, I'll show you the GitLab-side step to finish: mark the `tentmaker/<job>` statuses as required in the protected branch's settings if you want them to gate merges. That setting is yours to change in GitLab, so I won't touch it."
+}

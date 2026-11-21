@@ -1,0 +1,10 @@
+{
+ "case": "gitlab-selfhosted",
+ "responder": "sonnet",
+ "sample": 0,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "Before I change anything, I'd run these read-only checks:\n\n```sh\ntentmaker status --json\ntentmaker doctor --json\n```\n\n**What I need from you first:**\n\n1. **OK to make this box a broker?** Connecting GitLab puts a forge token on this machine, and it's currently a worker with no token. Anyone who can push to `group/app` could then run code here. In checks mode, GitLab jobs run in Tentmaker's sandbox and post commit statuses named `tentmaker/<job name>`.\n2. **Is `group/app` private or internal, not public?** If it's public, I need your explicit yes before using `--allow-public`, because code merged from outside contributors would run on this machine.\n3. **Please create the token.** I can't make it, and it must never go into my commands or this chat. In GitLab, create a personal access token with scope `api`, ideally from an account that can reach `group/app`.\n\n**Commands once you say yes.** The token has to go in through a pipe, so run this one yourself in your own terminal. Paste the token, press Enter, then Ctrl-D:\n\n```sh\nsudo tentmaker connect gitlab --url https://gitlab.example.com --token-stdin --yes --json\n```\n\nThen I run the rest:\n\n```sh\nsudo tentmaker repo add group/app --forge gitlab --json\ntentmaker repo list --json\ntentmaker doctor --json\n```\n\nI'd consider it done when `repo list` shows `group/app` and `doctor` exits 0. If doctor reports a problem, I'll apply its suggested fix and rerun it.\n\nTo make the results gate merges, add the `tentmaker/<job name>` statuses as required checks in the project's branch protection. I'd leave that to you.\n\nChecks mode skips jobs it doesn't understand, such as ones with services, containers or a job-level `if`, and a skipped job gets no status. It also never runs forks."
+}

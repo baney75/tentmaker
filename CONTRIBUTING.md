@@ -20,6 +20,18 @@ for os in linux darwin windows; do for arch in amd64 arm64; do GOOS=$os GOARCH=$
 
 CI also runs `gofmt -l .`, `go test -race` on Linux and macOS, shellcheck on `scripts/*.sh`, and both installers against a locally built release.
 
+## Agent setup eval
+
+Agents install and run Tentmaker from `README.md` and `skills/tentmaker/SKILL.md` alone. `evals/agent-setup/` measures how well that works: Haiku and Sonnet answer 14 real requests (cases.yaml) from those two files, and a blind Opus judge grades their replies against an answer key written from `docs/CLI.md` and the code. Run it after you change either file, or a command those files describe. It is not in CI: it needs a Claude sign-in, and it runs about 70 `claude -p` calls on that plan. It unsets `ANTHROPIC_API_KEY` and stops on a quota or sign-in error rather than falling back to API billing.
+
+```sh
+python3 evals/agent-setup/run.py verify                     # every answer key's commands still parse
+python3 evals/agent-setup/run.py run --stamp mychange       # respond, judge, summarize (about 15 minutes)
+python3 evals/agent-setup/check.py evals/agent-setup/runs/mychange
+```
+
+`run` resumes when you rerun it with the same `--stamp`, and `--phase respond` or `--phase judge` runs one half. Each run pins the docs it used under `runs/<stamp>/docs`. `check.py` fails when a responder's mean falls more than 0.05 below `baseline.json`, or the bar there breaks (Sonnet at least 0.9 with no forbidden items, Haiku at least 0.8). Read the judge's evidence in `runs/<stamp>/judge/` and fix the docs, not the cases. When a change raises the scores, commit its run and write its summary into `baseline.json`. When a command changes, update the case and its `verify` checks in the same pull request. The script needs PyYAML.
+
 ## Rules
 
 - Go standard library first. A new dependency needs a reason in the PR and a pinned version.

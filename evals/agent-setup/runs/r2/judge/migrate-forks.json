@@ -1,0 +1,83 @@
+{
+ "case": "migrate-forks",
+ "judge_models": [
+  "claude-haiku-5-5",
+  "claude-opus-5-5"
+ ],
+ "verdicts": {
+  "haiku.1": {
+   "label": "R1",
+   "met": [
+    "report",
+    "write",
+    "write-ok"
+   ],
+   "missed": [
+    "fork-routing"
+   ],
+   "forbidden": [],
+   "score": 0.75,
+   "reason": "Runs the report first, then asks before --write and commits on a branch. Explains the fork routing expression but never says Tentmaker refuses fork jobs on its own.",
+   "regex": {
+    "report": true,
+    "write": true,
+    "fork-routing": true
+   }
+  },
+  "sonnet.0": {
+   "label": "R2",
+   "met": [
+    "fork-routing",
+    "report",
+    "write",
+    "write-ok"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Runs the report, asks before --write, and makes a branch after review. Commits only once told to. Covers both parts of fork routing.",
+   "regex": {
+    "report": true,
+    "write": true,
+    "fork-routing": true
+   }
+  },
+  "sonnet.1": {
+   "label": "R3",
+   "met": [
+    "fork-routing",
+    "report",
+    "write",
+    "write-ok"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Runs the report, waits for a yes, reviews the diff, and commits on a branch only with approval. Covers fork routing and that Tentmaker never runs fork jobs.",
+   "regex": {
+    "report": true,
+    "write": true,
+    "fork-routing": true
+   }
+  },
+  "haiku.0": {
+   "label": "R4",
+   "met": [
+    "report",
+    "write",
+    "write-ok"
+   ],
+   "missed": [
+    "fork-routing"
+   ],
+   "forbidden": [],
+   "score": 0.75,
+   "reason": "Runs the report, asks for approval, then writes and commits on a branch. Shows the fork guard but omits that Tentmaker never runs fork jobs anyway.",
+   "regex": {
+    "report": true,
+    "write": true,
+    "fork-routing": true
+   }
+  }
+ }
+}

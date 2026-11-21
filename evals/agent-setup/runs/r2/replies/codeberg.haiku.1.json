@@ -1,0 +1,9 @@
+{
+ "case": "codeberg",
+ "responder": "haiku",
+ "sample": 1,
+ "models": [
+  "claude-haiku-5-5"
+ ],
+ "text": "I can't finish setup from here: it needs root, and I can't type your sudo password. I'll install the binary now (no root needed), then hand you the one command that needs your terminal.\n\n## What I'll run now\n\n```sh\ncommand -v tentmaker || echo \"not on PATH\"\ncurl -fsSL https://raw.githubusercontent.com/baney75/tentmaker/main/scripts/install.sh | sh -s -- --no-setup\n\"$HOME/.local/bin/tentmaker\" version --json\n\"$HOME/.local/bin/tentmaker\" status --json\n```\n\nWithout root the installer puts the binary in `~/.local/bin`. It verifies the sha256 before installing.\n\n## What you need to do\n\n1. **Make a Codeberg token.** On codeberg.org, go to user settings > Applications, create a token with scopes `write:repository` and `read:user`. Keep it in your clipboard; I won't see it.\n\n2. **Run setup in your own terminal:**\n   ```sh\n   sudo \"$HOME/.local/bin/tentmaker\" setup --yes --json --forge forgejo --forge-url https://codeberg.org --repo me/notes --token-stdin\n   ```\n   Enter your sudo password, then paste the token, press Enter, then Ctrl-D. Tentmaker runs checks mode for Codeberg, so pushes to the default branch and same-repo PRs from you get a `tentmaker/<job>` status. Fork PRs never run.\n\n3. **Tell me when it finishes.** I'll run `tentmaker doctor --json` and fix anything it reports.\n\n## What I need from you first\n\n- **Repo name.** Is `me/notes` literal, or should it be your Codeberg username and the repo name?\n- **Token.** Is it OK for this Mac to hold a Codeberg token and become the broker for that repo? Only tokens for repos you own should go on it.\n- **Visibility.** Is `me/notes` public? If so, I'll stick to checks mode (no `--allow-public` on Codeberg) and leave the repo's approval settings alone.\n\nOnce you confirm these, I'll run the install step above."
+}

@@ -1,0 +1,10 @@
+{
+ "case": "add-devices",
+ "responder": "sonnet",
+ "sample": 0,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "I'll add both as workers, so neither gets a forge token. That means the token approval step doesn't apply. First I'll confirm this laptop is healthy, then check the two things I haven't verified on each host (Tailscale SSH and passwordless sudo).\n\n```sh\ntentmaker status --json\n\n# Tailscale SSH + passwordless sudo, per host (exit 0 means both work)\ntailscale ssh desktop sudo -n true\ntailscale ssh homeserver sudo -n true\n```\n\nIf both checks pass, I'll add them. `devices add` runs without sudo from this laptop:\n\n```sh\ntentmaker devices add desktop --json\ntentmaker devices add homeserver --json\n```\n\nThen I'll verify:\n\n```sh\ntentmaker pool --json\n```\n\nI'm done when both devices show up in the pool output.\n\nIf a check fails:\n- **Tailscale SSH denied:** the host's tailnet ACL needs to allow SSH for you. That's a change in your Tailscale admin console, which I won't make.\n- **`sudo -n` asks for a password:** I can't type one. You'd either enable passwordless sudo for that user, or run the installer and `sudo tentmaker setup` on that machine yourself.\n\nTwo things to confirm before I run these:\n1. **Budgets:** are the defaults fine (everyday is a quarter of RAM, between 2 and 8 GiB, and boost is half of RAM, up to 32 GiB)? If you want specific numbers for the desktop or home server, give me those and I'll add `--memory S --boost-memory S`.\n2. **Login user:** do your usernames on those hosts match the one you use here? If not, tell me the names and I'll use `user@desktop` form."
+}

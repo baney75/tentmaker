@@ -1,0 +1,9 @@
+{
+ "case": "gitlab-selfhosted",
+ "responder": "haiku",
+ "sample": 1,
+ "models": [
+  "claude-haiku-5-5"
+ ],
+ "text": "Before I run anything, I need three things from you:\n\n1. **A GitLab token for this box.** Create a personal access token at https://gitlab.example.com/-/user_settings/personal_access_tokens with the `api` scope. Tentmaker needs that scope to read the source archive and post commit statuses. Your account needs Developer or higher on `group/app`. Don't paste the token into this chat. You'll feed it to the command below yourself.\n2. **Is `group/app` public?** Tentmaker refuses public repos unless you explicitly allow them, because outside contributors' code would run on this machine. If it's private, nothing more is needed. If it's public, tell me and confirm that only trusted contributors can open merge requests.\n3. **Confirm you want this box to hold the token.** Once connected, this machine becomes a broker. It keeps the token in the OS secret store, and it fetches source for `group/app` and sends it to workers. Workers and jobs never see the token.\n\nOnce you confirm, run this in your own terminal, since the token has to come in on stdin:\n\n```sh\nsudo tentmaker connect gitlab --url https://gitlab.example.com --token-stdin\n```\n\nPaste the token, press Enter, then Ctrl-D.\n\nThen I'll run:\n\n```sh\nsudo tentmaker repo add group/app --forge gitlab --json\ntentmaker repo list --json\ntentmaker doctor --json\n```\n\nGitLab repos always run in checks mode, so `--mode` isn't needed. Tentmaker will post commit statuses named `tentmaker/<job name>` on each commit. To make them block merges, add those statuses as required checks under the project's branch protection settings.\n\nIf `doctor` reports a problem, I'll apply its fix and rerun it. If it still fails after two attempts, I'll stop and report back."
+}

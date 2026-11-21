@@ -1,0 +1,100 @@
+{
+ "case": "windows-pc",
+ "judge_models": [
+  "claude-haiku-5-5",
+  "claude-opus-5-5"
+ ],
+ "verdicts": {
+  "haiku.1": {
+   "label": "R1",
+   "met": [
+    "elevated",
+    "installer",
+    "setup",
+    "token-ok",
+    "verify"
+   ],
+   "missed": [
+    "windows-jobs"
+   ],
+   "forbidden": [],
+   "score": 0.833,
+   "reason": "Admin PowerShell commands, the correct installer, setup with --repo/--yes, doctor and the token question are all there. It shows a Windows runs-on label but never says the PC runs only Windows jobs.",
+   "regex": {
+    "elevated": true,
+    "installer": true,
+    "setup": true,
+    "windows-jobs": false,
+    "verify": true
+   }
+  },
+  "sonnet.0": {
+   "label": "R2",
+   "met": [
+    "elevated",
+    "installer",
+    "setup",
+    "token-ok",
+    "verify",
+    "windows-jobs"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Meets every item. It says jobs need the Windows runs-on label to land on this PC, asks about the token and asks for elevation. Everything it uses is in the contract.",
+   "regex": {
+    "elevated": true,
+    "installer": true,
+    "setup": true,
+    "windows-jobs": false,
+    "verify": true
+   }
+  },
+  "sonnet.1": {
+   "label": "R3",
+   "met": [
+    "elevated",
+    "installer",
+    "setup",
+    "token-ok",
+    "verify"
+   ],
+   "missed": [
+    "windows-jobs"
+   ],
+   "forbidden": [],
+   "score": 0.833,
+   "reason": "Elevation, installer, setup, doctor and the token question are all there. It never says the PC runs only Windows jobs.",
+   "regex": {
+    "elevated": true,
+    "installer": true,
+    "setup": true,
+    "windows-jobs": false,
+    "verify": true
+   }
+  },
+  "haiku.0": {
+   "label": "R4",
+   "met": [
+    "elevated",
+    "installer",
+    "setup",
+    "token-ok",
+    "verify"
+   ],
+   "missed": [
+    "windows-jobs"
+   ],
+   "forbidden": [],
+   "score": 0.833,
+   "reason": "Admin PowerShell commands, the installer, broker and worker setup, doctor and the token question are all there. It never says no Linux jobs run on Windows. It wrongly claims the session is on a Mac.",
+   "regex": {
+    "elevated": true,
+    "installer": true,
+    "setup": true,
+    "windows-jobs": true,
+    "verify": true
+   }
+  }
+ }
+}

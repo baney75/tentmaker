@@ -1,0 +1,9 @@
+{
+ "case": "pause-gaming",
+ "responder": "haiku",
+ "sample": 0,
+ "models": [
+  "claude-haiku-5-5"
+ ],
+ "text": "I'd pause this device for tonight. Your note says Linux, but the environment reports Darwin, so I'll confirm the OS before changing anything.\n\n```sh\nuname -s                          # confirm the OS (Linux or Darwin)\ntentmaker status --json           # confirm Tentmaker is running on this device\nsudo tentmaker pause --for 6h gaming --json\ntentmaker status --json           # confirm it reports paused\n```\n\nBefore I run the pause, I'd ask:\n\n1. **How long?** I'd use 6h as a guess for tonight. Tell me a different duration, or say \"until I resume\" and I'll pause without a time limit.\n2. **Which OS is this machine?** Your note says Linux and the environment says Darwin 27.2. The pause command is the same on both, but I want to be sure I'm on the right box.\n\nWhen you're done, run `sudo tentmaker resume` to end the pause early. Running jobs finish either way."
+}

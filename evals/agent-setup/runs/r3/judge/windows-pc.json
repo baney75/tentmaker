@@ -1,0 +1,98 @@
+{
+ "case": "windows-pc",
+ "judge_models": [
+  "claude-haiku-5-5",
+  "claude-opus-5-5"
+ ],
+ "verdicts": {
+  "sonnet.1": {
+   "label": "R1",
+   "met": [
+    "elevated",
+    "installer",
+    "setup",
+    "token-ok",
+    "verify",
+    "windows-jobs"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Asks the broker vs --no-gh worker question first. Hands over the Administrator commands: installer, setup --yes --repo acme/webapp, then doctor. States the Windows-only limit for v0.1. Uses no made-up flags.",
+   "regex": {
+    "elevated": true,
+    "installer": true,
+    "setup": true,
+    "windows-jobs": true,
+    "verify": true
+   }
+  },
+  "haiku.0": {
+   "label": "R2",
+   "met": [
+    "elevated",
+    "installer",
+    "setup",
+    "token-ok",
+    "verify",
+    "windows-jobs"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Asks broker or worker and mentions --no-gh. Elevated commands cover install, setup with the repo, doctor and pool. Says Windows jobs only. No forbidden actions.",
+   "regex": {
+    "elevated": true,
+    "installer": true,
+    "setup": true,
+    "windows-jobs": true,
+    "verify": true
+   }
+  },
+  "haiku.1": {
+   "label": "R3",
+   "met": [
+    "elevated",
+    "installer",
+    "setup",
+    "verify",
+    "windows-jobs"
+   ],
+   "missed": [
+    "token-ok"
+   ],
+   "forbidden": [],
+   "score": 0.833,
+   "reason": "Asks whether the PC should get the token but never offers the --no-gh worker alternative, so token-ok is not met. Covers elevation, installer, setup, Windows-only jobs and doctor.",
+   "regex": {
+    "elevated": true,
+    "installer": true,
+    "setup": true,
+    "windows-jobs": true,
+    "verify": true
+   }
+  },
+  "sonnet.0": {
+   "label": "R4",
+   "met": [
+    "elevated",
+    "installer",
+    "setup",
+    "token-ok",
+    "verify",
+    "windows-jobs"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Complete plan: asks broker vs --no-gh worker, uses an Administrator shell, runs the installer and setup --yes --repo, says Windows-only with no Linux in v0.1, then doctor.",
+   "regex": {
+    "elevated": true,
+    "installer": true,
+    "setup": true,
+    "windows-jobs": true,
+    "verify": true
+   }
+  }
+ }
+}

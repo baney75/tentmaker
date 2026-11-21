@@ -1,0 +1,89 @@
+{
+ "case": "laptop-plugged-in",
+ "judge_models": [
+  "claude-haiku-5-5",
+  "claude-opus-5-5"
+ ],
+ "verdicts": {
+  "haiku.0": {
+   "label": "R1",
+   "met": [
+    "budget",
+    "install",
+    "setup",
+    "token-ok",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Asks for an OK on the gh token and broker role first. Installs with install.sh, runs sudo setup --yes with the repo, 2GiB/16GiB and a valid budget set. Runs doctor.",
+   "regex": {
+    "install": true,
+    "setup": true,
+    "budget": true,
+    "verify": true
+   }
+  },
+  "sonnet.1": {
+   "label": "R2",
+   "met": [
+    "budget",
+    "install",
+    "setup",
+    "token-ok",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Asks for an OK on the token and broker role. Installs with install.sh, runs sudo setup --yes --repo with 4GiB/16GiB, then doctor. No made-up flags.",
+   "regex": {
+    "install": true,
+    "setup": true,
+    "budget": true,
+    "verify": true
+   }
+  },
+  "sonnet.0": {
+   "label": "R3",
+   "met": [
+    "budget",
+    "install",
+    "setup",
+    "token-ok",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Asks about the token and broker role. Installs with install.sh, runs sudo setup --yes --repo with modest and boost memory, then doctor. All flags valid.",
+   "regex": {
+    "install": true,
+    "setup": true,
+    "budget": true,
+    "verify": true
+   }
+  },
+  "haiku.1": {
+   "label": "R4",
+   "met": [
+    "budget",
+    "install",
+    "setup",
+    "token-ok",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Asks for a token OK first. Installs with install.sh, runs sudo setup --yes --repo with 4GiB/16GiB and --on-battery off, then doctor and pool. No violations.",
+   "regex": {
+    "install": true,
+    "setup": true,
+    "budget": true,
+    "verify": true
+   }
+  }
+ }
+}

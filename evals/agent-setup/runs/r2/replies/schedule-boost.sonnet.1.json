@@ -1,0 +1,10 @@
+{
+ "case": "schedule-boost",
+ "responder": "sonnet",
+ "sample": 1,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "Yes. A schedule window can give it the boost profile overnight, and a window overrides the `boost_needs_idle` rule that's keeping it near everyday. The laptop is always plugged in, so the AC requirement is met.\n\nWith the default 2 GiB per job, boost (12 GiB) fits about 6 jobs at once, compared with about 2 at the everyday 4 GiB.\n\nBefore I run it, I'd ask you two things:\n- Are 22:00 to 07:00 the right hours? I'm guessing at those.\n- Should Friday night run into Saturday morning? I'm not sure whether `mon-fri` covers the window that starts Friday at 22:00 and ends Saturday at 07:00. I'll check how it behaves rather than assume.\n\nIf those hours are fine, this is what I'd run:\n\n```sh\nsudo tentmaker schedule add --name weeknights --days mon-fri --from 22:00 --to 07:00 --profile boost --json\ntentmaker budget --json\n```\n\nThe `to` time is earlier than `from`, so the window spans midnight. `tentmaker budget --json` should show the window and, during it, the boost profile and why it was chosen. Nothing in it changes until 22:00, so check it again tonight to confirm boost kicked in.\n\nIf you want more than 6 jobs overnight, you can raise the boost ceiling:\n\n```sh\nsudo tentmaker budget set --boost-memory 16GiB\n```\n\nThat would also raise the boost budget outside the window. It doesn't touch the guards, such as the free-disk minimum, which still pause CI when the machine needs itself."
+}

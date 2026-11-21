@@ -1,0 +1,10 @@
+{
+ "case": "gitlab-selfhosted",
+ "responder": "sonnet",
+ "sample": 0,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "I need two things from you before I change anything, and the first is a yes/no.\n\n**Questions**\n1. **OK to put a GitLab token on this box?** That makes it a broker rather than a worker. It stores the token in the OS secret store, and anyone who can push to `group/app` can then run code on this machine. Is that okay?\n2. **Is `group/app` private or internal, not public?** If it's public, I'd stop and ask you again, because code merged from outside contributors would run here. Fork merge requests never run either way.\n3. **Can you create the token?** I can't make it and I never see it. Create a personal access token on gitlab.example.com with scope `api`. It acts as whoever owns it, so a dedicated account is cleaner than your personal one.\n\n**What I'd run now (read-only, no changes)**\n```sh\ntentmaker version --json\ntentmaker status --json\ntentmaker doctor --json\n```\n\n**Once you've said yes, I'd hand you this to run in your own terminal**\n\nI can't type the token for you, and it must not go in argv, an env var or a file. Run this, paste the token, press Enter, then Ctrl-D:\n```sh\nsudo tentmaker connect gitlab --url https://gitlab.example.com --token-stdin --yes --json\n```\n\n**Then I'd run**\n```sh\nsudo tentmaker repo add group/app --forge gitlab --json\ntentmaker repo list --json\ntentmaker doctor --json\n```\n\nGitLab repos run in checks mode. Tentmaker runs the jobs it understands in its own sandbox and posts commit statuses named `tentmaker/<job name>`. No workflow files need migrating. If you want those statuses to gate merges, make them required in the project's settings.\n\nI'd call it done only when `repo list` shows `group/app` and `doctor` exits 0. If doctor reports a problem, I'd apply its fix and rerun it, and stop and report if the same problem survives two fixes."
+}

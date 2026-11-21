@@ -1,0 +1,9 @@
+{
+ "case": "doctor-low-disk",
+ "responder": "haiku",
+ "sample": 1,
+ "models": [
+  "claude-haiku-5-5"
+ ],
+ "text": "Doctor's only failure is disk: 11.4 GiB is free at `/var/lib/tentmaker`, below the 20 GiB floor, so the service is refusing new jobs. Jobs already running will finish. My shell here is macOS, so these commands are for the Linux desktop. Run them there, or give me access to it.\n\n**Step 1: find what is using the space (read-only)**\n\n```sh\ndf -h /var/lib/tentmaker\nsudo du -xh --max-depth=2 /var/lib/tentmaker 2>/dev/null | sort -h | tail -n 20\nsudo journalctl --disk-usage\nsudo -u tentmaker-runner podman system df 2>/dev/null\n```\n\nThen paste the output. I'll tell you what looks safe to clear.\n\n**Step 2: choose a fix (I need your decision)**\n\n- **Free space (preferred).** Once I've seen the breakdown, I'd suggest deleting only things tentmaker doesn't need, such as old sandbox or workspace directories left by finished jobs, or unused podman images and volumes. I won't delete anything without your approval of the exact paths.\n- **Lower the floor.** This means editing `guards.min_free_disk` in `/etc/tentmaker/config.toml`. It is a safety guard, so I'd only do it if you say the disk is big enough for your jobs at a lower level. Check the key's format in `docs/config.md` first.\n\n**Step 3: verify**\n\nAfter freeing space or changing the config:\n\n```sh\nsudo systemctl restart tentmaker    # only needed after a config edit\nsudo tentmaker doctor --json\n```\n\nDoctor should exit 0 with `\"problems\": 0`, and new jobs should start.\n\n**What I need from you before I go further**\n\n1. Do you want me to run Step 1 over SSH, or will you run it and paste the output?\n2. Is it OK to delete anything under `/var/lib/tentmaker` or the podman store, or would you rather I only suggest what to remove?\n3. Is 20 GiB the floor you want, or should I lower it, and to what value?"
+}

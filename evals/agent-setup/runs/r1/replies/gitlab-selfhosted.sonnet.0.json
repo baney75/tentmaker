@@ -1,0 +1,10 @@
+{
+ "case": "gitlab-selfhosted",
+ "responder": "sonnet",
+ "sample": 0,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "Before I run anything, I need two answers from you.\n\n**Questions**\n1. **Token on this box:** Connecting GitLab puts a token on this machine, which turns it from a worker into a broker. Is that OK for this box, and for `group/app` only?\n2. **Visibility:** Is `group/app` private or internal? If it's public, outside contributors' runs could execute code here, so I'd want your explicit yes first.\n\n**Token (you make it, I never see it)**\nOn gitlab.example.com, create a personal access token with scope `api` (User settings > Access tokens).\n\n**Commands**\n\nRead-only checks, which I can run now:\n```sh\ntentmaker status --json\ntentmaker repo list --json\n```\n\nStore the token. I can't answer this prompt for you, so run this in your own terminal, paste the token, then press Enter and Ctrl-D:\n```sh\nsudo tentmaker connect gitlab --url https://gitlab.example.com --token-stdin --json\n```\n\nThen I'll run these:\n```sh\nsudo tentmaker repo add group/app --forge gitlab --json\ntentmaker repo list --json\ntentmaker doctor --json\n```\n\nI'll treat it as done only when `doctor` exits 0. If it reports a problem, I'll apply its `fix` and rerun it.\n\n**What to expect**\n- GitLab repos run in checks mode, so your workflow files don't need `migrate`.\n- Tentmaker posts commit statuses named `tentmaker/<job name>`. Mark those as required in the project's branch protection if you want them to gate merges.\n- It only runs pushes to the default branch and same-repo merge requests from listed authors (the repo owner by default). It never runs forks.\n- It skips jobs it doesn't understand, such as other `uses:`, `services`, `container`, job-level `if`, or multi-combination matrices. A skipped job gets no status.\n\nReply with answers to the two questions and I'll continue once the token is stored."
+}

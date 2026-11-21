@@ -1,0 +1,9 @@
+{
+ "case": "public-repo",
+ "responder": "haiku",
+ "sample": 1,
+ "models": [
+  "claude-haiku-5-5"
+ ],
+ "text": "I haven't changed anything yet. Public repos need two things from you before I proceed.\n\n**Questions first**\n\n1. **Approval policy.** GitHub's default only asks for approval from first-time contributors. Tentmaker's public-repo guard needs approval before *any* outside contributor's workflow runs, so I'd first switch acme/site to **\"Require approval for all outside collaborators\"**. Do you approve that change to the repo's settings?\n2. **Public-repo risk.** Once `--allow-public` is set, code from anyone you approve runs on this desktop, which shares its kernel and LAN with the job. Do you accept that, and is this the right machine?\n3. **Secrets and deploys.** Do any of acme/site's workflows deploy, publish, sign, or read secrets? `migrate` leaves those jobs on GitHub-hosted runners, and I'd like your confirmation of that.\n4. **Which host.** My shell reports macOS, but you said Tentmaker runs on the Linux desktop. Which machine should I work from?\n\n**Commands I'd run after you say yes**\n\n```sh\n# 1. Check the current fork-approval policy (read-only)\ngh api repos/acme/site/actions/permissions/fork-pr-contributor-approval\n\n# 2. Tighten it (write to acme/site; verify the value in the Settings UI afterwards)\ngh api -X PUT repos/acme/site/actions/permissions/fork-pr-contributor-approval \\\n  -f approval_policy=all_external_contributors\n\n# 3. Register the repo as public, now that approval covers all outside contributors\nsudo tentmaker repo add acme/site --allow-public --json\n\n# 4. Check the device\ntentmaker doctor --json\n\n# 5. Report which workflow jobs would move, without editing anything\ntentmaker migrate PATH --json\n```\n\nAfter step 5 I'd show you the report. With your go-ahead I'd run `tentmaker migrate PATH --write --json`, review the diff, and commit it on a branch. I'd open the PR only if you ask."
+}

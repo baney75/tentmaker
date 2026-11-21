@@ -1,0 +1,10 @@
+{
+ "case": "uninstall",
+ "responder": "sonnet",
+ "sample": 0,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "Before I run anything, I'd ask you two things:\n\n1. **Is anything running that you care about?** Uninstalling stops the service, which kills any job in progress. This Mac is the only device serving acme/webapp, so I can check with `tentmaker status` first.\n2. **What should happen to acme/webapp's workflows?** They use `runs-on: [self-hosted, tentmaker, ...]`. Once Tentmaker is gone, nothing picks those jobs up, so new pushes and PRs will queue forever. Removing the tool doesn't change those files. I won't edit your repo or push unless you say so. Do you want them pointed back at hosted runners (e.g. `ubuntu-latest`), or are you fine leaving them as they are?\n\n`--purge` deletes config, the stored forge token and state, which is what \"completely\" implies, so I'm treating your request as the yes for that.\n\n**Commands I'd run, in order:**\n\n```sh\n# 1. See what's running and what's registered\ntentmaker status --json\ntentmaker repo list --json\n\n# 2. Remove the service and sandboxes, plus config, secrets, state and cache\nsudo tentmaker uninstall --purge --yes --json\n\n# 3. Remove the binary (uninstall leaves it in place)\nsudo rm /usr/local/bin/tentmaker\n\n# 4. Verify nothing is left\ncommand -v tentmaker\nls \"/Library/Application Support/Tentmaker\" /Library/LaunchDaemons/dev.tentmaker.daemon.plist /Library/Logs/Tentmaker\ntart list\n```\n\nFor step 4, I expect \"not found\" for the binary and the three paths. `tart list` should show no leftover Tentmaker VMs. If any remain, I'd show you the names before deleting them with `tart delete`.\n\nI'd also point out something I can't do from here: the GitHub side. Uninstall may not clear every runner entry or credential on GitHub. After this, check Settings \u2192 Actions \u2192 Runners in acme/webapp for stale `tentmaker` runners, and consider revoking the token you gave Tentmaker if it was a dedicated one. I can walk you through it, but I won't touch your GitHub settings without your say-so."
+}

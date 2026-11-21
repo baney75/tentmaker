@@ -1,0 +1,9 @@
+{
+ "case": "schedule-boost",
+ "responder": "haiku",
+ "sample": 1,
+ "models": [
+  "claude-haiku-5-5"
+ ],
+ "text": "Yes. Add a weeknight schedule window that uses the boost profile. Your everyday budget applies outside it, and a window set to boost still needs AC power, which a plugged-in laptop has.\n\nBefore I run anything, I'd ask you:\n\n1. **Are these the right hours?** I've assumed 22:00 to 07:00. Tell me if you want different times.\n2. **Should Monday's early morning count?** `--days mon-fri` with a window that crosses midnight starts on each listed day, so Monday 00:00 to 07:00 would not be covered, because Sunday isn't in the list. If you want Monday morning covered too, I'd use `--days sun-thu`, which covers Monday morning but not Saturday morning.\n3. **Is 12 GiB of boost the right ceiling for this laptop?** Boost uses memory and CPU all night, so check that it leaves enough RAM and that heat and battery wear are acceptable for an unattended machine.\n\nOnce you confirm, I'd run:\n\n```sh\n# 1. Check the current budget and schedule before changing anything\ntentmaker budget --json\n\n# 2. Add the window (adjust --days if you chose sun-thu)\nsudo tentmaker schedule add --name weeknights --days mon-fri --from 22:00 --to 07:00 --profile boost --json\n\n# 3. Confirm the window is registered and the device is healthy\ntentmaker budget --json\ntentmaker doctor --json\n```\n\nI'd expect `budget` to show the window as active during its hours and the everyday profile otherwise. I haven't verified that `boost_needs_idle` doesn't block a window-driven boost. The README doesn't say either way. Overnight you'll be away from the machine, so the idle condition should be met after the idle timeout, but I'd check the budget output at night to see whether it reaches boost. If it doesn't, the idle requirement is the likely cause, and I'd ask you whether to relax it for this window."
+}

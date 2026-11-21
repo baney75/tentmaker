@@ -1,0 +1,10 @@
+{
+ "case": "dev-channel",
+ "responder": "sonnet",
+ "sample": 0,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "No questions needed. Switching channels isn't on the ask-first list, and `sudo -n true` already works, so root is available.\n\nCheck where it is now:\n\n```sh\ntentmaker version --json\n```\n\nSwitch to dev and update to the latest dev build:\n\n```sh\nsudo tentmaker update --channel dev --json\n```\n\nThis verifies the sha256, checks that the new binary runs, swaps it in, and restarts the service. It rolls back automatically if the service isn't healthy within 60 seconds. It also updates only between jobs, so a running job isn't cut off.\n\nThen verify:\n\n```sh\ntentmaker version --json\ntentmaker doctor --json\n```\n\nSuccess means the version looks like `0.1.1-dev.<timestamp>.<sha>` and `doctor` exits 0. If `doctor` reports a problem, I'll apply its `fix` and rerun it. If the dev build misbehaves, `sudo tentmaker rollback` goes back to the previous binary.\n\nI'm assuming `update --channel dev` persists the channel, so the auto-update (every 6 hours) keeps following dev. The README doesn't say so explicitly, and I'll check that `tentmaker version --json` or the config reports `dev` after the update. If it still shows `stable`, I'll tell you rather than guess at a config key.\n\nDev is a rolling prerelease rebuilt on every push to `main`, so it can change under you more often than stable."
+}

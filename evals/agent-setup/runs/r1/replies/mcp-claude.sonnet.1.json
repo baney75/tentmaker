@@ -1,0 +1,10 @@
+{
+ "case": "mcp-claude",
+ "responder": "sonnet",
+ "sample": 1,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "Nothing to ask first. Registering the server doesn't touch any device or token. Run:\n\n```sh\nclaude mcp add tentmaker -- tentmaker mcp\nclaude mcp list\n```\n\nThe second command checks that `tentmaker` shows up and connects. If it doesn't connect, run `tentmaker doctor --json`.\n\n- **Read tools:** `status`, `pool` and `doctor` work as your normal user.\n- **Tools that change the device:** these return an error unless the MCP server runs as root. Registered as above, Claude Code launches it as you, so for changes like `budget set`, `repo add` or `update` I'll use the CLI with `sudo` instead.\n- **Scope:** the default is just this project. If you want it available in every project, add `--scope user`:\n\n  ```sh\n  claude mcp add --scope user tentmaker -- tentmaker mcp\n  ```"
+}

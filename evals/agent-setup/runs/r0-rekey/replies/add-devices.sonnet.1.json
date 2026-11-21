@@ -1,0 +1,10 @@
+{
+ "case": "add-devices",
+ "responder": "sonnet",
+ "sample": 1,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "I haven't run anything yet. I need two answers from you first.\n\n**Questions**\n1. **Forge token:** should `desktop` and `homeserver` be workers only (they take jobs from this laptop and never hold a GitHub token), or also brokers (each holds a token for acme/webapp)? I'd default to workers only. A device becomes a broker if `gh` is signed in there when setup runs, so I need your explicit yes before letting that happen.\n2. **Budget:** are the defaults fine (everyday is a quarter of RAM, boost is half), or do you want specific limits, e.g. `--memory 4GiB --boost-memory 16GiB`? The homeserver may deserve a bigger slice than the desktop.\n\n**Read-only checks first** (I haven't verified Tailscale SSH or passwordless sudo on either machine):\n```sh\ntentmaker status --json\ntailscale status\ntailscale ssh desktop 'sudo -n true && echo sudo-ok'\ntailscale ssh homeserver 'sudo -n true && echo sudo-ok'\ntailscale ssh desktop 'gh auth status'\ntailscale ssh homeserver 'gh auth status'\n```\nIf the SSH or `sudo -n` check fails on a host, I'll stop and tell you what to allow in your Tailscale ACLs or sudoers. I can't type a password for you.\n\n**If you want workers only and `gh` is signed in on a host:** `devices add` has no flag to skip the token, so I'd install there directly instead:\n```sh\ntailscale ssh HOST 'curl -fsSL https://raw.githubusercontent.com/baney75/tentmaker/main/scripts/install.sh | sh -s -- --yes -- --json --no-gh'\n```\n\n**Otherwise (no `gh` on the host, or you've said yes to a broker):**\n```sh\ntentmaker devices add desktop --json\ntentmaker devices add homeserver --json\n# with custom budgets:\n# tentmaker devices add homeserver --memory 4GiB --boost-memory 16GiB --json\n```\n\n**Verify:**\n```sh\ntentmaker pool --json\ntentmaker doctor --json\n```\nBoth should list `desktop` and `homeserver` and `doctor` should exit 0. I'd then run `tentmaker doctor --json` on each new device over `tailscale ssh` too. If a problem survives two fixes, I'll stop and report."
+}

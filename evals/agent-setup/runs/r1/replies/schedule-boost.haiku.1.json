@@ -1,0 +1,9 @@
+{
+ "case": "schedule-boost",
+ "responder": "haiku",
+ "sample": 1,
+ "models": [
+  "claude-haiku-5-5"
+ ],
+ "text": "Yes. A schedule window with the boost profile ignores `boost_needs_idle`, so it doesn't wait for you to be away. Weekday nights are the only time boost would apply, and the laptop is on AC power at its desk, so the rule that boost needs AC is met.\n\nBefore I run anything, I'd ask you:\n\n1. **Hours.** I've assumed 22:00 to 07:00. Is that right?\n2. **Sleep.** If the laptop suspends overnight (lid closed, or an idle-sleep setting), no jobs run at all. Should I check the power settings, or will you keep it awake?\n\nOnce you confirm, I'd run:\n\n```sh\nsudo tentmaker schedule add --name nights --days mon-fri --from 22:00 --to 07:00 --profile boost --json\ntentmaker budget --json\n```\n\nThe first command adds the window. The second checks that the window is active and shows the profile it selects. The `to` time is earlier than `from`, so the window crosses midnight. Outside the window the device stays on the everyday budget of 4 GiB, and weekends are unchanged.\n\nIf the second command doesn't show boost during the window, I'd run `tentmaker doctor --json` next."
+}

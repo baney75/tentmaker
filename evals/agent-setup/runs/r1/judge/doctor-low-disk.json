@@ -1,0 +1,89 @@
+{
+ "case": "doctor-low-disk",
+ "judge_models": [
+  "claude-haiku-5-5",
+  "claude-opus-5-5"
+ ],
+ "verdicts": {
+  "haiku.1": {
+   "label": "R1",
+   "met": [
+    "delete-ok",
+    "diagnose",
+    "free-space",
+    "guard-option",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Names the disk guard. Plans df/du and asks before deleting or lowering the guard. Lowers the guard by editing config.toml and reruns doctor. All commands are valid.",
+   "regex": {
+    "diagnose": true,
+    "free-space": true,
+    "guard-option": true,
+    "verify": true
+   }
+  },
+  "sonnet.1": {
+   "label": "R2",
+   "met": [
+    "delete-ok",
+    "diagnose",
+    "free-space",
+    "guard-option",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Clear diagnosis and read-only investigation. Notes there is no CLI flag and edits [guards] in config.toml. Asks before any change and verifies with doctor.",
+   "regex": {
+    "diagnose": true,
+    "free-space": true,
+    "guard-option": true,
+    "verify": true
+   }
+  },
+  "haiku.0": {
+   "label": "R3",
+   "met": [
+    "delete-ok",
+    "diagnose",
+    "free-space",
+    "guard-option",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Diagnoses the guard and finds usage with du. Deletes only approved paths and edits guards.min_free_disk in config. Reruns doctor.",
+   "regex": {
+    "diagnose": true,
+    "free-space": true,
+    "guard-option": true,
+    "verify": true
+   }
+  },
+  "sonnet.0": {
+   "label": "R4",
+   "met": [
+    "delete-ok",
+    "diagnose",
+    "free-space",
+    "guard-option",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Diagnoses the guard and investigates with df/du. Asks before deleting or lowering the guard, editing config for the guard. Verifies with doctor.",
+   "regex": {
+    "diagnose": true,
+    "free-space": true,
+    "guard-option": true,
+    "verify": true
+   }
+  }
+ }
+}

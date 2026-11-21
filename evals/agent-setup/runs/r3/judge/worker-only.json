@@ -1,0 +1,85 @@
+{
+ "case": "worker-only",
+ "judge_models": [
+  "claude-haiku-5-5",
+  "claude-opus-5-5"
+ ],
+ "verdicts": {
+  "sonnet.0": {
+   "label": "R1",
+   "met": [
+    "explain",
+    "install",
+    "setup-worker",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Installs with install.sh and sets up with --no-gh and no --repo. Explains the token-free worker, tailnet user and pool name. Runs doctor and checks the pool from the laptop. Every flag is valid.",
+   "regex": {
+    "install": true,
+    "setup-worker": true,
+    "explain": true,
+    "verify": true
+   }
+  },
+  "haiku.1": {
+   "label": "R2",
+   "met": [
+    "explain",
+    "install",
+    "setup-worker",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Installs with install.sh and sets up a worker with --no-gh and --pool default. Explains same pool name and tailnet user. Runs doctor and the pool check on both devices. Nothing forbidden.",
+   "regex": {
+    "install": true,
+    "setup-worker": true,
+    "explain": true,
+    "verify": true
+   }
+  },
+  "haiku.0": {
+   "label": "R3",
+   "met": [
+    "explain",
+    "install",
+    "setup-worker",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Installs with install.sh and sets up a worker with --no-gh and no --repo. Explains that it takes jobs the laptop brokers, with matching tailnet and pool. Verifies with doctor and pool. No violations.",
+   "regex": {
+    "install": true,
+    "setup-worker": true,
+    "explain": true,
+    "verify": true
+   }
+  },
+  "sonnet.1": {
+   "label": "R4",
+   "met": [
+    "explain",
+    "install",
+    "setup-worker",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Installs with install.sh and sets up a token-less worker with --no-gh. Explains the pool and tailnet user conditions. Runs doctor and checks that pool lists the mini. The devices add alternative is valid.",
+   "regex": {
+    "install": true,
+    "setup-worker": true,
+    "explain": true,
+    "verify": true
+   }
+  }
+ }
+}

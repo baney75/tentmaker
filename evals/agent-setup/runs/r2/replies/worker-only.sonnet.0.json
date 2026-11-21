@@ -1,0 +1,10 @@
+{
+ "case": "worker-only",
+ "responder": "sonnet",
+ "sample": 0,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "Nothing here needs your approval first. It spends no money, touches no public repo, and the Mac mini gets no forge token. I'd run the commands below, and the only things I'd confirm are the two optional ones at the end.\n\n**1. Check what's there**\n```sh\ntentmaker version --json; tentmaker status --json\n```\nI expect \"not installed\" here.\n\n**2. Install the binary without running setup**\n```sh\ncurl -fsSL https://raw.githubusercontent.com/baney75/tentmaker/main/scripts/install.sh | sh -s -- --no-setup\n```\nThen `tentmaker version --json` should exit 0. If the installer prints a full path, I'd use that path for the later commands, including after `sudo`.\n\n**3. Set it up as a worker**\n```sh\nsudo tentmaker setup --yes --json --no-gh\n```\n- `--no-gh` is the important flag. Because `gh` is signed in on this Mac, setup would otherwise run `gh auth token` and store your GitHub token on it.\n- I would not pass `--repo`, `connect` or `--token-stdin`. Without a repo or a token, the device becomes a worker that takes jobs from your laptop.\n- Mesh stays on, since that is how the laptop finds it.\n\n**4. Verify**\n```sh\ntentmaker doctor --json\n```\nI'd fix whatever it reports and re-run it until it exits 0.\n\n**5. Confirm the laptop sees it**\n```sh\ntentmaker pool --json\n```\nRun this on the laptop. The Mac mini should be listed with its budget and free slots.\n\n**Optional, tell me if you want either:**\n- **Pool name:** if the laptop's pool name isn't `default`, I'll add `--pool NAME` to the setup command. Pools match on the same tailnet user and the same pool name.\n- **Memory budget:** the defaults are a quarter of RAM everyday and half on AC power. If you want different limits, I'll add `--memory 4GiB --boost-memory 12GiB` (or your numbers).\n\nA Mac mini is always on AC power, so it will run at the boost budget whenever the idle rule allows. By default boost waits until the machine has been idle for a while. Say so if you'd rather cap it lower."
+}

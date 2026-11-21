@@ -1,0 +1,9 @@
+{
+ "case": "dev-channel",
+ "responder": "haiku",
+ "sample": 1,
+ "models": [
+  "claude-haiku-5-5"
+ ],
+ "text": "The machine details conflict. You said Linux desktop, but the environment reports Darwin 27.2.0 (macOS) with zsh. The commands differ by OS, so please confirm which one this is before I run anything.\n\n**Questions before I run anything:**\n\n1. **Which OS is this?** Linux or macOS? The commands below work on both, but the `sudo` and paths differ.\n2. **Do you want the dev channel?** Dev builds are rebuilt on every push to `main` and are not release-tested. Rollback is available if an update misbehaves.\n\n**Commands I'd run once you confirm:**\n\n```sh\n# 1. Confirm the current state\ntentmaker version --json\ntentmaker status --json\n\n# 2. Save dev as the channel. This keeps every other setting.\nsudo tentmaker setup --yes --json --channel dev\n\n# 3. Install the latest dev build now\nsudo tentmaker update --json\n\n# 4. Verify\ntentmaker version --json\ntentmaker doctor --json\n```\n\nStep 2 saves the channel for future auto-updates. Step 3 installs one dev build now. If step 3 fails or the service is unhealthy, `sudo tentmaker rollback` restores the stable build."
+}

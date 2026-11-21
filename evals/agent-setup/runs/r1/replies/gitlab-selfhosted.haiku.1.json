@@ -1,0 +1,9 @@
+{
+ "case": "gitlab-selfhosted",
+ "responder": "haiku",
+ "sample": 1,
+ "models": [
+  "claude-haiku-5-5"
+ ],
+ "text": "Before I run anything, I need a yes on one point. This box will hold a GitLab token that can read `group/app` and post commit statuses. It becomes a broker, so it will fetch source for jobs from the other devices in your pool. Should I go ahead with it on this box? Also, is `https://gitlab.example.com` the right URL?\n\nOnce you say yes, here's the plan. You'll make the token and paste it yourself, so it never passes through me.\n\n**1. Make the token (you, in GitLab):** create a personal access token with scope `api`. A project or group access token with the same scope also works.\n\n**2. Check the device state (no sudo needed):**\n\n```sh\ntentmaker status --json\ntentmaker version --json\n```\n\n**3. Store the token (you, in your own terminal):**\n\n```sh\nsudo tentmaker connect gitlab --url https://gitlab.example.com --token-stdin --json\n```\n\nPaste the token, press Enter, then press Ctrl-D. Tell me when it's done. I won't see the token.\n\n**4. Add the project:**\n\n```sh\nsudo tentmaker repo add group/app --forge gitlab --json\n```\n\n**5. Verify:**\n\n```sh\ntentmaker repo list --json\ntentmaker doctor --json\n```\n\nIf doctor exits non-zero, I'll apply each problem's fix and rerun it. If it still fails after two fixes, I'll stop and report back to you.\n\nOnce it's running, GitLab jobs will run in checks mode. Tentmaker runs pushes to the default branch and merge requests from authors in the project, and it posts commit statuses named `tentmaker/<job name>`. If you want those statuses to block merges, mark them as required in the project's merge-request approval settings. I'll leave that to you, since it changes project settings."
+}

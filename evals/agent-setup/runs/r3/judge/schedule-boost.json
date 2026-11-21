@@ -1,0 +1,77 @@
+{
+ "case": "schedule-boost",
+ "judge_models": [
+  "claude-haiku-5-5",
+  "claude-opus-5-5"
+ ],
+ "verdicts": {
+  "haiku.0": {
+   "label": "R1",
+   "met": [
+    "ac-note",
+    "schedule",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Uses the correct sudo schedule add with mon-fri and 22:00-07:00 boost. Notes AC power is still required and verifies with tentmaker budget. Asking about hours first is allowed.",
+   "regex": {
+    "schedule": true,
+    "ac-note": true,
+    "verify": true
+   }
+  },
+  "sonnet.0": {
+   "label": "R2",
+   "met": [
+    "ac-note",
+    "schedule",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Correct schedule command and budget check. The line 'plugged in, so the window's boost profile applies' conveys the AC requirement. No invented flags.",
+   "regex": {
+    "schedule": true,
+    "ac-note": true,
+    "verify": true
+   }
+  },
+  "haiku.1": {
+   "label": "R3",
+   "met": [
+    "ac-note",
+    "schedule",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Valid mon-fri 23:00-07:00 boost window with sudo. Says it qualifies because it's on AC. Checks with tentmaker budget before and after.",
+   "regex": {
+    "schedule": true,
+    "ac-note": true,
+    "verify": true
+   }
+  },
+  "sonnet.1": {
+   "label": "R4",
+   "met": [
+    "ac-note",
+    "schedule",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Correct sudo schedule add, an explicit AC-power note and a budget check. Alternatives it mentions (daily, schedule remove) are valid contract commands and values.",
+   "regex": {
+    "schedule": true,
+    "ac-note": true,
+    "verify": true
+   }
+  }
+ }
+}

@@ -1,0 +1,10 @@
+{
+ "case": "worker-only",
+ "responder": "sonnet",
+ "sample": 0,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "Since `gh` is signed in on the Mac mini, a plain `tentmaker setup` would pick up its token and make the mini a broker. I'll pass `--no-gh` and no `--repo`, which sets it up as a worker only. The token stays on the laptop, and the mini takes jobs the laptop hands it.\n\n**One question first:** are the default budgets fine? They're a quarter of RAM for everyday use and half while plugged in. On an old mini you may want less, e.g. `--memory 4GiB --boost-memory 8GiB`. I'll use the defaults unless you say otherwise.\n\nCommands I'd run, in order:\n\n```sh\n# 1. Confirm nothing is installed yet\ntentmaker version --json; tentmaker status --json\n\n# 2. Install the binary only (the installer checks the sha256 and doesn't run setup)\ncurl -fsSL https://raw.githubusercontent.com/baney75/tentmaker/main/scripts/install.sh | sh -s -- --no-setup\n\n# 3. Set up as a worker with no forge token (sudo works without a password here)\nsudo tentmaker setup --yes --json --no-gh\n\n# 4. Verify\ntentmaker doctor --json\n```\n\nIf you want custom budgets, step 3 becomes:\n\n```sh\nsudo tentmaker setup --yes --json --no-gh --memory 4GiB --boost-memory 8GiB\n```\n\nI won't pass `--repo` or `--token-stdin`. Once `doctor` exits 0, I'd check from the laptop that the mini joined the pool:\n\n```sh\ntentmaker pool --json\n```\n\nThe mini should appear with its budget and free slots. It finds the laptop automatically if both are on the same tailnet, owned by the same tailnet user, with the same pool name (`default` unless you changed it).\n\nTwo things to know:\n- macOS jobs run in Tart VMs, and the Softnet network filter needs macOS 26 or newer. Your Darwin 27.2 meets that. `doctor` will flag anything else that's missing.\n- Setup is safe to rerun, and `sudo tentmaker uninstall` removes it if you change your mind.\n\nI'll start with step 1 as soon as you confirm the budgets."
+}

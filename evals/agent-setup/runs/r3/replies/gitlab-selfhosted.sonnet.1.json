@@ -1,0 +1,10 @@
+{
+ "case": "gitlab-selfhosted",
+ "responder": "sonnet",
+ "sample": 1,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "I haven't run anything yet. This box is currently a worker with no token, and connecting GitLab makes it a broker that holds a forge token, so I need your OK first.\n\n**Questions**\n1. Is it OK to store a GitLab token on this box and make it a broker for `group/app`?\n2. Is `group/app` private or internal? If it's public, I'd need your explicit yes to use `--allow-public`. Fork jobs never run, but code merged from outside contributors would run on this machine.\n3. Can you create the token? It needs to be a personal access token on gitlab.example.com (User settings > Access tokens) with scope `api`. I never see it. You paste it into the command below.\n\n**Commands, once you say yes**\n\nFirst, a read-only check:\n```sh\ntentmaker status --json\n```\n\nThen store the token. You run this one in your own terminal and paste the token, press Enter, then Ctrl-D:\n```sh\nsudo tentmaker connect gitlab --url https://gitlab.example.com --token-stdin --yes --json\n```\n\nThen I add the project. GitLab runs in checks mode, so no workflow edits are needed:\n```sh\nsudo tentmaker repo add group/app --forge gitlab --json\n```\n\nThen verify:\n```sh\ntentmaker repo list --json\ntentmaker doctor --json\n```\n\nIf `doctor` reports problems, I'll apply each fix it gives and rerun. I won't call this done until `doctor` exits 0.\n\n**What to expect**\n- Tentmaker runs pushes to the default branch and same-repo merge requests from the authors you list, which defaults to the project owner. It never runs forks.\n- Results show up as commit statuses named `tentmaker/<job name>`. Mark them required in branch protection if you want them to gate merges.\n- Jobs using unsupported features, such as other `uses:`, services, containers or multi-combination matrices, are skipped and get no status."
+}

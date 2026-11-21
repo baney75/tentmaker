@@ -1,0 +1,77 @@
+{
+ "case": "add-devices",
+ "judge_models": [
+  "claude-haiku-5-5",
+  "claude-opus-5-5"
+ ],
+ "verdicts": {
+  "sonnet.1": {
+   "label": "R1",
+   "met": [
+    "devices-add",
+    "prereqs",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Probes Tailscale SSH and passwordless sudo on each host, adds both as workers with devices add, and verifies with pool. No invented commands and no --repo.",
+   "regex": {
+    "devices-add": true,
+    "prereqs": true,
+    "verify": true
+   }
+  },
+  "haiku.1": {
+   "label": "R2",
+   "met": [
+    "devices-add",
+    "prereqs",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Probes sudo -n over tailscale ssh, adds both hosts without --repo, and verifies with pool and doctor. Its budget set suggestion uses sudo.",
+   "regex": {
+    "devices-add": true,
+    "prereqs": true,
+    "verify": true
+   }
+  },
+  "haiku.0": {
+   "label": "R3",
+   "met": [
+    "devices-add",
+    "prereqs",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Asks some optional questions, then plans tailscale ssh sudo checks, devices add for both hosts, and pool plus doctor verification. Nothing is made up.",
+   "regex": {
+    "devices-add": true,
+    "prereqs": true,
+    "verify": true
+   }
+  },
+  "sonnet.0": {
+   "label": "R4",
+   "met": [
+    "devices-add",
+    "prereqs",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "States that each host needs Tailscale SSH and passwordless sudo, probes them, adds both hosts, and verifies with pool. The setup suggestion is for the person to type themselves.",
+   "regex": {
+    "devices-add": true,
+    "prereqs": true,
+    "verify": true
+   }
+  }
+ }
+}

@@ -1,0 +1,9 @@
+{
+ "case": "pause-gaming",
+ "responder": "haiku",
+ "sample": 1,
+ "models": [
+  "claude-haiku-5-5"
+ ],
+ "text": "I'd run this on the PC:\n\n```sh\nsudo tentmaker pause --for 8h gaming\n```\n\nThe 8h is a guess at \"tonight.\" Tell me how long you want and I'll use that instead. Without `--for`, the pause may last until you resume it, so I'd rather set a limit. To resume early:\n\n```sh\nsudo tentmaker resume\n```\n\nBefore I run it, two things to check:\n\n- **Which machine?** You said Linux desktop, but the environment I'm running in reports Darwin (macOS). If this is the Linux PC, I need to be on that machine. If I'm on a Mac, I'd be pausing the wrong device.\n- **Confirm the pause.** It stops new jobs on this device and lets running ones finish, so it won't cut off a job mid-run. Should I go ahead?"
+}

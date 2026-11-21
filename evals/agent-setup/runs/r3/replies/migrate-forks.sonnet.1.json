@@ -1,0 +1,10 @@
+{
+ "case": "migrate-forks",
+ "responder": "sonnet",
+ "sample": 1,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "I'd start with a read-only report, which writes nothing. I'd run it from the checkout, since the shell here is not in `~/src/webapp`:\n\n```sh\ncd ~/src/webapp\ntentmaker migrate . --json\n```\n\nIf any jobs use macOS runners, I'd also run:\n\n```sh\ntentmaker migrate . --platform macos --json\n```\n\nI'd show you the report before changing anything. It lists which jobs would move to `runs-on: [self-hosted, tentmaker, <os>]`. It also lists the jobs it leaves alone and why: deploy, publish, release or sign jobs, jobs that use an environment, write permissions or secrets, Linux jobs that use `sudo`, and unsupported runner images.\n\n**What I'd ask you before the next step:**\n\n1. Do you approve rewriting the files under `.github/workflows` in `acme/webapp`? Only after a yes would I run:\n   ```sh\n   tentmaker migrate . --write --json\n   git diff\n   ```\n2. Do you want the changes committed on a new branch (say `tentmaker-migrate`)? I wouldn't push or open a PR unless you say so.\n3. Is `acme/webapp` public? If it is, running jobs on your machines carries extra risk. Merged outside code, and workflows outsiders can trigger such as issue comments, would run on your hardware. The `--allow-public` approval is a separate step I'd ask about first.\n\n**How fork PRs stay on GitHub-hosted runners:** `--write` rewrites the migrated jobs to this form, which sends fork PRs to `ubuntu-latest`:\n\n```yaml\nruns-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('[\"self-hosted\",\"tentmaker\",\"linux\"]') }}\n```\n\nThat routing isn't the security boundary, because a fork PR can edit its own workflow. The real protection is that Tentmaker refuses to run any job from a fork, whatever the workflow says. Migrated workflows also get a concurrency block that cancels a pull request's older run."
+}

@@ -1,0 +1,10 @@
+{
+ "case": "mcp-claude",
+ "responder": "sonnet",
+ "sample": 0,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "I'd run these in order. Nothing needs to be asked first, apart from the scope choice below.\n\n```sh\n# 1. Confirm the binary works\ntentmaker version --json\n\n# 2. Register the MCP server\nclaude mcp add tentmaker -- tentmaker mcp\n\n# 3. Confirm it registered and connects\nclaude mcp list\n```\n\nBy default, `claude mcp add` registers the server for this project only (local scope). This directory isn't a git repo, so you probably want it available everywhere. In that case, use this for step 2 instead:\n\n```sh\nclaude mcp add --scope user tentmaker -- tentmaker mcp\n```\n\n**Which scope do you want: local to this directory, or user-wide?** I'd default to user-wide.\n\nOnce registered, the read tools (`status`, `pool`, `doctor`) work as your normal user. The tools that change the device (budget, repos, and so on) return an error unless the MCP server runs as root. I wouldn't launch Claude Code as root just for that. For changes, I'd use the CLI with sudo, e.g. `sudo tentmaker budget set ...`."
+}

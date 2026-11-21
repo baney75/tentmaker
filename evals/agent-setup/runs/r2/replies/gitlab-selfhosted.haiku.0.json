@@ -1,0 +1,9 @@
+{
+ "case": "gitlab-selfhosted",
+ "responder": "haiku",
+ "sample": 0,
+ "models": [
+  "claude-haiku-5-5"
+ ],
+ "text": "Before I run anything, I need three answers:\n\n1. **Which machine is this?** You described a Linux server, but the environment reports macOS (darwin). The commands below assume Linux. Tell me if that's wrong.\n2. **Do you approve this device holding a GitLab token?** Adding a token makes it a broker: it will hand jobs from `group/app` to other devices in your pool. Other devices never see the token.\n3. **Can you make the token?** On gitlab.example.com, create a personal access token with scope `api`. I won't read it or see it in chat. You'll paste it into your own terminal in step 2 below.\n\nOnce you say yes, I'll run these.\n\n**1. Confirm the current state** (no changes):\n```sh\ntentmaker version --json\ntentmaker status --json\ntentmaker repo list --json\nsudo -n true && echo root-ok\n```\n\n**2. Store the token** (you run this in your own terminal, because it reads the token from stdin):\n```sh\nsudo tentmaker connect gitlab --url https://gitlab.example.com --token-stdin --yes --json\n```\nPaste the token, press Enter, then Ctrl-D.\n\n**3. Add the project** (I'll run this):\n```sh\nsudo tentmaker repo add group/app --forge gitlab --json\n```\nGitLab repos run in checks mode in v0.1, so no runner registration and no workflow edits are needed.\n\n**4. Verify:**\n```sh\ntentmaker doctor --json\ntentmaker repo list --json\n```\nRun doctor until it exits 0. If it reports a problem, I'll apply its `fix` and rerun it. If the same problem survives two fixes, I'll stop and report it to you.\n\n**Optional, after the first green run:** Tentmaker posts commit statuses named `tentmaker/<job name>`. If you want them to block merges, mark them as required in the project's merge settings. I can tell you which names to require once a job has reported."
+}

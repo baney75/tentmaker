@@ -1,0 +1,9 @@
+{
+ "case": "dev-channel",
+ "responder": "haiku",
+ "sample": 1,
+ "models": [
+  "claude-haiku-5-5"
+ ],
+ "text": "I can't run these yet. The machine details don't match: you said Linux desktop, but the environment reports Darwin 27.2 (macOS). The `tentmaker` commands are the same on both, but the service and paths differ, so I'd like you to confirm which machine this is first.\n\n**Questions before I run anything:**\n1. Is this the Linux desktop or the Mac? If it's the Mac, I'll check that Tentmaker is installed and running there, since the status below is from the Linux desktop.\n2. Are you OK with moving this device to the dev channel? Dev builds are rebuilt on every push to `main`, so they're less tested than stable. Auto-updates would then follow dev.\n\n**Commands I'd run, once you confirm:**\n\n```sh\n# 1. Confirm the current state and channel\ntentmaker version --json\ntentmaker status --json\n\n# 2. Save dev as the channel. This keeps every other setting unchanged.\nsudo tentmaker setup --yes --json --channel dev\n\n# 3. Install the latest dev build now\nsudo tentmaker update --json\n\n# 4. Verify the device is healthy and on dev\ntentmaker version --json\ntentmaker doctor --json\n```\n\nIf `doctor` reports a problem, I'll apply its suggested fix and rerun it. If it still fails after two fixes, I'll stop and report. To return to stable, run `sudo tentmaker setup --yes --json --channel stable` and then `sudo tentmaker update --json`. `sudo tentmaker rollback` undoes only the most recent update."
+}

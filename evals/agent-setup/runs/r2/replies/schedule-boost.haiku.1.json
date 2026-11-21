@@ -1,0 +1,9 @@
+{
+ "case": "schedule-boost",
+ "responder": "haiku",
+ "sample": 1,
+ "models": [
+  "claude-haiku-5-5"
+ ],
+ "text": "Yes. A schedule window can set the boost profile for a set time, and it doesn't wait for `boost_needs_idle`. Your laptop is plugged in at its desk, so the window's AC requirement is met. Your everyday budget stays at 4 GiB the rest of the time.\n\nI'd run this, but I haven't changed anything yet:\n\n```sh\nsudo tentmaker schedule add --name nights --days mon-fri --from 22:00 --to 07:00 --profile boost --json\ntentmaker budget --json\n```\n\nThe first command adds the window. The second confirms it's saved and shows the profile that applies right now.\n\nBefore I run it, I'd like you to confirm:\n\n1. **Times.** I assumed 22:00 to 07:00. Tell me your actual overnight hours if they differ.\n2. **Days.** I'm reading `mon-fri` as the window starting on Monday through Friday evenings, so Friday night runs until Saturday 07:00. If you'd rather it stop at Friday midnight, I'd use a different window. I'd check the saved schedule before you rely on it.\n3. **Sleep.** If the laptop suspends overnight, jobs stop, and boost won't help. Is it set to stay awake while plugged in?\n4. **Heat and noise.** Boost uses 12 GiB and half the CPUs, so the fans will run harder overnight. Is that okay at your desk?\n\nTwo things stay in force during the window: guards still pause CI for low disk, low free memory or a process you listed, and a pause command still stops it. Once the window is in place, `tentmaker budget --json` should show boost during the window and everyday outside it."
+}

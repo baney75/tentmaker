@@ -1,0 +1,10 @@
+{
+ "case": "laptop-plugged-in",
+ "responder": "sonnet",
+ "sample": 0,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "Before I run anything that gives this laptop a GitHub token, I need one yes from you.\n\n**Question:** Setup will run `gh auth token` as acme-dev and store that token in this Mac's secret store. That makes this laptop a \"broker\" for acme/webapp (private, so no public-repo concerns). It needs admin rights on the repo to register runners. Is that OK?\n\n**Memory:** You have 32 GB, so the defaults would be 8 GiB everyday and 16 GiB boost. Since you don't want it hogging memory, I'd use **4 GiB everyday** and **12 GiB when plugged in**. On battery it stays at the 4 GiB everyday budget and stops taking jobs below 40% charge. Tell me if you'd rather it stop entirely on battery (`--on-battery off`) or want different numbers.\n\n**What I'd run now** (read-only check, then install the binary only, no setup):\n\n```sh\ntentmaker version --json; tentmaker status --json\ncurl -fsSL https://raw.githubusercontent.com/baney75/tentmaker/main/scripts/install.sh | sh -s -- --no-setup\ntentmaker version --json\n```\n\n**After your yes** (`sudo -n` works, so no password prompt):\n\n```sh\nsudo tentmaker setup --yes --json --repo acme/webapp --memory 4GiB --boost-memory 12GiB\ntentmaker doctor --json\n```\n\nI'd fix anything doctor reports and rerun it until it exits 0. I won't call setup done before that.\n\n**Workflows:** I won't edit anything without asking. Once you have a checkout of acme/webapp, I can run `tentmaker migrate PATH --json` to show what it would change in `.github/workflows`, such as `runs-on: [self-hosted, tentmaker, macOS]`. I'd only run `--write` and commit on a branch if you say yes after seeing that report. Migrated jobs send fork PRs to GitHub-hosted runners, and Tentmaker refuses fork jobs regardless."
+}

@@ -1,0 +1,10 @@
+{
+ "case": "uninstall",
+ "responder": "sonnet",
+ "sample": 1,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "Before I run anything, I need a yes on two things.\n\n**Questions**\n1. **Purge.** `uninstall --purge` deletes the config, the forge token for acme/webapp in the secret store, and all state and cache. You said \"completely\", so I'm assuming yes. Please confirm, since it can't be undone.\n2. **Workflows.** This laptop is the only device serving acme/webapp, and its workflows use `runs-on: [self-hosted, tentmaker, ...]`. After removal, those jobs will queue forever with no runner. Do you want me to leave the workflows as they are, or point them back at hosted runners? I'd do the second one by hand-editing `.github/workflows` on a branch, since `migrate` has no revert, and I wouldn't commit or push without your yes.\n\nI'd also leave Tart and Tailscale installed, since they may be used for other things. Tell me if you want those removed too.\n\n**Commands once you confirm**\n\n```sh\n# 1. Confirm current state and that nothing is mid-job\ntentmaker status --json\n\n# 2. Remove the service and sandboxes, and delete config, secrets, state and cache\nsudo tentmaker uninstall --purge --yes --json\n\n# 3. The uninstaller leaves the binary, so delete it\nsudo rm /usr/local/bin/tentmaker\n\n# 4. Verify nothing is left\ncommand -v tentmaker                                        # expect no output\nls /Library/LaunchDaemons/dev.tentmaker.daemon.plist        # expect \"No such file\"\nls \"/Library/Application Support/Tentmaker\" /Library/Logs/Tentmaker   # expect \"No such file\"\nlaunchctl list | grep -i tentmaker                          # expect no output\ntart list 2>/dev/null | grep -i tentmaker                   # expect no leftover VMs\n```\n\nIf step 2 exits non-zero, I'll read the `fix` field in its JSON error and apply it. I won't delete files by hand until I know why it failed. Runners on GitHub are single-use and already retired after each job, so there should be nothing to clean up on the GitHub side."
+}

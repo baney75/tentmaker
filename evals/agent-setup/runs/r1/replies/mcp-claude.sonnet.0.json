@@ -1,0 +1,10 @@
+{
+ "case": "mcp-claude",
+ "responder": "sonnet",
+ "sample": 0,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "Nothing to ask first. This only registers a local MCP server and doesn't touch a forge token or any repo.\n\n```sh\nclaude mcp add tentmaker -- tentmaker mcp\nclaude mcp list\n```\n\nThe first command registers the server. The second should show `tentmaker` in the list. If it reports a failed connection, run `tentmaker version --json` to confirm the binary works.\n\nBy default this registers the server for you in the current project only. To make it available in every project, add `--scope user`:\n\n```sh\nclaude mcp add --scope user tentmaker -- tentmaker mcp\n```\n\nWhen the server runs as your normal user, only the read tools (`status`, `pool`, `doctor`) work. Tools that change the device return an error saying they need root. If you want those tools through MCP, you'd have to register the server to run under sudo, which needs passwordless sudo. I'd leave it as is and use the CLI with `sudo` for changes."
+}

@@ -1,0 +1,10 @@
+{
+ "case": "pause-gaming",
+ "responder": "sonnet",
+ "sample": 0,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "I'd ask one thing first: how long will you be gaming? I'll assume about 6 hours so it resumes on its own if you forget. Tell me a different length and I'll change it.\n\nCommands I'd run:\n\n```sh\nsudo tentmaker pause --for 6h --json gaming\ntentmaker budget --json\n```\n\nThe second command confirms the device shows as paused. Jobs already running should finish while it drains, since pausing stops new jobs from being taken. I haven't confirmed that in the CLI contract, so I'd check the output rather than assume it.\n\nTo resume early:\n\n```sh\nsudo tentmaker resume\n```\n\n`sudo -n true` already works here, so nothing needs a password prompt.\n\nIf you want this to happen automatically on future nights, Tentmaker has a guard that pauses CI whenever a process you list (a game, a video call) is running. The exact config key is in docs/config.md, and I'd look it up before changing anything."
+}

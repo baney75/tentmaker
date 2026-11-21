@@ -1,0 +1,10 @@
+{
+ "case": "pause-gaming",
+ "responder": "sonnet",
+ "sample": 1,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "I'd run this, no questions needed since pausing is reversible:\n\n```sh\nsudo tentmaker pause --for 4h --json gaming\ntentmaker budget --json\n```\n\nThe second command confirms the device now shows as paused. I picked 4h because you didn't give a length. If you'll play longer, rerun the first command with a bigger value, such as `--for 8h`.\n\nRunning jobs finish, and no new ones start. If you'd rather free the machine right away, tell me and I'll look at stopping them, which the pause alone doesn't do.\n\nWhen you're done, end the pause early with:\n\n```sh\nsudo tentmaker resume\n```\n\nTo skip this next time, you could list your game as a guard process in the `[guards]` section of the config. Then CI pauses on its own while the game runs. That edit needs a service restart, so I'd only do it if you ask."
+}

@@ -1,0 +1,10 @@
+{
+ "case": "mcp-claude",
+ "responder": "sonnet",
+ "sample": 1,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "No need to ask anything first. Registering the server is harmless and doesn't touch a forge token, a repo or a device.\n\n```sh\nclaude mcp add tentmaker -- tentmaker mcp\n```\n\nThen confirm it registered:\n\n```sh\nclaude mcp list\n```\n\nBy default this registers the server for the current project only (local scope). The current directory is a temp folder, so you probably want it available everywhere:\n\n```sh\nclaude mcp add --scope user tentmaker -- tentmaker mcp\n```\n\nTell me which scope you want. If you've already run the first command and want it at user scope, `claude mcp remove tentmaker` first, then run the `--scope user` version.\n\nThe read tools (`status`, `pool`, `doctor`) work as your normal user. The tools that change the device (budget, repo and update changes, and so on) return an error unless the MCP server runs as root. Claude Code launches it as you, so for those changes I'll use the CLI with `sudo` instead."
+}

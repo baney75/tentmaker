@@ -1,0 +1,10 @@
+{
+ "case": "worker-only",
+ "responder": "sonnet",
+ "sample": 0,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "Nothing here needs your approval first. There's no token, public repo or spending involved. Because `gh` is signed in on the Mac mini, a plain `tentmaker setup` would pick up its token, so I'll set it up with `--no-gh` and no `--repo`. That makes it a worker that takes jobs from your laptop and never holds a forge token.\n\nOne question: is the laptop using the default pool name? Workers only join a broker with the same tailnet user and pool name. I'll assume `default` unless you say otherwise. If you changed it, tell me and I'll add `--pool NAME`.\n\nCommands, in order:\n\n```sh\n# 1. See what's there (expect: not installed)\ntentmaker version --json; tentmaker status --json\n\n# 2. Install the binary only (the installer checks the sha256 against SHA256SUMS)\ncurl -fsSL https://raw.githubusercontent.com/baney75/tentmaker/main/scripts/install.sh | sh -s -- --no-setup\n\n# 3. Set up as a token-free worker\nsudo tentmaker setup --yes --json --no-gh\n\n# 4. Verify (must exit 0 before I call it done)\ntentmaker doctor --json\n```\n\nAfter that, I'd check from the laptop that the Mac mini joined the pool:\n\n```sh\ntentmaker pool --json\n```\n\n- **Tokens:** `setup` runs without `--repo` and with `--no-gh`, so it never calls `gh auth token`. The token stays only on the laptop, and jobs on the mini never see it.\n- **Budget:** I'm using the default budgets (a quarter of RAM everyday, half when plugged in). A Mac mini has no battery, so it will always use the boost profile. If you want a lower cap, I can add `--memory 4GiB --boost-memory 8GiB` to the setup command.\n- **Jobs:** macOS jobs run in a fresh Tart VM per job. Workflows target it with `runs-on: [self-hosted, tentmaker, macOS]`.\n- **Prerequisite:** the Softnet network filter needs macOS 26 or newer. Your Darwin 27.2 should be fine, and `doctor` will confirm.\n\nIf `doctor` reports a problem, I'll apply its fix and rerun it. If the same problem survives two fixes, I'll stop and report it to you."
+}

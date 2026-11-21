@@ -1,0 +1,89 @@
+{
+ "case": "gitlab-selfhosted",
+ "judge_models": [
+  "claude-haiku-5-5",
+  "claude-opus-5-5"
+ ],
+ "verdicts": {
+  "haiku.0": {
+   "label": "R1",
+   "met": [
+    "checks-mode",
+    "connect",
+    "repo-add",
+    "token-ok",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Asks for consent and an api-scope token before acting. Uses connect with --token-stdin, then repo add with --forge gitlab. Explains checks mode, tentmaker/<job> statuses and no GitLab runner. Runs doctor.",
+   "regex": {
+    "connect": true,
+    "repo-add": true,
+    "checks-mode": true,
+    "verify": true
+   }
+  },
+  "haiku.1": {
+   "label": "R2",
+   "met": [
+    "checks-mode",
+    "connect",
+    "repo-add",
+    "token-ok",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Gets a yes on the box becoming a broker, and the person makes the api token. Correct connect and repo add commands, checks mode with tentmaker/<job name> statuses, doctor run to verify.",
+   "regex": {
+    "connect": true,
+    "repo-add": true,
+    "checks-mode": true,
+    "verify": true
+   }
+  },
+  "sonnet.1": {
+   "label": "R3",
+   "met": [
+    "checks-mode",
+    "connect",
+    "repo-add",
+    "token-ok",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Asks consent for the broker role and the api token first. Token goes in on stdin, repo add uses --forge gitlab, checks mode and status names are explained, and doctor verifies.",
+   "regex": {
+    "connect": true,
+    "repo-add": true,
+    "checks-mode": true,
+    "verify": true
+   }
+  },
+  "sonnet.0": {
+   "label": "R4",
+   "met": [
+    "checks-mode",
+    "connect",
+    "repo-add",
+    "token-ok",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Asks about the broker role and the person makes the api token. Correct connect and repo add, checks mode with tentmaker/<job name> statuses, and done only when doctor exits 0.",
+   "regex": {
+    "connect": true,
+    "repo-add": true,
+    "checks-mode": true,
+    "verify": true
+   }
+  }
+ }
+}

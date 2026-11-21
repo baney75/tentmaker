@@ -1,0 +1,9 @@
+{
+ "case": "doctor-low-disk",
+ "responder": "haiku",
+ "sample": 0,
+ "models": [
+  "claude-haiku-5-5"
+ ],
+ "text": "The fail is only the disk guard: 11.4 GiB free is under `min_free_disk` (20 GiB), so Tentmaker is holding new jobs. The other checks pass. My shell here is macOS, so I can't run these on the desktop. Here's what I'd run there, starting with read-only checks.\n\n**1. Find out what is using the space** (read-only):\n\n```sh\ndf -h /var/lib/tentmaker\nsudo du -xh --max-depth=2 /var/lib/tentmaker 2>/dev/null | sort -h | tail -n 15\nsudo -u tentmaker-runner podman system df 2>/dev/null\n```\n\n**2. Confirm the guard is the only blocker:**\n\n```sh\ntentmaker budget --json\n```\n\nBefore I run anything else, I need your answer on one of these:\n\n- **Free space (my recommendation).** If the du output shows old job workspaces, caches, or unused container images, I can remove them. Deleting is irreversible, so I'd list exactly what I'll remove and wait for your go-ahead first. For unused podman images, the command would be `sudo -u tentmaker-runner podman image prune -a`, and I'd only run it after you confirm.\n- **Lower the guard.** Set `min_free_disk` lower in `/etc/tentmaker/config.toml` under `[guards]`. There's no CLI flag for it. This weakens a safety check, so I'd only do it if you want jobs to run on less free space. Tell me the new value you want (for example `10GiB`).\n\nOnce one of those is done:\n\n```sh\nsudo systemctl restart tentmaker\ntentmaker doctor --json\n```\n\nDoctor should exit 0 and `tentmaker budget --json` should show the profile resuming. If it still fails, send me the new doctor output.\n\nWhich do you want: free the space, or lower the guard, and to what value?"
+}
