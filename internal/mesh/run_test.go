@@ -2,7 +2,6 @@ package mesh
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net"
 	"net/http"
@@ -72,11 +71,11 @@ func TestRunWaitsForTailscaleThenServesOnTailnetIPOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var h helloResponse
-	_ = json.NewDecoder(resp.Body).Decode(&h)
 	resp.Body.Close()
-	if resp.StatusCode != 200 || h.Device != "alice-mac" {
-		t.Fatalf("hello: %d %+v", resp.StatusCode, h)
+	// It serves, and refuses this test as it refuses any caller on this
+	// device: the listener's only reachable address here is loopback.
+	if resp.StatusCode != http.StatusForbidden || !strings.Contains(buf.String(), "from this device itself") {
+		t.Fatalf("hello from this device: %d\n%s", resp.StatusCode, buf)
 	}
 
 	// A new tailnet IP restarts the listener on it.

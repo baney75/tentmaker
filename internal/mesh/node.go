@@ -377,11 +377,23 @@ func (n *Node) authorize(w http.ResponseWriter, r *http.Request) bool {
 		writeErr(w, http.StatusForbidden, "forbidden")
 		return false
 	}
+	if why := fromSelf(self, r.RemoteAddr); why != "" {
+		n.refuse(r, "", why)
+		writeErr(w, http.StatusForbidden, "forbidden")
+		return false
+	}
 	id, err := n.o.Tailscale.WhoIs(ctx, r.RemoteAddr)
 	if err != nil {
 		n.refuse(r, "", "whois failed: "+err.Error())
 		writeErr(w, http.StatusForbidden, "forbidden")
 		return false
+	}
+	for _, ip := range id.IPs {
+		if slices.Contains(self.IPs, ip.Unmap()) {
+			n.refuse(r, id.LoginName+" on "+id.Node, "whois names this device itself")
+			writeErr(w, http.StatusForbidden, "forbidden")
+			return false
+		}
 	}
 	if !n.allowed(self, id.UserID, id.LoginName, id.Tags) {
 		n.refuse(r, id.LoginName+" on "+id.Node, "not this tailnet user or a member")
@@ -389,6 +401,27 @@ func (n *Node) authorize(w http.ResponseWriter, r *http.Request) bool {
 		return false
 	}
 	return true
+}
+
+// fromSelf says why a request from remote comes from this device itself,
+// or "" when it doesn't. A device never calls its own peer API over the
+// network, and WhoIs would call such a caller this device, a fully trusted
+// peer: it is a local process, such as a CI job on Windows (which doesn't
+// filter loopback) or wherever the job fence leaks. An address that doesn't
+// parse is refused too.
+func fromSelf(self Peer, remote string) string {
+	ip, err := netip.ParseAddr(splitHostIP(remote))
+	if err != nil {
+		return "unreadable source address"
+	}
+	ip = ip.Unmap().WithZone("")
+	switch {
+	case ip.IsLoopback(), ip.IsUnspecified():
+		return "a request from loopback, so from this device itself"
+	case slices.Contains(self.IPs, ip):
+		return "a request from this device's own tailnet address"
+	}
+	return ""
 }
 
 // rediscoverAfter is how stale the peer table may be before a request from

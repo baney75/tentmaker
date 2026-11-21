@@ -385,7 +385,11 @@ func RemoteInstall(ctx context.Context, host string, args InstallArgs) error  //
 
 Peer API (HTTP on the tailnet address, `mesh.port`, default 7433). Every request's remote
 address goes through `WhoIs`; only the same tailnet user (or `members`) is served, and only
-devices whose `/v1/hello` pool name matches. Endpoints: `GET /v1/hello` (device, pool, version,
+devices whose `/v1/hello` pool name matches. A request from this device itself is refused (403)
+before `WhoIs`: a loopback source, one of this device's tailnet IPs (IPv4-mapped too), or an
+address `WhoIs` names with one of those IPs. A device never calls its own peer API over the
+network, and such a caller is a local process, such as a CI job on Windows, where the firewall
+does not filter loopback, or wherever the job fence leaks. Endpoints: `GET /v1/hello` (device, pool, version,
 broker yes/no), `GET /v1/status`, `POST /v1/work` (core.WorkRequest -> core.WorkResponse),
 `POST /v1/claim`, `POST /v1/release`, `GET /v1/archive/<ref>` (a check's source archive, streamed
 from the broker to the device named in the `Tentmaker-Device` header; the broker checks that it
