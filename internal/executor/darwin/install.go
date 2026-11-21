@@ -60,7 +60,6 @@ func (e *Executor) Preflight(ctx context.Context) []core.Problem {
 	if err != nil {
 		add("images", err.Error(), setup)
 	}
-	need := int64(diskPerVM)
 	for plat, img := range e.o.Images {
 		if img == "" {
 			continue
@@ -70,19 +69,32 @@ func (e *Executor) Preflight(ctx context.Context) []core.Problem {
 		}
 		if err == nil && !contains(pulled, img) {
 			add("images", plat+" image is not pulled yet", setup)
-			if strings.HasPrefix(plat, "macos/") {
-				need += diskImageMacOS
-			} else {
-				need += diskImageLinux
-			}
 		}
 	}
+	need := e.diskNeed(pulled)
 	if free, err := e.freeDisk(ctx); err != nil {
 		add("disk", "can't read free disk space: "+err.Error(), "check that df works")
 	} else if free < need {
 		add("disk", fmt.Sprintf("%d GiB free where Tart keeps VMs; want %d GiB", free>>30, need>>30), "free disk space")
 	}
 	return ps
+}
+
+// diskNeed is the room on Tart's volume for one job VM plus every pinned
+// image not in pulled.
+func (e *Executor) diskNeed(pulled []string) int64 {
+	need := int64(diskPerVM)
+	for plat, img := range e.o.Images {
+		if img == "" || contains(pulled, img) {
+			continue
+		}
+		if strings.HasPrefix(plat, "macos/") {
+			need += diskImageMacOS
+		} else {
+			need += diskImageLinux
+		}
+	}
+	return need
 }
 
 func (e *Executor) macOSMajor(ctx context.Context) (int, error) {
@@ -163,6 +175,21 @@ func Install(ctx context.Context, o Options) error {
 		if img != "" && !regexp.MustCompile(`@sha256:[0-9a-f]{64}$`).MatchString(img) {
 			return fmt.Errorf("%s image %s is not pinned by digest", plat, img)
 		}
+	}
+	// Check the room for the images before downloading anything: a pull
+	// that runs out of space fills the disk the user's own work lives on.
+	var pulled []string
+	if _, err := os.Stat(e.tartPath()); err == nil {
+		if p, err := e.pulledImages(ctx); err == nil {
+			pulled = p
+		}
+	}
+	free, err := e.freeDisk(ctx)
+	if err != nil {
+		return fmt.Errorf("read free disk space: %v", err)
+	}
+	if need := e.diskNeed(pulled); free < need {
+		return fmt.Errorf("%d GiB free where Tart keeps VMs, and the VM images plus one job need %d GiB; free disk space, then run setup again", free>>30, need>>30)
 	}
 	for _, d := range []struct {
 		path string
@@ -264,7 +291,7 @@ func Install(ctx context.Context, o Options) error {
 			return fmt.Errorf("pull %s: %v", img, err)
 		}
 	}
-	pulled, err := e.pulledImages(ctx)
+	pulled, err = e.pulledImages(ctx)
 	if err != nil {
 		return err
 	}

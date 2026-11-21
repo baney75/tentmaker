@@ -732,6 +732,36 @@ func TestInstallAndUninstall(t *testing.T) {
 	}
 }
 
+// A Mac without room for the images is refused before anything is
+// downloaded; a pull that runs out of space would fill the user's disk.
+func TestInstallNeedsDiskFirst(t *testing.T) {
+	v := newTenv(t)
+	v.readyHost()
+	v.f.images = nil
+	inner := v.f.respond
+	v.f.respond = func(c Cmd) (Result, bool, error) {
+		if c.Path == "/bin/df" {
+			return Result{Stdout: "Filesystem 1024-blocks Used Available Capacity Mounted\n/dev/x 1 1 31457280 1% /\n"}, true, nil
+		}
+		return inner(c)
+	}
+	v.f.fetchBody[TartURL] = []byte("tart tarball")
+	err := Install(context.Background(), v.o)
+	if err == nil || !strings.Contains(err.Error(), "30 GiB free") || !strings.Contains(err.Error(), "need 130 GiB") {
+		t.Fatalf("Install = %v, want a refusal naming the free and needed space", err)
+	}
+	v.f.mu.Lock()
+	defer v.f.mu.Unlock()
+	if len(v.f.fetches) != 0 {
+		t.Fatalf("downloaded %v before checking the disk", v.f.fetches)
+	}
+	for _, c := range v.f.cmds {
+		if strings.Contains(strings.Join(c.Args, " "), "pull") {
+			t.Fatalf("ran %v", c)
+		}
+	}
+}
+
 func TestVMSize(t *testing.T) {
 	for _, c := range []struct {
 		l         core.Resources
