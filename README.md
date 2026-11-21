@@ -225,7 +225,7 @@ Its read tools (`status`, `pool`, `doctor`) work as any user. Tools that change 
 **What is not protected:**
 
 - A Linux or Windows job shares your kernel. A kernel or Windows privilege bug can let it out. Only macOS jobs run in a VM.
-- The network rules stop a job from connecting out to your tailnet, LAN and this device. They don't stop a job from using the internet, and they don't protect a LAN service from a job when you set `allow_lan`.
+- The network rules stop a job from connecting out to your tailnet, LAN and this device. They don't stop a job from using the internet, and they don't protect a LAN service from a job when you set `allow_lan`. A LAN that numbers its devices with public IPv4 addresses looks like the internet to them. The rules follow a new IPv6 prefix, Tailscale interface or address at the next job's start, not in the middle of a running job.
 - Linux and Windows jobs all run as the same user. While two jobs run at once on one device, one can read the other's files and processes.
 - Anyone who can push to a repo you serve can run code on your machines. On a public repo, so can code you merge from outside contributors, and workflows they can trigger on the repo itself, such as one that runs on issue comments. Fork pull requests still never run.
 - A compromised forge account or token can queue jobs on your devices.

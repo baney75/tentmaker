@@ -185,15 +185,34 @@ the runner user off and every `Start` checks the fence first; no rules means no 
 Jobs may reach the internet, the DNS servers the host is configured with, and the source archive
 relay on 127.0.0.1:7434. Always blocked: the tailnet (100.64.0.0/10, fd7a:115c:a1e0::/48), link-local
 (169.254/16, fe80::/10), unique local (fc00::/7), loopback and this host's own addresses, and port
-7433 on any address. RFC 1918 (10/8, 172.16/12, 192.168/16) is blocked unless `[guards] allow_lan`.
+7433 on any address. RFC 1918 (10/8, 172.16/12, 192.168/16) and, on Linux, the host's on-link
+global IPv6 prefixes are the LAN, blocked unless `[guards] allow_lan`; `allow_lan` means the
+physical LAN only, never what the tailnet routes.
 
 - Linux (`netrules.go`): nftables table `inet tentmaker`, an output hook that sends every packet
-  with `meta skuid tentmaker-runner` to a `runner` chain (accept relay and DNS, then reject).
-  `oifname "lo"` covers the host's own addresses. With no `nft`, the same rules as an iptables and
-  ip6tables `TENTMAKER` chain with an `--uid-owner` jump. Rootless podman's pasta and slirp4netns
-  run as the runner user, so container traffic matches too. The rules file lives in
-  `<lib>/net.nft` (or `net-iptables.sh`); `tentmaker-net.service` (oneshot, before
-  `network-pre.target` and `tentmaker.service`) loads it at boot.
+  with `meta skuid { <runner uid>, <its subuid ranges> }` to a `runner` chain (accept relay and DNS,
+  then reject). The subordinate uids matter: a rootless container on the host network that runs as
+  a non-root user opens its sockets as one of them. `oifname "lo"` covers the host's own
+  addresses. Always rejected besides the ranges above: RFC 1918, CGNAT and ULA out a Tailscale
+  interface (other devices' subnet routes; public destinations stay open for an exit node), IPv4
+  multicast and broadcast (224/4, 255.255.255.255) and ff00::/8. Tailscale interfaces are
+  `tailscale0` plus any interface holding a tailnet IPv6 address (`/proc/net/if_inet6`); the
+  on-link prefixes are `/proc/net/ipv6_route` routes in 2000::/3 with no gateway, outside loopback
+  and Tailscale. With no `nft`, the same rules as an iptables and ip6tables `TENTMAKER` chain with
+  one `--uid-owner` jump per uid range. Rootless podman's pasta and slirp4netns run as the runner
+  user, so container traffic matches too. The rules file lives in `<lib>/net.nft` (or
+  `net-iptables.sh`); `tentmaker-net.service` (oneshot, before `network-pre.target` and
+  `tentmaker.service`) loads it at boot. `checkNet` compares the loaded rules element by element
+  (nft lists sets sorted and single addresses without a length). A missing table, chain or jump
+  for the runner's uid refuses the job. Loaded rules that lack a piece (a new subuid range,
+  Tailscale interface or on-link prefix, or a rule an older version did not write) are stale:
+  `Start` rewrites the file from the host's current facts, reloads it and checks again.
+- Linux job units also get `InaccessiblePaths=-` for tailscaled's `/run/tailscale`,
+  `/var/run/tailscale` and `/var/lib/tailscale` (its LocalAPI socket is mode 0666, and firewall
+  rules don't see Unix sockets), and for `/home` and `/root` unless the job dir is under them.
+  Not `ProtectHome=yes`: it also hides `/run/user`, the job's runtime dir and podman socket. The
+  runner's `user@<uid>.service` drop-in hides the same tailscaled paths from the podman service and
+  its containers and orders the manager `After=tailscaled.service`.
 - Windows (`netrules.go`): Windows Firewall outbound rules in group "Tentmaker" with `LocalUser`
   `D:(A;;CC;;;<runner SID>)`, made with the NetSecurity cmdlets through `API.PowerShell`. Block
   rules beat allow rules, so the blocked ranges leave out 127.0.0.1 and any resolver inside them,
@@ -201,7 +220,13 @@ relay on 127.0.0.1:7434. Always blocked: the tailnet (100.64.0.0/10, fd7a:115c:a
   names the rules version, the runner SID and `allow_lan`; the check compares it, and fails when any
   firewall profile is off. Windows Firewall refuses an IPv6 loopback, unspecified or multicast
   remote address (and with it the whole rule), so the rules leave out ::1 and any such resolver;
-  port 7433 stays blocked on ::1 by the port rule.
+  port 7433 stays blocked on ::1 by the port rule. Windows doesn't send every own address through
+  loopback, so `Tentmaker-Block-Self` blocks this host's unicast addresses (`Get-NetIPAddress`, all
+  interfaces) that the fixed ranges miss: its global IPv6 address, and its LAN address under
+  `allow_lan`. A DNS server that is this host gets the port-53 hole instead. The check reads the
+  host's addresses and the rule's addresses in the same PowerShell call; when only they differ
+  (DHCP, a new prefix), `Start` changes that one rule in place (`Set-NetFirewallRule`, never the
+  whole group) and checks again. Any other difference refuses the job.
 - macOS: the Softnet rules already cover all of it (Softnet's default drops non-global IPv4 and all
   IPv6); `allow_lan` does nothing there.
 
@@ -434,7 +459,7 @@ section is rewritten.
 - `SetPoolLimit` is a no-op on macOS and Windows.
 - Linux and Windows keep a copy of the tentmaker binary for check jobs. Setup writes it, and each check `Start` compares it with `Binary(platform)` (size, then sha256; equal pairs are remembered by size and mtime) and replaces it atomically when they differ, so an update never leaves check jobs on the old binary. Linux writes it root-owned 0755; Windows renames the old exe aside first (a running check may hold it) and deletes it once free. (internal/executor/guestbin)
 - The Windows runner password uses machine-scope DPAPI, protected by the file ACL (SYSTEM and Administrators).
-- Network rules are written at setup. A changed `allow_lan` takes effect only after `sudo tentmaker setup` runs again; until then the loaded rules don't match the config, and Linux (missing LAN rules) or Windows (description mismatch) refuses jobs. Rules stricter than the config pass.
+- Network rules are written at setup. A changed `allow_lan` takes effect only after `sudo tentmaker setup` runs again; until then the loaded rules don't match the config: Linux treats rules missing the LAN as stale and reloads them stricter at the next `Start`, and Windows (description mismatch) refuses jobs. Rules stricter than the config pass. Host facts the rules name (Linux subuid ranges, Tailscale interfaces and on-link IPv6 prefixes; Windows own addresses) are read again at every `Start`.
 - Linux job units have no `--collect` and set `OOMPolicy=stop`: a unit the OOM killer ended stays loaded with `Result=oom-kill` until `Clean` runs `systemctl reset-failed`, so `CheckResult` can say "ran out of memory" instead of "cancelled" or "no result.json".
 
 **mesh**

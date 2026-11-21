@@ -351,6 +351,13 @@ jobs:
           echo "== nft"; sudo nft list ruleset 2>/dev/null | head -200 || true
           echo "== decoys"; cat "$RUNNER_TEMP"/decoy*.log || true
           echo "== routes"; ip route; ip -6 route
+          echo "== podman service"
+          u=$(id -u tentmaker-runner 2>/dev/null) && {
+            sudo systemctl status "user@$u.service" --no-pager -n 0 || true
+            sudo systemctl --user -M tentmaker-runner@ status podman.socket podman.service --no-pager -n 30 || true
+            sudo ls -la "/run/user/$u" "/run/user/$u/podman" || true
+            sudo ss -xlp | grep -i podman || true
+          }
 
       - name: uninstall --purge
         if: ${{ !cancelled() && steps.setup.outcome != 'skipped' }}
@@ -442,6 +449,9 @@ jobs:
           # DHCP and static addresses may coexist.
           netsh interface ipv4 set interface interface="$alias" dhcpstaticipcoexistence=enabled
           if ($LASTEXITCODE -ne 0) { Write-Output "::error::this Windows can't keep DHCP next to static addresses"; exit 1 }
+          # A new address stays Tentative (not bindable) until duplicate
+          # address detection ends; the decoys need them at once.
+          foreach ($fam in @('IPv4', 'IPv6')) { Set-NetIPInterface -InterfaceIndex $if -AddressFamily $fam -DadTransmits 0 }
           netsh interface ipv4 add address name="$alias" address=100.64.77.1 mask=255.255.255.255 skipassource=true
           foreach ($a in @('10.77.0.1', '100.100.100.100', '192.0.2.77')) {
             netsh interface ipv4 add address name="$alias" address=$a mask=255.255.255.255 skipassource=true
@@ -457,6 +467,7 @@ jobs:
             $meta = '169.254.169.254:80'
           }
           Get-NetIPInterface -InterfaceIndex $if | Format-Table AddressFamily, Dhcp, ConnectionState
+          for ($i = 0; $i -lt 60 -and (Get-NetIPAddress -InterfaceIndex $if | Where-Object AddressState -eq 'Tentative'); $i++) { Start-Sleep 1 }
           Get-NetIPAddress -InterfaceIndex $if | Format-Table IPAddress, PrefixLength, PrefixOrigin, SkipAsSource, AddressState
           try { Invoke-WebRequest -UseBasicParsing -TimeoutSec 15 https://api.github.com/zen | Out-Null; Write-Output "still online" }
           catch { Write-Output "::error::the decoy addresses cut the runner off: $_"; exit 1 }

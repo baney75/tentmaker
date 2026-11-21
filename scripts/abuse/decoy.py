@@ -16,6 +16,7 @@ it.
   unix:PATH          HTTP over a Unix socket, mode 0666 like tailscaled's
 """
 
+import errno
 import http.server
 import os
 import socket
@@ -23,6 +24,7 @@ import socketserver
 import struct
 import sys
 import threading
+import time
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -107,16 +109,31 @@ def serve(spec):
     print("decoy listening on " + spec, flush=True)
 
 
+# An address added a moment ago may not be bindable yet (Windows keeps it
+# Tentative until duplicate address detection ends).
+NOT_YET = {errno.EADDRNOTAVAIL, 99, 10049}
+
+
+def serve_retrying(spec):
+    for _ in range(90):
+        try:
+            serve(spec)
+            return
+        except OSError as e:
+            err = e
+            if e.errno not in NOT_YET and getattr(e, "winerror", None) not in NOT_YET:
+                break
+            time.sleep(1)
+    # The harness checks every decoy answers; one that can't listen must not
+    # take the others down.
+    print("decoy failed on %s: %s" % (spec, err), flush=True)
+
+
 def main():
     if len(sys.argv) < 2:
         sys.exit("usage: decoy.py SPEC [SPEC ...]")
     for spec in sys.argv[1:]:
-        try:
-            serve(spec)
-        except OSError as e:
-            # The harness checks every decoy answers; one that can't listen
-            # must not take the others down.
-            print("decoy failed on %s: %s" % (spec, e), flush=True)
+        threading.Thread(target=serve_retrying, args=(spec,), daemon=True).start()
     threading.Event().wait()
 
 
