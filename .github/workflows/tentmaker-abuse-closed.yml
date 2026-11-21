@@ -1,0 +1,28 @@
+# Queued by the abuse test (abuse.yml) partway through, not with
+# tentmaker-abuse.yml: after the harness removes the network rules,
+# to prove the device refuses to start a job without them.
+#
+# GitHub's own runners run this file too on every push. There TENTMAKER is
+# unset, so every step only says it is skipping.
+name: tentmaker-abuse-closed
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  abuse-closed:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - run: if [ "${TENTMAKER:-}" = 1 ]; then bash scripts/abuse/attack.sh closed; else echo "not under Tentmaker; skipping"; fi
+
+  abuse-closed-windows:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - shell: pwsh
+        run: if ($env:TENTMAKER -eq '1') { & ./scripts/abuse/attack.ps1 closed } else { Write-Output 'not under Tentmaker; skipping' }

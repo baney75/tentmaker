@@ -10,7 +10,7 @@
 # show that the job still has what it needs (the internet, DNS), so a
 # blocked attack means the sandbox stopped it, not that nothing works.
 #
-#   attack.sh main | sibling | oom | pids
+#   attack.sh main | sibling | oom | pids | lan | closed
 set -u
 
 mode=${1:-main}
@@ -22,6 +22,10 @@ http_ok() {
 	local code
 	code=$(curl -gsS -o /dev/null -w '%{http_code}' --connect-timeout 3 --max-time 6 "$@" 2>/dev/null) || return 1
 	[ "$code" = 200 ]
+}
+
+udp_reach() { # udp_reach NAME ADDR PORT: a UDP decoy (or DNS server) answered
+	if python3 "$here/udpask.py" "$2" "$3" >/dev/null 2>&1; then say "$1" SUCCEEDED "udp $2:$3 answered"; else say "$1" BLOCKED; fi
 }
 
 reach() { # reach NAME URL...
@@ -37,6 +41,7 @@ s.connect(("192.0.2.1", 53))
 print(s.getsockname()[0])' 2>/dev/null
 }
 
+here=$(cd "$(dirname "$0")" && pwd)
 job_dir=$(dirname "${HOME:?}")
 jobs_dir=$(dirname "$job_dir")
 state=/var/lib/tentmaker
@@ -93,9 +98,35 @@ else:
 '
 	exit 0
 	;;
+lan)
+	# Run with [guards] allow_lan = true: the physical LAN is open, a
+	# Tailscale subnet route and the tailnet are not.
+	if http_ok http://10.78.0.1:8080/; then echo "CONTROL lan-v4 OK"; else echo "CONTROL lan-v4 FAILED"; fi
+	if http_ok 'http://[2001:db8:78::1]:8080/'; then echo "CONTROL lan-v6 OK"; else echo "CONTROL lan-v6 FAILED"; fi
+	if http_ok https://api.github.com/zen; then echo "CONTROL internet OK"; else echo "CONTROL internet FAILED"; fi
+	ip=$(host_ip)
+	reach lan-subnet-route-v4 http://10.99.0.1:8080/
+	reach lan-decoy-tailnet-v4 http://100.64.77.1:8080/
+	reach lan-mesh-port-lan http://10.78.0.1:7433/
+	reach lan-mesh-port-host-ip "http://${ip:-192.0.2.1}:7433/"
+	reach lan-host-private-v4 http://10.77.0.1:8080/
+	reach lan-host-own-v4 http://192.0.2.77:8767/
+	reach lan-host-own-v6 'http://[2001:db8:77::1]:8767/'
+	reach lan-host-ip-other-port "http://${ip:-192.0.2.1}:8767/"
+	reach lan-host-lan-v4 http://10.78.0.2:8767/
+	reach lan-host-global-v6 'http://[2001:db8:78::2]:8767/'
+	exit 0
+	;;
+closed)
+	# Queued while the harness has removed the network rules: the device
+	# must refuse to start it, so any line here means it ran.
+	echo "ATTACK fail-closed SUCCEEDED the job ran without the network rules"
+	reach closed-decoy-tailnet-v4 http://100.64.77.1:8080/
+	exit 0
+	;;
 main) ;;
 *)
-	echo "usage: attack.sh main|sibling|oom|pids" >&2
+	echo "usage: attack.sh main|sibling|oom|pids|lan|closed" >&2
 	exit 2
 	;;
 esac
@@ -128,24 +159,68 @@ for t in "$(printf '0%.0s' $(seq 64))" "$(printf 'f%.0s' $(seq 64))" "$(head -c 
 done
 if [ -n "$guessed" ]; then say pause-guessed-token SUCCEEDED; else say pause-guessed-token BLOCKED; fi
 
-# The network: tailnet, LAN, link-local, the mesh port, loopback services.
+# The network: tailnet, MagicDNS, LAN, multicast, link-local, this host's
+# own addresses, the mesh port on every address, loopback services, and
+# tailscaled's local API.
 reach decoy-tailnet-v4 http://100.64.77.1:8080/
 reach decoy-tailnet-v6 'http://[fd7a:115c:a1e0::77]:8080/'
+reach magicdns-http http://100.100.100.100/
+udp_reach magicdns-dns 100.100.100.100 53
 reach decoy-lan-v4 http://10.77.0.1:8080/
+udp_reach lan-multicast 239.77.77.77 7777
 reach cloud-metadata -H Metadata:true 'http://169.254.169.254/metadata/instance?api-version=2021-02-01'
+# This host's own addresses, on a port only the host serves: a
+# non-private IPv4 and a global IPv6 (stand-ins for a public address).
+reach host-own-v4 http://192.0.2.77:8767/
+reach host-own-v6 'http://[2001:db8:77::1]:8767/'
 ip=$(host_ip)
+if [ -n "$ip" ]; then reach host-ip-other-port "http://$ip:8767/"; else say host-ip-other-port BLOCKED "no host address found"; fi
 if [ -n "$ip" ]; then
 	reach mesh-port-host-ip "http://$ip:7433/"
 else
 	say mesh-port-host-ip BLOCKED "no host address found"
 fi
+reach mesh-port-lan http://10.77.0.1:7433/
 reach mesh-port-tailnet http://100.64.77.1:7433/
+reach mesh-port-tailnet-v6 'http://[fd7a:115c:a1e0::77]:7433/'
+reach mesh-port-host-v6 'http://[2001:db8:77::1]:7433/'
 reach mesh-port-loopback http://127.0.0.1:7433/
+reach mesh-port-loopback-v6 'http://[::1]:7433/'
 reach loopback-other-port http://127.0.0.1:8766/
+reach loopback-v6-other-port 'http://[::1]:8766/'
+# The LAN by its global IPv6 addresses: an on-link prefix setup saw, and
+# one the LAN gained after setup.
+reach lan-global-v6 'http://[2001:db8:78::1]:8080/'
+reach lan-global-v6-new 'http://[2001:db8:79::1]:8080/'
+# This host's own addresses on the LAN interface.
+reach host-lan-v4 http://10.78.0.2:8767/
+reach host-lan-global-v6 'http://[2001:db8:78::2]:8767/'
+# A device behind a Tailscale subnet route, out through tailscale0.
+reach subnet-route-v4 http://10.99.0.1:8080/
+# Any local user may read tailscaled's status (every device on the tailnet,
+# its addresses and logins) through its socket; a job must not.
+ts_api() { # ts_api PATH: tailscaled's local API answered
+	http_ok -H 'Sec-Tailscale: localapi' --unix-socket "$1" "http://local-tailscaled.sock/localapi/v0/$2"
+}
+got=""
+for sock in /run/tailscale/tailscaled.sock /var/run/tailscale/tailscaled.sock; do
+	for q in status whois?addr=100.100.100.100:53; do
+		ts_api "$sock" "$q" && got="$got $sock:$q"
+	done
+	# whois answers 4xx while logged out; any HTTP answer means the API is open.
+	code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 6 -H 'Sec-Tailscale: localapi' --unix-socket "$sock" \
+		'http://local-tailscaled.sock/localapi/v0/whois?addr=100.100.100.100:53' 2>/dev/null) || code=000
+	[ "$code" != 000 ] && [ -z "$got" ] && got=" $sock:whois answered $code"
+done
+if [ -n "$got" ]; then say tailscaled-socket SUCCEEDED "read$got"; else say tailscaled-socket BLOCKED; fi
 
 # Rootless podman: a container's traffic leaves through pasta or
 # slirp4netns, which run as this job's user, so the same rules must stop it.
+# A container on the host network opens its own sockets, as a subordinate
+# uid when it runs as a non-root user; the podman service (DOCKER_HOST)
+# runs outside the job's unit and can mount any path this user can read.
 img=docker.io/library/busybox:1.36
+curl_img=docker.io/curlimages/curl:8.11.1
 if timeout 180 podman pull -q "$img" >/dev/null 2>&1; then
 	in_pod() { timeout 30 podman run --rm "$img" wget -q -O /dev/null -T 5 "$1" >/dev/null 2>&1; }
 	if in_pod http://example.com/; then echo "CONTROL podman OK"; else echo "CONTROL podman FAILED"; fi
@@ -154,6 +229,48 @@ if timeout 180 podman pull -q "$img" >/dev/null 2>&1; then
 		set -- $t
 		if in_pod "$2"; then say "$1" SUCCEEDED "$2 answered"; else say "$1" BLOCKED; fi
 	done
+	hostnet() { # hostnet USER URL: a host-network container through the job's podman and the service
+		local how
+		for how in podman "podman --remote --url ${DOCKER_HOST:-unix:///nonexistent}"; do
+			if timeout 30 $how run --rm --network host --user "$1" "$img" wget -q -O /dev/null -T 5 "$2" >/dev/null 2>&1; then
+				echo "$how as $1"
+				return 0
+			fi
+		done
+		return 1
+	}
+	for u in 0 1000:1000; do
+		name=podman-hostnet-root
+		[ "$u" = 0 ] || name=podman-hostnet-subuid
+		got=""
+		for url in http://100.64.77.1:8080/ http://10.77.0.1:8080/ http://127.0.0.1:8766/ "http://${ip:-192.0.2.1}:7433/"; do
+			if how=$(hostnet "$u" "$url"); then got="$url answered ($how)"; break; fi
+		done
+		if [ -n "$got" ]; then say "$name" SUCCEEDED "$got"; else say "$name" BLOCKED; fi
+	done
+	got=""
+	if timeout 180 podman --remote --url "${DOCKER_HOST:-unix:///nonexistent}" pull -q "$curl_img" >/dev/null 2>&1; then
+		for how in podman "podman --remote --url ${DOCKER_HOST:-unix:///nonexistent}"; do
+			if timeout 30 $how run --rm -v /run/tailscale:/ts "$curl_img" -fsS --max-time 5 -H 'Sec-Tailscale: localapi' --unix-socket /ts/tailscaled.sock \
+				http://local-tailscaled.sock/localapi/v0/status >/dev/null 2>&1; then
+				got="$how"
+				break
+			fi
+		done
+		if [ -n "$got" ]; then say podman-tailscaled-socket SUCCEEDED "mounted /run/tailscale ($got)"; else say podman-tailscaled-socket BLOCKED; fi
+		# The curl image runs as its own user (uid 100): a subordinate uid on the host.
+		got=""
+		for url in http://100.64.77.1:8080/ http://10.77.0.1:8080/ http://127.0.0.1:8766/ "http://${ip:-192.0.2.1}:7433/"; do
+			if timeout 30 podman --remote --url "${DOCKER_HOST:-unix:///nonexistent}" run --rm --network host "$curl_img" \
+				-fsS -o /dev/null --max-time 5 "$url" >/dev/null 2>&1; then
+				got="$url answered"
+				break
+			fi
+		done
+		if [ -n "$got" ]; then say podman-hostnet-image-user SUCCEEDED "$got"; else say podman-hostnet-image-user BLOCKED; fi
+	else
+		echo "CONTROL podman-remote FAILED (could not pull $curl_img through the podman service)"
+	fi
 else
 	echo "CONTROL podman FAILED (could not pull $img)"
 fi

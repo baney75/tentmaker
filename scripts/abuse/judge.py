@@ -5,9 +5,13 @@ Reads the check logs the broker kept (one file per job, named <job>.log in
 {state, description}) and the harness's own ATTACK lines (--harness), then
 writes --out (one entry per attack: blocked true or false) and exits 1 when
 any attack succeeded, any expected attack line is missing, or a control
-failed.
+failed. The harness's checks print ATTACK lines too (the fail-closed test):
+BLOCKED there means the device held.
 
-  python3 judge.py --os linux|windows --logs DIR --statuses FILE --harness FILE --out FILE
+The harness also runs abuse-lan (abuse-lan-windows) with [guards]
+allow_lan = true; --lan-statuses holds its status.
+
+  python3 judge.py --os linux|windows --logs DIR --statuses FILE --harness FILE [--lan-statuses FILE] --out FILE
 """
 
 import argparse
@@ -18,13 +22,23 @@ import sys
 
 MAIN = [
     "read-secrets", "read-control-token", "pause-no-token", "pause-guessed-token",
-    "decoy-tailnet-v4", "decoy-tailnet-v6", "decoy-lan-v4", "cloud-metadata",
-    "mesh-port-host-ip", "mesh-port-tailnet", "mesh-port-loopback", "loopback-other-port",
+    "decoy-tailnet-v4", "decoy-tailnet-v6", "magicdns-http", "magicdns-dns", "decoy-lan-v4", "lan-multicast",
+    "cloud-metadata", "host-own-v4", "host-own-v6", "host-ip-other-port",
+    "mesh-port-host-ip", "mesh-port-lan", "mesh-port-tailnet", "mesh-port-tailnet-v6", "mesh-port-host-v6",
+    "mesh-port-loopback", "mesh-port-loopback-v6", "loopback-other-port", "loopback-v6-other-port",
+    "tailscaled-socket",
     "PRIV", "write-other-home", "write-state-dir", "signal-daemon", "read-other-job",
 ]
-HARNESS = ["background-process", "daemon-healthy"]
-# Linux only: the same network attacks from a rootless podman container.
-PODMAN = ["podman-decoy-tailnet-v4", "podman-decoy-lan-v4", "podman-mesh-port-host-ip", "podman-loopback-other-port"]
+HARNESS = ["background-process", "daemon-healthy", "fail-closed", "fail-closed-doctor", "fail-closed-restore"]
+# Linux only: the LAN by global IPv6 and a Tailscale subnet route (network
+# namespaces stand in for the devices), and the same attacks from rootless
+# podman containers.
+LINUX = ["lan-global-v6", "lan-global-v6-new", "subnet-route-v4", "host-lan-v4", "host-lan-global-v6",
+         "podman-decoy-tailnet-v4", "podman-decoy-lan-v4", "podman-mesh-port-host-ip", "podman-loopback-other-port",
+         "podman-hostnet-root", "podman-hostnet-subuid", "podman-hostnet-image-user", "podman-tailscaled-socket"]
+# From abuse-lan with allow_lan = true: the tailnet and this host stay shut.
+LAN = ["lan-decoy-tailnet-v4", "lan-mesh-port-host-ip", "lan-host-own-v4", "lan-host-own-v6", "lan-host-ip-other-port"]
+LAN_LINUX = ["lan-subnet-route-v4", "lan-mesh-port-lan", "lan-host-private-v4", "lan-host-lan-v4", "lan-host-global-v6"]
 LINE = re.compile(r"^ATTACK (\S+) (BLOCKED|SUCCEEDED)\b ?(.*)$")
 
 
@@ -54,6 +68,7 @@ def main():
     ap.add_argument("--logs", required=True)
     ap.add_argument("--statuses", required=True)
     ap.add_argument("--harness", required=True)
+    ap.add_argument("--lan-statuses", default="")
     ap.add_argument("--out", required=True)
     a = ap.parse_args()
 
@@ -82,6 +97,23 @@ def main():
             problems.append("control %s failed: the job could not reach what it needs, so blocked attacks prove nothing" % c)
 
     got = attacks(main_log)
+    # abuse-lan runs with allow_lan = true.
+    lan_job = "abuse-lan" + sfx
+    lan_log = read(os.path.join(a.logs, lan_job + ".log"))
+    try:
+        with open(a.lan_statuses, encoding="utf-8") as f:
+            statuses.update(json.load(f))
+    except (OSError, ValueError):
+        pass
+    st = statuses.get("tentmaker/" + lan_job) or {}
+    if st.get("state") != "success":
+        problems.append("tentmaker/%s is %s: %s" % (lan_job, st.get("state", "missing"), st.get("description", "")))
+    # Windows has no LAN device to reach; its harness checks the rules
+    # it loaded say allow_lan=true instead.
+    for c in ("lan-v4", "lan-v6", "internet") if a.os == "linux" else ("internet",):
+        if "CONTROL %s OK" % c not in lan_log:
+            problems.append("control %s failed in abuse-lan: allow_lan did not open the LAN, so blocked attacks there prove nothing" % c)
+    got.update({k: v for k, v in attacks(lan_log).items() if k in LAN + LAN_LINUX})
     got.update({k: v for k, v in attacks(logs["-pids"]).items() if k == "fork-bomb"})
 
     # read-other-job only counts when the sibling ran while abuse looked.
@@ -108,7 +140,7 @@ def main():
     got.update(harness)
 
     want = [n.replace("PRIV", "admin" if a.os == "windows" else "sudo") for n in MAIN]
-    want += (PODMAN if a.os == "linux" else []) + ["fork-bomb", "memory-limit"] + HARNESS
+    want += (LINUX + LAN_LINUX if a.os == "linux" else []) + LAN + ["fork-bomb", "memory-limit"] + HARNESS
     entries = []
     for n in want:
         if n not in got:

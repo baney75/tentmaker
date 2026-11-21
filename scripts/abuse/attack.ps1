@@ -9,7 +9,7 @@
 # show that the job still has what it needs (the internet, DNS), so a
 # blocked attack means the sandbox stopped it, not that nothing works.
 #
-#   attack.ps1 main | sibling | oom | pids
+#   attack.ps1 main | sibling | oom | pids | lan | closed
 param([string]$Mode = 'main')
 $ErrorActionPreference = 'Continue'
 $ProgressPreference = 'SilentlyContinue'
@@ -28,6 +28,23 @@ function HttpOk([string]$Url, [hashtable]$Headers = @{}) {
 }
 function Reach([string]$Name, [string]$Url, [hashtable]$Headers = @{}) {
     if (HttpOk $Url $Headers) { Say $Name SUCCEEDED "$Url answered" } else { Say $Name BLOCKED }
+}
+# UdpOk: a UDP decoy (or DNS server) answered a DNS query for github.com.
+function UdpOk([string]$Addr, [int]$Port) {
+    try {
+        $ip = [System.Net.IPAddress]::Parse($Addr)
+        $u = [System.Net.Sockets.UdpClient]::new($ip.AddressFamily)
+        $u.Client.ReceiveTimeout = 4000
+        $q = [byte[]](0x7a, 0x11, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 6, 103, 105, 116, 104, 117, 98, 3, 99, 111, 109, 0, 0, 1, 0, 1)
+        [void]$u.Send($q, $q.Length, [System.Net.IPEndPoint]::new($ip, $Port))
+        $ep = [System.Net.IPEndPoint]::new([System.Net.IPAddress]::Any, 0)
+        $r = $u.Receive([ref]$ep)
+        $u.Close()
+        return $r.Length -gt 0
+    } catch { return $false }
+}
+function UdpReach([string]$Name, [string]$Addr, [int]$Port) {
+    if (UdpOk $Addr $Port) { Say $Name SUCCEEDED "udp ${Addr}:$Port answered" } else { Say $Name BLOCKED }
 }
 function HostIP {
     try {
@@ -94,8 +111,26 @@ switch ($Mode) {
         if ($n -ge 3000) { Say fork-bomb SUCCEEDED "started $n processes" } else { Say fork-bomb BLOCKED "after $n processes: $err" }
         exit 0
     }
+    'lan' {
+        # Run with [guards] allow_lan = true: the tailnet and this host stay shut.
+        if (HttpOk 'https://api.github.com/zen') { Write-Output 'CONTROL internet OK' } else { Write-Output 'CONTROL internet FAILED' }
+        $ip = HostIP
+        Reach lan-decoy-tailnet-v4 'http://100.64.77.1:8080/'
+        Reach lan-mesh-port-host-ip "http://${ip}:7433/"
+        Reach lan-host-own-v4 'http://192.0.2.77:8767/'
+        Reach lan-host-own-v6 'http://[2001:db8:77::1]:8767/'
+        Reach lan-host-ip-other-port "http://${ip}:8767/"
+        exit 0
+    }
+    'closed' {
+        # Queued while the harness has removed the network rules: the device
+        # must refuse to start it, so any line here means it ran.
+        Write-Output 'ATTACK fail-closed SUCCEEDED the job ran without the network rules'
+        Reach closed-decoy-tailnet-v4 'http://100.64.77.1:8080/'
+        exit 0
+    }
     'main' {}
-    default { Write-Error 'usage: attack.ps1 main|sibling|oom|pids'; exit 2 }
+    default { Write-Error 'usage: attack.ps1 main|sibling|oom|pids|lan|closed'; exit 2 }
 }
 
 Write-Output "tentmaker abuse: job dir $jobDir, user $([Security.Principal.WindowsIdentity]::GetCurrent().Name)"
@@ -130,16 +165,40 @@ foreach ($t in @(('0' * 64), ('f' * 64), [Guid]::NewGuid().ToString('N') + [Guid
 }
 if ($guessed) { Say pause-guessed-token SUCCEEDED } else { Say pause-guessed-token BLOCKED }
 
-# The network: tailnet, LAN, link-local, the mesh port, loopback services.
+# The network: tailnet, MagicDNS, LAN, multicast, link-local, this host's
+# own addresses, the mesh port on every address, loopback services.
 Reach decoy-tailnet-v4 'http://100.64.77.1:8080/'
 Reach decoy-tailnet-v6 'http://[fd7a:115c:a1e0::77]:8080/'
+Reach magicdns-http 'http://100.100.100.100/'
+UdpReach magicdns-dns '100.100.100.100' 53
 Reach decoy-lan-v4 'http://10.77.0.1:8080/'
+UdpReach lan-multicast '239.77.77.77' 7777
 Reach cloud-metadata 'http://169.254.169.254/metadata/instance?api-version=2021-02-01' @{ Metadata = 'true' }
+Reach host-own-v4 'http://192.0.2.77:8767/'
+Reach host-own-v6 'http://[2001:db8:77::1]:8767/'
 $ip = HostIP
+if ($ip) { Reach host-ip-other-port "http://${ip}:8767/" } else { Say host-ip-other-port BLOCKED 'no host address found' }
 if ($ip) { Reach mesh-port-host-ip "http://${ip}:7433/" } else { Say mesh-port-host-ip BLOCKED 'no host address found' }
+Reach mesh-port-lan 'http://10.77.0.1:7433/'
 Reach mesh-port-tailnet 'http://100.64.77.1:7433/'
+Reach mesh-port-tailnet-v6 'http://[fd7a:115c:a1e0::77]:7433/'
+Reach mesh-port-host-v6 'http://[2001:db8:77::1]:7433/'
 Reach mesh-port-loopback 'http://127.0.0.1:7433/'
+Reach mesh-port-loopback-v6 'http://[::1]:7433/'
 Reach loopback-other-port 'http://127.0.0.1:8766/'
+Reach loopback-v6-other-port 'http://[::1]:8766/'
+# tailscaled's local API on its named pipe: Windows lets only
+# administrators and the signed-in owner use it.
+try {
+    $pipe = [System.IO.Pipes.NamedPipeClientStream]::new('.', 'ProtectedPrefix\Administrators\Tailscale\tailscaled', [System.IO.Pipes.PipeDirection]::InOut)
+    $pipe.Connect(3000)
+    $w = [System.IO.StreamWriter]::new($pipe)
+    $w.Write("GET /localapi/v0/status HTTP/1.0`r`nHost: local-tailscaled.sock`r`nSec-Tailscale: localapi`r`n`r`n")
+    $w.Flush()
+    $first = [System.IO.StreamReader]::new($pipe).ReadLine()
+    $pipe.Dispose()
+    if ($first -match '^HTTP/1\.\d 200') { Say tailscaled-socket SUCCEEDED "the pipe answered $first" } else { Say tailscaled-socket BLOCKED "the pipe answered $first" }
+} catch { Say tailscaled-socket BLOCKED $_.Exception.Message }
 
 # Privilege.
 $admin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
