@@ -334,7 +334,12 @@ func New(o Options) *Client                            // implements core.Status
   response) or never started: the broker posts `error` ("never started on <device>"), drops the
   grant, which revokes its archive ref, releases its claim, and offers the check again, at most
   twice per check (memory only). A worker that starts it late runs a runner the broker doesn't
-  know, which it stops (review r1 partA sol-F5).
+  know, which it stops (review r1 partA sol-F5). A check grant the worker reports ended without
+  ever reporting it running was declined (no room, no executor, no relay yet) or failed to start;
+  the worker sends no result for it, and the broker treats it the same way ("did not start on
+  <device>"), from the same two retries. A check that was seen running and ends without a result
+  gets a final `error` ("the job ended without a result"). A check that runs and ends between two
+  exchanges still sends its result, which the broker posts first.
 - **Source archive relay.** Forge tokens never leave the broker. The bundle the broker sends has an
   `ArchiveRef` (32 random bytes, hex) and no URL or header. The broker keeps, in memory only, ref
   -> (runner, granted device, forge, repo, sha) while that check is active and drops it when the

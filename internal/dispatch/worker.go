@@ -968,12 +968,10 @@ func (w *Worker) boot(ctx context.Context, e *execInfo, rec *jobRec, spec core.E
 		w.mu.Unlock()
 		w.stopAndClean(ctx, e, name)
 		w.mu.Lock()
+		// Ended with no result: the broker sees a check that never ran and
+		// offers it again (a bounded number of times).
 		rep := w.reportLocked(source)
 		rep.Ended = append(rep.Ended, name)
-		if kind == core.KindCheck {
-			rep.Results = append(rep.Results, core.CheckResult{Runner: name, Repo: rec.Repo, State: "error",
-				Description: "could not start on " + w.device})
-		}
 		w.bootFailureLocked(e, now, err)
 		w.mu.Unlock()
 		return

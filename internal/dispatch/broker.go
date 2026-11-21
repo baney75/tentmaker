@@ -287,10 +287,18 @@ func (b *Broker) Work(ctx context.Context, req core.WorkRequest) (core.WorkRespo
 	}
 
 	ended := map[string]bool{}
+	var expired []*grantRec
 	for _, name := range req.Ended {
 		ended[name] = true
 		rec := b.grants[name]
 		if rec == nil || rec.Device != req.Device {
+			continue
+		}
+		// A check its worker ended before ever reporting it running was
+		// declined or failed to start: offer it again, as an expired grant.
+		if rec.Kind == core.KindCheck && !rec.pending && rec.Started.IsZero() {
+			b.expireCheckLocked(rec, now, "did not start on "+rec.Device)
+			expired = append(expired, rec)
 			continue
 		}
 		b.endLocked(rec, now)
@@ -308,11 +316,10 @@ func (b *Broker) Work(ctx context.Context, req core.WorkRequest) (core.WorkRespo
 	// window never reached it (the response was lost) or never started.
 	// Nothing else ends it: monitor skips checks, and only started grants
 	// count as ended when omitted.
-	var expired []*grantRec
 	for _, rec := range b.grants {
 		if rec.Device == req.Device && rec.Kind == core.KindCheck && !rec.pending && rec.Started.IsZero() &&
 			!running[rec.Name] && !ended[rec.Name] && now.Sub(rec.Granted) >= startGrace {
-			b.expireCheckLocked(rec, now)
+			b.expireCheckLocked(rec, now, "never started on "+rec.Device)
 			expired = append(expired, rec)
 		}
 	}
@@ -682,8 +689,8 @@ func (b *Broker) realizeCheck(ctx context.Context, req core.WorkRequest, rec *gr
 	return core.WorkOffer{Job: rec.Job, Grant: g, Secret: secret, Platform: rec.Platform}, true
 }
 
-// maxCheckRetries is how many times a check whose grant expired unstarted
-// is offered again.
+// maxCheckRetries is how many times a check whose grant ended unstarted
+// (expired, declined or failed to start) is offered again.
 const maxCheckRetries = 2
 
 type checkRetry struct {
@@ -695,12 +702,13 @@ func checkKey(forge, repo, sha, ctxName string) string {
 	return forge + ":" + repo + "@" + sha + "#" + ctxName
 }
 
-// expireCheckLocked ends a check grant its worker never ran: it posts an
-// error status, forgets the grant (pruneArchivesLocked then revokes its
-// archive ref) and, up to maxCheckRetries times, lets pickLocked offer the
-// check again. A worker that starts it late runs an unknown runner, which
-// the broker stops, and its archive ref is gone.
-func (b *Broker) expireCheckLocked(rec *grantRec, now time.Time) {
+// expireCheckLocked ends a check grant its worker never ran (lost on the
+// way, declined, or failed to start): it posts an error status saying why,
+// forgets the grant (pruneArchivesLocked then revokes its archive ref) and,
+// up to maxCheckRetries times, lets pickLocked offer the check again. The
+// caller releases the claim. A worker that starts it late runs an unknown
+// runner, which the broker stops, and its archive ref is gone.
+func (b *Broker) expireCheckLocked(rec *grantRec, now time.Time, why string) {
 	k := checkKey(rec.Forge, rec.Repo, rec.SHA, rec.Context)
 	retry := b.retries[k]
 	if retry == nil {
@@ -709,12 +717,12 @@ func (b *Broker) expireCheckLocked(rec *grantRec, now time.Time) {
 	}
 	retry.expired++
 	retry.open = retry.expired <= maxCheckRetries
-	desc := "never started on " + rec.Device
+	desc := why
 	if retry.open {
 		desc += "; offering it again"
 	}
 	b.queuePost(rec, "error", desc, now)
-	b.log.Warn("check grant never started; expired", "runner", rec.Name, "device", rec.Device, "repo", rec.Repo,
+	b.log.Warn("check grant never ran; expired", "why", why, "runner", rec.Name, "device", rec.Device, "repo", rec.Repo,
 		"sha", rec.SHA, "context", rec.Context, "again", retry.open)
 	delete(b.grants, rec.Name)
 }
