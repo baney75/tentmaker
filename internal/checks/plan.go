@@ -10,6 +10,7 @@ package checks
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -208,6 +209,11 @@ func planCombo(path, id string, j, wfEnv *val, forgejo bool, combo *val, multi b
 	}
 
 	ctx := exprCtx{forgejo: forgejo, matrix: combo}
+	if combo != nil {
+		if e := exprIn(combo); e != "" {
+			return core.CheckJob{}, "can't evaluate the matrix value " + e
+		}
+	}
 
 	platform, reason := runsOn(j.get("runs-on"), ctx, forgejo)
 	if reason != "" {
@@ -243,7 +249,9 @@ func planCombo(path, id string, j, wfEnv *val, forgejo bool, combo *val, multi b
 			return core.CheckJob{}, "timeout-minutes: " + err.Error()
 		}
 		if mins, err := strconv.ParseFloat(strings.TrimSpace(r), 64); err == nil && mins > 0 {
-			timeout = time.Duration(mins * float64(time.Minute))
+			// Cap as a float: a huge or infinite value converted to a
+			// Duration wraps negative on amd64.
+			timeout = time.Duration(math.Min(mins, maxTimeout.Minutes()) * float64(time.Minute))
 		}
 	}
 	if timeout > maxTimeout {
@@ -280,6 +288,34 @@ func planCombo(path, id string, j, wfEnv *val, forgejo bool, combo *val, multi b
 		Steps:    out,
 		Timeout:  timeout,
 	}, ""
+}
+
+// exprIn returns the first scalar under v that holds a ${{ }} expression,
+// or "". Matrix values are substituted as written, so one would carry an
+// expression checks mode never evaluated into the job.
+func exprIn(v *val) string {
+	switch {
+	case v.isScalar():
+		if strings.Contains(v.s, "${{") {
+			return v.s
+		}
+	case v.isSeq():
+		for _, c := range v.seq {
+			if e := exprIn(c); e != "" {
+				return e
+			}
+		}
+	case v.isMap():
+		for _, k := range v.keys {
+			if strings.Contains(k, "${{") {
+				return k
+			}
+			if e := exprIn(v.m[k]); e != "" {
+				return e
+			}
+		}
+	}
+	return ""
 }
 
 func mergeEnv(env map[string]string, layer *val, ctx exprCtx) string {
@@ -378,7 +414,7 @@ func planStep(s *val, ctx exprCtx, platform core.Platform) (*core.CheckStep, str
 			name += " " + version
 		}
 		if n := s.get("name"); n != nil {
-			if r, err := ctx.resolve(n.str()); err == nil {
+			if r, err := ctx.resolve(n.str()); err == nil && strings.TrimSpace(r) != "" {
 				name = r
 			}
 		}
@@ -398,8 +434,12 @@ func planStep(s *val, ctx exprCtx, platform core.Platform) (*core.CheckStep, str
 	}
 	step.Name = "Run " + firstLine(step.Run)
 	if n := s.get("name"); n != nil {
-		if step.Name, err = ctx.resolve(n.str()); err != nil {
+		r, err := ctx.resolve(n.str())
+		if err != nil {
 			return nil, "name: " + err.Error()
+		}
+		if strings.TrimSpace(r) != "" { // an empty name: keep the default
+			step.Name = r
 		}
 	}
 	shell := ""

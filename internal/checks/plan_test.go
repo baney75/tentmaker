@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"fmt"
 	"os"
 	"reflect"
 	"strings"
@@ -468,5 +469,46 @@ jobs:
 	}
 	if r := skipFor(t, skips, "mixed (plan9-latest)"); r == "" {
 		t.Fatal("no reason")
+	}
+}
+
+// A YAML alias bomb: nine levels of eight aliases is 8^9 nodes once
+// expanded. Plan must refuse it quickly instead of eating the broker's
+// memory.
+func TestPlanRefusesAliasBomb(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("l0: &l0 [x, x, x, x, x, x, x, x]\n")
+	for i := 1; i <= 9; i++ {
+		fmt.Fprintf(&b, "l%d: &l%d [*l%d, *l%d, *l%d, *l%d, *l%d, *l%d, *l%d, *l%d]\n", i, i, i-1, i-1, i-1, i-1, i-1, i-1, i-1, i-1)
+	}
+	b.WriteString("on: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n")
+	for _, forge := range []string{"github", "gitlab"} {
+		start := time.Now()
+		_, _, err := Plan("x.yml", []byte(b.String()), forge)
+		if err == nil || !strings.Contains(err.Error(), "too large") {
+			t.Errorf("%s: Plan = %v, want a too-large error", forge, err)
+		}
+		if d := time.Since(start); d > 5*time.Second {
+			t.Errorf("%s: Plan took %v", forge, d)
+		}
+	}
+}
+
+// A matrix whose product is astronomically large must be refused before
+// it is expanded.
+func TestPlanRefusesHugeMatrix(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("on: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n    strategy:\n      matrix:\n")
+	for i := 0; i < 12; i++ {
+		fmt.Fprintf(&b, "        k%d: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]\n", i)
+	}
+	b.WriteString("    steps:\n      - run: echo hi\n")
+	start := time.Now()
+	jobs, skips, err := Plan("x.yml", []byte(b.String()), "github")
+	if err != nil || len(jobs) != 0 || len(skips) != 1 || !strings.Contains(skips[0].Reason, "combinations") {
+		t.Fatalf("Plan = %v %v %v", jobs, skips, err)
+	}
+	if d := time.Since(start); d > 5*time.Second {
+		t.Errorf("Plan took %v", d)
 	}
 }

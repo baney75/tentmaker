@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 // MigrateWorkflow points a workflow's hosted jobs for one platform ("linux",
@@ -48,6 +50,7 @@ func MigrateWorkflow(src []byte, platform string) (out []byte, report []string, 
 		}
 	}
 	sensitiveWorkflow := sensitiveBody(outside.String())
+	keys := runsOnKeys(src)
 	var b strings.Builder
 	var changes, notes []string
 	for i := 0; i < len(lines); {
@@ -86,6 +89,20 @@ func MigrateWorkflow(src []byte, platform string) (out []byte, report []string, 
 			for _, l := range lines[i:end] {
 				b.WriteString(l)
 			}
+		}
+		if keys != nil && !sameItems(keys[i+1], items) {
+			// Not a block-style runs-on key with this value: a runs-on in a
+			// flow mapping, inside a script, or a value that runs on past
+			// this line. Rewriting the line would break or change the file.
+			for _, it := range items {
+				if classify(it, spec) == "pool" {
+					notes = append(notes, fmt.Sprintf("left %s: runs-on %s is in a flow mapping or spans lines; change it by hand", where, bare(it)))
+					break
+				}
+			}
+			keep()
+			i = end
+			continue
 		}
 		own, placed := owners[i]
 		if !placed {
@@ -450,4 +467,65 @@ func contains(s []string, v string) bool {
 		}
 	}
 	return false
+}
+
+// runsOnKeys maps the 1-based line of every runs-on key in a block-style
+// mapping to its value's scalars (one for a scalar, each item for a list
+// of scalars). It returns nil when src is not valid YAML; MigrateWorkflow
+// then edits by text alone, as GitHub won't run that file anyway.
+func runsOnKeys(src []byte) map[int][]string {
+	var doc yaml.Node
+	if yaml.Unmarshal(src, &doc) != nil {
+		return nil
+	}
+	out := map[int][]string{}
+	var walk func(n *yaml.Node, depth int)
+	walk = func(n *yaml.Node, depth int) {
+		if n == nil || depth > 64 || n.Kind == yaml.AliasNode {
+			return
+		}
+		if n.Kind == yaml.MappingNode && n.Style&yaml.FlowStyle == 0 {
+			for k := 0; k+1 < len(n.Content); k += 2 {
+				key, v := n.Content[k], n.Content[k+1]
+				if key.Kind != yaml.ScalarNode || key.Value != "runs-on" || key.Style != 0 {
+					continue
+				}
+				switch {
+				case v.Kind == yaml.ScalarNode && v.Line == key.Line && v.Style&(yaml.LiteralStyle|yaml.FoldedStyle) == 0:
+					out[key.Line] = []string{v.Value}
+				case v.Kind == yaml.SequenceNode:
+					var items []string
+					for _, c := range v.Content {
+						if c.Kind != yaml.ScalarNode {
+							items = nil
+							break
+						}
+						items = append(items, c.Value)
+					}
+					if items != nil {
+						out[key.Line] = items
+					}
+				}
+			}
+		}
+		for _, c := range n.Content {
+			walk(c, depth+1)
+		}
+	}
+	walk(&doc, 0)
+	return out
+}
+
+// sameItems reports whether the items read from the text are the values
+// YAML sees, so the text edit means what it looks like.
+func sameItems(want, items []string) bool {
+	if len(want) == 0 || len(want) != len(items) {
+		return false
+	}
+	for i := range want {
+		if want[i] != bare(items[i]) {
+			return false
+		}
+	}
+	return true
 }

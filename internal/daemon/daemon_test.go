@@ -12,6 +12,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -627,4 +628,54 @@ func TestPlannerLogsSkippedJobs(t *testing.T) {
 			t.Errorf("log lacks %q:\n%s", want, out)
 		}
 	}
+}
+
+func TestStatusRuntime(t *testing.T) {
+	r := newRig(t, func(c *config.Config) { c.Mesh.Enabled = false })
+	r.start()
+	defer r.stop()
+	s := r.d.Status(context.Background())
+	rt := s.Runtime
+	if rt == nil {
+		t.Fatal("status has no runtime section")
+	}
+	if rt.PID != os.Getpid() || rt.Goroutines <= 0 || rt.HeapInUseBytes == 0 || rt.SysBytes < rt.HeapInUseBytes || rt.UptimeS < 0 {
+		t.Errorf("runtime %+v", *rt)
+	}
+	switch runtime.GOOS {
+	case "linux", "darwin":
+		if rt.OpenFDs < 3 {
+			t.Errorf("open fds %d, want at least stdin, stdout and stderr", rt.OpenFDs)
+		}
+	default:
+		if rt.OpenFDs != -1 {
+			t.Errorf("open fds %d on %s, want -1", rt.OpenFDs, runtime.GOOS)
+		}
+	}
+	b, err := json.Marshal(s)
+	if err != nil || !strings.Contains(string(b), `"runtime":{"pid":`) || !strings.Contains(string(b), `"open_fds":`) {
+		t.Errorf("status JSON %s, %v", b, err)
+	}
+}
+
+func TestOpenFDsCountsANewFile(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("fds are counted on Linux and macOS")
+	}
+	// Goroutines left by earlier tests may open or close files too, so
+	// one clean attempt out of ten is enough.
+	var before, after int
+	for i := 0; i < 10; i++ {
+		before = openFDs(runtime.GOOS)
+		f, err := os.Open(os.Args[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		after = openFDs(runtime.GOOS)
+		f.Close()
+		if after == before+1 {
+			return
+		}
+	}
+	t.Errorf("open fds %d then %d after opening a file", before, after)
 }

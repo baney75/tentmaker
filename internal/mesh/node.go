@@ -590,24 +590,23 @@ func (n *Node) handleRelease(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, releaseResponse{Released: n.leases.release(req.JobKey, req.Device)})
 }
 
+// readJSON reads the whole body (capped at 1 MiB by route) and decodes it
+// as exactly one JSON value. Trailing data, such as a second object, is a
+// bad body: a peer that sends it is confused or probing.
 func readJSON(w http.ResponseWriter, r *http.Request, v any) bool {
-	dec := json.NewDecoder(r.Body)
-	if err := dec.Decode(v); err != nil {
+	b, err := io.ReadAll(r.Body)
+	if err != nil {
 		var tooBig *http.MaxBytesError
 		if errors.As(err, &tooBig) {
 			writeErr(w, http.StatusRequestEntityTooLarge, "body is over 1 MiB")
 			return false
 		}
-		writeErr(w, http.StatusBadRequest, "bad JSON body")
+		writeErr(w, http.StatusBadRequest, "can't read the body")
 		return false
 	}
-	// Drain the rest so an oversized trailer is still caught.
-	if _, err := io.Copy(io.Discard, r.Body); err != nil {
-		var tooBig *http.MaxBytesError
-		if errors.As(err, &tooBig) {
-			writeErr(w, http.StatusRequestEntityTooLarge, "body is over 1 MiB")
-			return false
-		}
+	if err := json.Unmarshal(b, v); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad JSON body")
+		return false
 	}
 	return true
 }

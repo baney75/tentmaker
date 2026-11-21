@@ -1303,6 +1303,17 @@ func (b *Broker) pollChecks(ctx context.Context, r *repoState, now time.Time) {
 			delete(b.plans, k)
 		}
 	}
+	// Forget ignored commits the forge no longer lists (a closed fork PR,
+	// a force-push), or the map grows with every fork push for months.
+	listed := map[string]bool{}
+	for _, c := range commits {
+		listed[r.key()+"@"+c.SHA] = true
+	}
+	for k := range b.noted {
+		if strings.HasPrefix(k, r.key()+"@") && !listed[k] {
+			delete(b.noted, k)
+		}
+	}
 	b.backoffLocked(r, now, busy)
 	b.mu.Unlock()
 }

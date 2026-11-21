@@ -1,6 +1,7 @@
 package config
 
 import (
+	"math"
 	"strings"
 	"testing"
 )
@@ -16,7 +17,9 @@ func TestParseSize(t *testing.T) {
 			t.Errorf("ParseSize(%q) = %v, %v; want %v", in, got, err, want)
 		}
 	}
-	for _, in := range []string{"", "4", "abc", "-1GiB", "4XB", "4GiBs"} {
+	// Fuzz findings: sizes past int64 used to wrap to a negative or
+	// arch-dependent value.
+	for _, in := range []string{"", "4", "abc", "-1GiB", "4XB", "4GiBs", "99999999999999999999T", "8193PiB", "1e9T", "1048577TiB"} {
 		if _, err := ParseSize(in); err == nil {
 			t.Errorf("ParseSize(%q) accepted", in)
 		}
@@ -24,7 +27,8 @@ func TestParseSize(t *testing.T) {
 }
 
 func TestSizeRoundTrip(t *testing.T) {
-	for _, s := range []Size{0, 4 * GiB, 512 * MiB, 3 * KiB} {
+	// 1023 bytes and 1.5 KiB used to save as "0KiB" and "1KiB".
+	for _, s := range []Size{0, 4 * GiB, 512 * MiB, 3 * KiB, 1023, 1536, MaxSize} {
 		got, err := ParseSize(s.String())
 		if err != nil || got != s {
 			t.Errorf("round trip %v: %v %v", s, got, err)
@@ -77,5 +81,18 @@ func TestRepoBranches(t *testing.T) {
 	c.Repos = []Repo{{Name: "o/r", Branches: []string{"e2e"}}}
 	if p := c.Validate(); len(p) != 1 || !strings.Contains(p[0], "checks") {
 		t.Errorf("runner repo with a branch: %v", p)
+	}
+}
+
+func TestValidateCPUs(t *testing.T) {
+	for _, bad := range []float64{math.NaN(), math.Inf(1), math.Inf(-1), -1} {
+		c := Default(16*int64(GiB), 8)
+		c.Job.CPUs = bad
+		c.Budget.Boost.CPUs = bad
+		p := c.Validate()
+		if !strings.Contains(strings.Join(p, "\n"), "job.cpus must be a finite number") ||
+			!strings.Contains(strings.Join(p, "\n"), "budget.boost.cpus must be a finite number") {
+			t.Errorf("cpus %v accepted: %q", bad, p)
+		}
 	}
 }

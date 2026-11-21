@@ -6,6 +6,7 @@ package config
 import (
 	"bytes"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -24,6 +25,11 @@ const (
 	KiB Size = 1 << 10
 	MiB Size = 1 << 20
 	GiB Size = 1 << 30
+
+	// MaxSize is the largest size ParseSize accepts (1 EiB). Sizes are
+	// added together (a job plus memory kept free), so the cap keeps those
+	// sums far from overflowing.
+	MaxSize Size = 1 << 60
 )
 
 var sizeRe = regexp.MustCompile(`^\s*([0-9]+(?:\.[0-9]+)?)\s*([KMGT]?)(I?B?)\s*$`)
@@ -42,6 +48,11 @@ func ParseSize(s string) (Size, error) {
 	if m[2] == "" && m[1] != "0" && m[3] == "" {
 		return 0, fmt.Errorf("size %q has no unit: write %sGiB or %sMiB", s, m[1], m[1])
 	}
+	// Compare as floats: converting an out-of-range float to an integer
+	// gives a different garbage value on each CPU.
+	if v := n * mult; !(v <= float64(MaxSize)) {
+		return 0, fmt.Errorf("size %q is larger than 1 EiB", s)
+	}
 	return Size(n * mult), nil
 }
 
@@ -53,8 +64,11 @@ func (s Size) String() string {
 		return fmt.Sprintf("%dGiB", s/GiB)
 	case s%MiB == 0:
 		return fmt.Sprintf("%dMiB", s/MiB)
-	default:
+	case s%KiB == 0:
 		return fmt.Sprintf("%dKiB", s/KiB)
+	default:
+		// Exact bytes, so Save and Load keep "1.5KiB" or "100B" as is.
+		return fmt.Sprintf("%dB", int64(s))
 	}
 }
 
@@ -246,8 +260,19 @@ func (c Config) Validate() []string {
 	if b.Boost.Memory != 0 && b.Boost.Memory < b.Everyday.Memory {
 		p = append(p, "budget.boost.memory is smaller than budget.everyday.memory; boost should be the larger one")
 	}
-	if c.Job.Memory <= 0 || c.Job.CPUs <= 0 {
+	if c.Job.Memory <= 0 || !(c.Job.CPUs > 0) {
 		p = append(p, "job.memory and job.cpus must be above zero")
+	}
+	for _, x := range []struct {
+		name string
+		v    float64
+	}{{"budget.everyday.cpus", b.Everyday.CPUs}, {"budget.boost.cpus", b.Boost.CPUs}, {"job.cpus", c.Job.CPUs}} {
+		if math.IsNaN(x.v) || math.IsInf(x.v, 0) || x.v < 0 {
+			p = append(p, x.name+" must be a finite number of CPUs, 0 or more")
+		}
+	}
+	if c.Job.MaxSlots < 0 {
+		p = append(p, "job.max_slots can't be negative")
 	}
 	if b.Everyday.Memory > 0 && b.Everyday.Memory < c.Job.Memory {
 		p = append(p, fmt.Sprintf("budget.everyday.memory (%s) is below one job (%s), so no job fits outside boost", b.Everyday.Memory, c.Job.Memory))

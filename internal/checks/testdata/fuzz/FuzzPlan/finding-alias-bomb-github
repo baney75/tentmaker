@@ -1,0 +1,3 @@
+go test fuzz v1
+[]byte("l0: &l0 [x, x, x, x, x, x, x, x]\nl1: &l1 [*l0, *l0, *l0, *l0, *l0, *l0, *l0, *l0]\nl2: &l2 [*l1, *l1, *l1, *l1, *l1, *l1, *l1, *l1]\nl3: &l3 [*l2, *l2, *l2, *l2, *l2, *l2, *l2, *l2]\nl4: &l4 [*l3, *l3, *l3, *l3, *l3, *l3, *l3, *l3]\nl5: &l5 [*l4, *l4, *l4, *l4, *l4, *l4, *l4, *l4]\nl6: &l6 [*l5, *l5, *l5, *l5, *l5, *l5, *l5, *l5]\nl7: &l7 [*l6, *l6, *l6, *l6, *l6, *l6, *l6, *l6]\nl8: &l8 [*l7, *l7, *l7, *l7, *l7, *l7, *l7, *l7]\nl9: &l9 [*l8, *l8, *l8, *l8, *l8, *l8, *l8, *l8]\non: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n")
+byte('\x00')

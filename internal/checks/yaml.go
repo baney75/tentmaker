@@ -21,6 +21,10 @@ type val struct {
 	quoted bool
 }
 
+// maxNodes caps the values one file expands to once aliases are resolved.
+// A real workflow has a few thousand; an alias bomb has billions.
+const maxNodes = 200_000
+
 func parseYAML(src []byte) (*val, error) {
 	var doc yaml.Node
 	if err := yaml.Unmarshal(src, &doc); err != nil {
@@ -29,28 +33,34 @@ func parseYAML(src []byte) (*val, error) {
 	if doc.Kind == 0 {
 		return &val{kind: yaml.MappingNode, m: map[string]*val{}}, nil
 	}
-	return convert(&doc, 0)
+	budget := maxNodes
+	return convert(&doc, 0, &budget)
 }
 
-func convert(n *yaml.Node, depth int) (*val, error) {
+// convert turns a yaml.Node into a val. budget counts down the nodes left
+// to make, across the whole file.
+func convert(n *yaml.Node, depth int, budget *int) (*val, error) {
 	if depth > 64 {
 		return nil, fmt.Errorf("YAML nests too deeply near line %d", n.Line)
+	}
+	if *budget--; *budget < 0 {
+		return nil, fmt.Errorf("YAML is too large once its aliases are expanded (over %d values)", maxNodes)
 	}
 	switch n.Kind {
 	case yaml.DocumentNode:
 		if len(n.Content) == 0 {
 			return &val{kind: yaml.MappingNode, m: map[string]*val{}}, nil
 		}
-		return convert(n.Content[0], depth+1)
+		return convert(n.Content[0], depth+1, budget)
 	case yaml.AliasNode:
-		return convert(n.Alias, depth+1)
+		return convert(n.Alias, depth+1, budget)
 	case yaml.ScalarNode:
 		return &val{kind: yaml.ScalarNode, s: n.Value, tag: n.ShortTag(), line: n.Line,
 			quoted: n.Style&(yaml.SingleQuotedStyle|yaml.DoubleQuotedStyle) != 0}, nil
 	case yaml.SequenceNode:
 		v := &val{kind: yaml.SequenceNode, line: n.Line}
 		for _, c := range n.Content {
-			cv, err := convert(c, depth+1)
+			cv, err := convert(c, depth+1, budget)
 			if err != nil {
 				return nil, err
 			}
@@ -62,7 +72,7 @@ func convert(n *yaml.Node, depth int) (*val, error) {
 		var merges []*val
 		for i := 0; i+1 < len(n.Content); i += 2 {
 			k, c := n.Content[i], n.Content[i+1]
-			cv, err := convert(c, depth+1)
+			cv, err := convert(c, depth+1, budget)
 			if err != nil {
 				return nil, err
 			}
