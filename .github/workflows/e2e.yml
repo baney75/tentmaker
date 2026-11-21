@@ -74,6 +74,13 @@ jobs:
           got=$(tentmaker version --json | jq -r .version)
           test "$got" = "$TM_VERSION" || { echo "::error::installed $got, want $TM_VERSION"; exit 1; }
 
+      # The runner image leaves /home/linuxbrew world-readable, and setup
+      # refuses a host where the CI user could read a home. This is the fix
+      # setup and doctor print.
+      - name: close home directories (Linux)
+        if: runner.os == 'Linux'
+        run: for h in /home/*; do sudo chmod o-rwx "$h"; done
+
       - name: setup
         id: setup
         run: |
@@ -230,7 +237,13 @@ jobs:
 
       - name: build the release archives
         shell: bash
-        run: scripts/build.sh "$TM_VERSION"
+        run: |
+          # Git Bash has no zip; MSYS2 on the image has pacman. Its tools go last on PATH.
+          if ! command -v zip >/dev/null; then
+            timeout 300 /c/msys64/usr/bin/pacman.exe -S --noconfirm --needed zip >/dev/null
+            export PATH="$PATH:/c/msys64/usr/bin"
+          fi
+          scripts/build.sh "$TM_VERSION"
 
       - name: serve dist/ as a fake release
         run: |
@@ -366,7 +379,8 @@ jobs:
       - name: dump on failure
         if: failure()
         run: |
-          Write-Output "== status"; tentmaker status --json
+          $ErrorActionPreference = 'Continue'
+          Write-Output "== status"; try { tentmaker status --json } catch { Write-Output $_ }
           Write-Output "== daemon log"; Get-Content -Tail 400 "$env:ProgramData\Tentmaker\logs\tentmaker.log" -ErrorAction SilentlyContinue
           Write-Output "== state files"
           Get-ChildItem -Recurse -Depth 4 "$env:ProgramData\Tentmaker" -ErrorAction SilentlyContinue | Where-Object { $_.FullName -notmatch '\\runner\\' } | Select-Object -First 200 -ExpandProperty FullName
