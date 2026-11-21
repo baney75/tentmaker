@@ -52,6 +52,8 @@ type Executor struct {
 	resets     int
 	violations []string
 
+	startGate chan struct{} // Start waits for it to close; nil: no wait
+
 	poolLimit core.Resources
 	poolInUse core.Resources
 	poolCalls int
@@ -141,6 +143,27 @@ func (e *Executor) SetListErr(err error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.listErr = err
+}
+
+// HoldStarts makes every Start wait, as a slow sandbox boot does, until
+// the returned release is called or the Start's context ends. release is
+// safe to call more than once.
+func (e *Executor) HoldStarts() (release func()) {
+	gate := make(chan struct{})
+	e.mu.Lock()
+	e.startGate = gate
+	e.mu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			e.mu.Lock()
+			if e.startGate == gate {
+				e.startGate = nil
+			}
+			e.mu.Unlock()
+			close(gate)
+		})
+	}
 }
 
 // SetStopErr makes Stop fail with err, leaving the runner as it was (nil
@@ -251,6 +274,16 @@ func (e *Executor) Preflight(ctx context.Context) []core.Problem { return nil }
 // Start implements core.Executor. It copies the secret, so a caller that
 // wipes its buffer doesn't change what the test sees.
 func (e *Executor) Start(ctx context.Context, spec core.ExecSpec) error {
+	e.mu.Lock()
+	gate := e.startGate
+	e.mu.Unlock()
+	if gate != nil {
+		select {
+		case <-gate:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.record("Start", spec.Name)

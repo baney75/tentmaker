@@ -65,6 +65,8 @@ type Worker struct {
 	lastTick     time.Time
 	relays       map[string]*relayEntry // relay id -> archive; memory only
 	cleanErrs    map[string]string      // leftover runner -> why its Clean failed; memory only
+
+	starts sync.WaitGroup // executor Starts in flight
 }
 
 // relayEntry lets one running check job fetch its source archive from the
@@ -128,6 +130,12 @@ type jobRec struct {
 	// blocks its executor; pollJobs retries the stop.
 	Stopping string `json:"stopping,omitempty"`
 	StopErr  string `json:"stop_err,omitempty"`
+
+	// starting is set while the executor's Start runs, off the tick, so a
+	// slow boot never stops the worker's heartbeat. The job holds its slot
+	// meanwhile but is not reported running. Not saved: after a restart
+	// State decides.
+	starting bool
 }
 
 // NewWorker builds a worker and loads state.json. It touches no executor;
@@ -364,6 +372,12 @@ func (w *Worker) pollJobs(ctx context.Context, now time.Time) {
 			w.finish(ctx, nil, j, "the job's executor is no longer configured")
 			continue
 		}
+		w.mu.Lock()
+		starting := j.starting
+		w.mu.Unlock()
+		if starting {
+			continue // the start finishes off the tick
+		}
 		if j.Stopping != "" {
 			w.stopJob(ctx, j, j.Stopping)
 			continue
@@ -474,6 +488,15 @@ func (w *Worker) stopJob(ctx context.Context, j *jobRec, why string) {
 	if why == "" {
 		why = "stopped"
 	}
+	w.mu.Lock()
+	if j.starting {
+		// Stopped once its Start returns; until then it holds its slot.
+		j.Stopping, j.StopErr = why, "it is still starting"
+		w.st.Dirty = true
+		w.mu.Unlock()
+		return
+	}
+	w.mu.Unlock()
 	e := w.execByName(j.Executor)
 	if e == nil {
 		w.finish(ctx, nil, j, why)
@@ -718,7 +741,7 @@ func (w *Worker) exchange(ctx context.Context, now time.Time, d core.Decision, a
 		}
 		var running []string
 		for _, j := range w.st.Jobs {
-			if j.Source == name {
+			if j.Source == name && !j.starting {
 				running = append(running, j.Name)
 			}
 		}
@@ -887,7 +910,7 @@ func (w *Worker) start(ctx context.Context, src core.WorkSource, off core.WorkOf
 	spec := core.ExecSpec{Kind: kind, Name: name, Grant: g, Platform: off.Platform, Limits: w.limits,
 		MaxDuration: w.o.Config.Job.MaxDuration.D(), TestWorkers: tw}
 	rec := &jobRec{Name: name, Source: source, Kind: kind, Executor: e.name, Forge: off.Job.Forge, Repo: off.Job.Repo,
-		Job: off.Job.Name, JobID: off.Job.ID, Platform: off.Platform, Started: now, Limits: w.limits}
+		Job: off.Job.Name, JobID: off.Job.ID, Platform: off.Platform, Started: now, Limits: w.limits, starting: true}
 	w.mu.Lock()
 	w.st.Jobs = append(w.st.Jobs, rec)
 	w.st.Dirty = true
@@ -895,9 +918,22 @@ func (w *Worker) start(ctx context.Context, src core.WorkSource, off core.WorkOf
 	if err := w.save(); err != nil {
 		w.log.Error("state not saved before start", "error", err)
 	}
+	w.starts.Add(1)
+	go func() {
+		defer w.starts.Done()
+		w.boot(ctx, e, rec, spec)
+	}()
+	return true
+}
+
+// boot runs the executor's Start, which can take minutes (a VM boot, an
+// image pull), off the tick so the worker keeps reporting to its sources.
+func (w *Worker) boot(ctx context.Context, e *execInfo, rec *jobRec, spec core.ExecSpec) {
+	name, source, kind := rec.Name, rec.Source, rec.Kind
 	sctx, cancel := context.WithTimeout(ctx, startTimeout)
 	err := e.ex.Start(sctx, spec)
 	cancel()
+	now := w.now()
 	if err != nil {
 		w.log.Warn("start failed", "executor", e.name, "runner", name, "repo", rec.Repo, "error", err)
 		w.mu.Lock()
@@ -919,14 +955,14 @@ func (w *Worker) start(ctx context.Context, src core.WorkSource, off core.WorkOf
 		}
 		w.bootFailureLocked(e, now, err)
 		w.mu.Unlock()
-		return false
+		return
 	}
 	w.mu.Lock()
+	rec.starting = false
 	e.failures, e.blockedUntil, e.lastErr = 0, time.Time{}, ""
 	w.mu.Unlock()
 	w.log.Info("job started", "source", source, "executor", e.name, "runner", name, "kind", kind,
-		"repo", rec.Repo, "job", rec.Job, "platform", off.Platform.String())
-	return true
+		"repo", rec.Repo, "job", rec.Job, "platform", rec.Platform.String())
 }
 
 func (w *Worker) bootFailureLocked(e *execInfo, now time.Time, err error) {
@@ -998,6 +1034,15 @@ func (w *Worker) Shutdown(ctx context.Context) {
 	w.shutting = true
 	d := w.decision
 	w.mu.Unlock()
+	done := make(chan struct{})
+	go func() {
+		w.starts.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-ctx.Done():
+	}
 	now := w.now()
 	w.pollJobs(ctx, now)
 	w.exchange(ctx, now, d, false)
@@ -1111,6 +1156,8 @@ type RunningJob struct {
 	Executor string    `json:"executor"`
 	Platform string    `json:"platform"`
 	Started  time.Time `json:"started"`
+	// Starting is set while the executor's Start has not returned.
+	Starting bool `json:"starting,omitempty"`
 }
 
 // ExecutorStatus is one executor's health.
@@ -1151,7 +1198,7 @@ func (w *Worker) Status() WorkerStatus {
 	s.Slots = SlotStatus{Total: w.decision.Slots, Used: len(w.st.Jobs), Free: w.freeLocked(w.decision, now)}
 	for _, j := range w.st.Jobs {
 		s.Running = append(s.Running, RunningJob{Name: j.Name, Source: j.Source, Kind: j.Kind, Repo: j.Repo, Job: j.Job,
-			JobID: j.JobID, Executor: j.Executor, Platform: j.Platform.String(), Started: j.Started})
+			JobID: j.JobID, Executor: j.Executor, Platform: j.Platform.String(), Started: j.Started, Starting: j.starting})
 	}
 	for _, e := range w.execs {
 		_, n := w.inUse(e.name)

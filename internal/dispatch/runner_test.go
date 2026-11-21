@@ -144,6 +144,7 @@ func TestTwoBrokersRaceWithClaimer(t *testing.T) {
 				if err := w.w.Tick(bg); err != nil {
 					t.Fatal(err)
 				}
+				w.w.starts.Wait()
 			}
 			r.clk.Add(2 * time.Second)
 		}

@@ -190,6 +190,9 @@ type wrig struct {
 	dir     string
 	sources []core.WorkSource
 	silent  bool
+	// async leaves the worker's Starts running after a tick; by default
+	// the rig waits for them, so a tick's starts are done when it returns.
+	async bool
 }
 
 type rig struct {
@@ -308,6 +311,9 @@ func (r *rig) tick() {
 		}
 		if err := w.w.Tick(bg); err != nil {
 			r.t.Fatalf("worker %s tick: %v", w.name, err)
+		}
+		if !w.async {
+			w.w.starts.Wait()
 		}
 	}
 }

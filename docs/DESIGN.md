@@ -274,6 +274,12 @@ stop. A runner whose stop or `Clean` failed blocks its executor: it takes nothin
 retry or a reset works, `status` lists it under the executor's `stuck`, and `doctor` reports it
 as a `worker` problem (review r1 partA sol-F2).
 
+`Start` runs off the tick, since a macOS VM boot or a cold image pull can take minutes
+(`startTimeout`, 10 min) while the broker sweeps a worker silent for 2 minutes. The job is
+written to `state.json` and holds its slot and memory from the moment it is accepted; it is
+reported in `Running` only once `Start` returns, so the broker's start grace still covers it.
+A stop asked for while it starts waits for `Start` to return (review r1 partA sol-F4).
+
 ## Checks mode (internal/checks, internal/forge/gitlab)
 
 Runner mode needs the forge's own runner (GitHub actions/runner, Forgejo act_runner). Checks mode
