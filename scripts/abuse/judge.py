@@ -23,6 +23,8 @@ MAIN = [
     "PRIV", "write-other-home", "write-state-dir", "signal-daemon", "read-other-job",
 ]
 HARNESS = ["background-process", "daemon-healthy"]
+# Linux only: the same network attacks from a rootless podman container.
+PODMAN = ["podman-decoy-tailnet-v4", "podman-decoy-lan-v4", "podman-mesh-port-host-ip", "podman-loopback-other-port"]
 LINE = re.compile(r"^ATTACK (\S+) (BLOCKED|SUCCEEDED)\b ?(.*)$")
 
 
@@ -75,7 +77,7 @@ def main():
             problems.append("tentmaker/%s is %s: %s" % (job[k], st.get("state", "missing"), st.get("description", "")))
 
     main_log = logs[""]
-    for c in ("internet", "dns"):
+    for c in ("internet", "dns") + (("podman",) if a.os == "linux" else ()):
         if "CONTROL %s OK" % c not in main_log:
             problems.append("control %s failed: the job could not reach what it needs, so blocked attacks prove nothing" % c)
 
@@ -106,7 +108,7 @@ def main():
     got.update(harness)
 
     want = [n.replace("PRIV", "admin" if a.os == "windows" else "sudo") for n in MAIN]
-    want += ["fork-bomb", "memory-limit"] + HARNESS
+    want += (PODMAN if a.os == "linux" else []) + ["fork-bomb", "memory-limit"] + HARNESS
     entries = []
     for n in want:
         if n not in got:

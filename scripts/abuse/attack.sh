@@ -64,32 +64,32 @@ print("ATTACK memory-limit SUCCEEDED allocated %d MiB" % (len(chunks) * 64), flu
 	exit 0
 	;;
 pids)
-	# A fork bomb that stops at 6000 processes. Reaching that many means
-	# nothing bounds the job's processes.
+	# A fork bomb that stops at 6000 tasks. Reaching that many means nothing
+	# bounds the job's tasks. It starts threads with small stacks: the pids
+	# limit counts threads like processes, and 4096 sleep processes cost
+	# about 2 GiB, which hits the memory limit first and proves nothing about
+	# the pids limit.
 	python3 -c '
-import os, signal, time
-pids, err = [], ""
+import threading
+threading.stack_size(64 * 1024)
+stop = threading.Event()
+ts, err = [], ""
 for i in range(6000):
+    t = threading.Thread(target=stop.wait, daemon=True)
     try:
-        pids.append(os.posix_spawn("/bin/sleep", ["sleep", "120"], {}))
-    except OSError as e:
-        err = e.strerror
+        t.start()
+    except RuntimeError as e:
+        err = str(e)
         break
-n = len(pids)
-for p in pids:
-    try:
-        os.kill(p, signal.SIGKILL)
-    except OSError:
-        pass
-for p in pids:
-    try:
-        os.waitpid(p, 0)
-    except OSError:
-        pass
+    ts.append(t)
+n = len(ts)
+stop.set()
+for t in ts:
+    t.join()
 if n >= 6000:
-    print("ATTACK fork-bomb SUCCEEDED started %d processes" % n, flush=True)
+    print("ATTACK fork-bomb SUCCEEDED started %d tasks" % n, flush=True)
 else:
-    print("ATTACK fork-bomb BLOCKED after %d processes: %s" % (n, err), flush=True)
+    print("ATTACK fork-bomb BLOCKED after %d tasks: %s" % (n, err), flush=True)
 '
 	exit 0
 	;;
@@ -142,6 +142,21 @@ fi
 reach mesh-port-tailnet http://100.64.77.1:7433/
 reach mesh-port-loopback http://127.0.0.1:7433/
 reach loopback-other-port http://127.0.0.1:8766/
+
+# Rootless podman: a container's traffic leaves through pasta or
+# slirp4netns, which run as this job's user, so the same rules must stop it.
+img=docker.io/library/busybox:1.36
+if timeout 180 podman pull -q "$img" >/dev/null 2>&1; then
+	in_pod() { timeout 30 podman run --rm "$img" wget -q -O /dev/null -T 5 "$1" >/dev/null 2>&1; }
+	if in_pod http://example.com/; then echo "CONTROL podman OK"; else echo "CONTROL podman FAILED"; fi
+	for t in "podman-decoy-tailnet-v4 http://100.64.77.1:8080/" "podman-decoy-lan-v4 http://10.77.0.1:8080/" \
+		"podman-mesh-port-host-ip http://${ip:-192.0.2.1}:7433/" "podman-loopback-other-port http://127.0.0.1:8766/"; do
+		set -- $t
+		if in_pod "$2"; then say "$1" SUCCEEDED "$2 answered"; else say "$1" BLOCKED; fi
+	done
+else
+	echo "CONTROL podman FAILED (could not pull $img)"
+fi
 
 # Privilege.
 if sudo -n true >/dev/null 2>&1; then say sudo SUCCEEDED; else say sudo BLOCKED; fi

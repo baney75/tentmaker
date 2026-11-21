@@ -106,6 +106,8 @@ jobs:
           cat "$RUNNER_TEMP/setup.json"
           test "$rc" = 0 || { echo "::error::setup exited $rc"; exit 1; }
           jq -e '.ok == true and .service == "running"' "$RUNNER_TEMP/setup.json" >/dev/null || { echo "::error::setup failed"; exit 1; }
+          # Two 2-CPU slots, so the sibling runs while abuse looks for it.
+          sudo tentmaker budget set --boost-cpus 4 --json | jq -e '.ok == true' >/dev/null || { echo "::error::budget set failed"; exit 1; }
           systemctl show -p MainPID -p NRestarts tentmaker | tee "$RUNNER_TEMP/daemon-before.txt"
           sudo nft list table inet tentmaker || echo "(no nftables table inet tentmaker)"
 
@@ -257,13 +259,24 @@ jobs:
       # Stand-ins for another tailnet device, a LAN device, the mesh API and
       # a loopback service, served by a SYSTEM task so they outlive the step.
       - name: plant decoys
+        timeout-minutes: 6
         run: |
           Get-NetFirewallProfile | Format-Table Name, Enabled, DefaultOutboundAction, DefaultInboundAction
           $if = (Get-NetRoute -DestinationPrefix '0.0.0.0/0' | Sort-Object RouteMetric | Select-Object -First 1).InterfaceIndex
-          New-NetIPAddress -InterfaceIndex $if -IPAddress 100.64.77.1 -PrefixLength 32 -SkipAsSource $true | Out-Null
-          New-NetIPAddress -InterfaceIndex $if -IPAddress 10.77.0.1 -PrefixLength 32 -SkipAsSource $true | Out-Null
-          New-NetIPAddress -InterfaceIndex $if -IPAddress 'fd7a:115c:a1e0::77' -PrefixLength 128 -SkipAsSource $true | Out-Null
-          Get-NetIPAddress -InterfaceIndex $if | Format-Table IPAddress, PrefixLength, AddressState
+          $alias = (Get-NetAdapter -InterfaceIndex $if).Name
+          Get-NetIPInterface -InterfaceIndex $if | Format-Table AddressFamily, Dhcp, ConnectionState
+          # A static address on a DHCP interface turns DHCP off and drops the
+          # lease and the default route (the runner then loses GitHub), unless
+          # DHCP and static addresses may coexist.
+          netsh interface ipv4 set interface interface="$alias" dhcpstaticipcoexistence=enabled
+          if ($LASTEXITCODE -ne 0) { Write-Output "::error::this Windows can't keep DHCP next to static addresses"; exit 1 }
+          netsh interface ipv4 add address name="$alias" address=100.64.77.1 mask=255.255.255.255 skipassource=true
+          netsh interface ipv4 add address name="$alias" address=10.77.0.1 mask=255.255.255.255 skipassource=true
+          netsh interface ipv6 add address interface="$alias" address=fd7a:115c:a1e0::77/128 skipassource=true
+          Get-NetIPInterface -InterfaceIndex $if | Format-Table AddressFamily, Dhcp, ConnectionState
+          Get-NetIPAddress -InterfaceIndex $if | Format-Table IPAddress, PrefixLength, PrefixOrigin, SkipAsSource, AddressState
+          try { Invoke-WebRequest -UseBasicParsing -TimeoutSec 15 https://api.github.com/zen | Out-Null; Write-Output "still online" }
+          catch { Write-Output "::error::the decoy addresses cut the runner off: $_"; exit 1 }
           $py = (Get-Command python).Source
           $decoy = (Resolve-Path scripts\abuse\decoy.py).Path
           $log = Join-Path $env:RUNNER_TEMP 'decoy.log'
@@ -276,7 +289,7 @@ jobs:
           Write-Output "host address: $hostip"
           foreach ($u in @('http://100.64.77.1:8080/', 'http://[fd7a:115c:a1e0::77]:8080/', 'http://10.77.0.1:8080/', "http://${hostip}:7433/", 'http://100.64.77.1:7433/', 'http://127.0.0.1:7433/', 'http://127.0.0.1:8766/')) {
             $ok = $false
-            for ($i = 0; $i -lt 60 -and -not $ok; $i++) {
+            for ($i = 0; $i -lt 30 -and -not $ok; $i++) {
               try { Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 $u | Out-Null; $ok = $true } catch { Start-Sleep -Milliseconds 500 }
             }
             if (-not $ok) { Write-Output "::error::decoy $u does not answer"; Get-Content $log -ErrorAction SilentlyContinue; exit 1 }
@@ -292,6 +305,9 @@ jobs:
           if ($rc -ne 0) { Write-Output "::error::setup exited $rc"; exit 1 }
           $v = $out | ConvertFrom-Json
           if (-not $v.ok -or $v.service -ne 'running') { Write-Output "::error::setup failed"; exit 1 }
+          # Two 2-CPU slots, so the sibling runs while abuse looks for it.
+          $b = (tentmaker budget set --boost-cpus 4 --json) -join "`n" | ConvertFrom-Json
+          if (-not $b.ok) { Write-Output "::error::budget set failed"; exit 1 }
           $svcPid = (Get-CimInstance Win32_Service -Filter "Name='Tentmaker'").ProcessId
           Set-Content -Path "$env:RUNNER_TEMP\daemon-before.txt" -Value $svcPid
           Write-Output "daemon pid $svcPid"
