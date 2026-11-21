@@ -31,6 +31,7 @@ type fakeProc struct {
 	mu         sync.Mutex
 	code       int
 	terminated int
+	memHit     bool
 }
 
 func newFakeProc() *fakeProc { return &fakeProc{done: make(chan struct{}), code: -1} }
@@ -50,6 +51,21 @@ func (p *fakeProc) exit(code int) {
 		p.mu.Unlock()
 		close(p.done)
 	})
+}
+
+func (p *fakeProc) MemoryLimitHit() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.memHit
+}
+
+// outOfMemory ends the job as the job object's memory limit does: an
+// allocation fails and the program exits on its own.
+func (p *fakeProc) outOfMemory(code int) {
+	p.mu.Lock()
+	p.memHit = true
+	p.mu.Unlock()
+	p.exit(code)
 }
 
 func (p *fakeProc) Terminate() error {
@@ -984,6 +1000,37 @@ func TestCheckResult(t *testing.T) {
 	must(t, os.WriteFile(filepath.Join(out, "result.json"), []byte(`{"state":"passed"}`), 0o600))
 	if r, _ := v.e.CheckResult(ctx, "check-r-1"); r.State != "error" {
 		t.Fatalf("bad state accepted: %+v", r)
+	}
+}
+
+// TestCheckResultOutOfMemory: a job object's memory limit makes an
+// allocation fail, so check-run writes an ordinary step failure. The
+// status must say the job ran out of memory, as on Linux.
+func TestCheckResultOutOfMemory(t *testing.T) {
+	v := newEnv(t)
+	v.install()
+	ctx := context.Background()
+	must(t, v.e.Start(ctx, spec("check-oom-1", core.KindCheck)))
+	out := filepath.Join(v.e.jobDir("check-oom-1"), "out")
+	must(t, os.MkdirAll(out, 0o700))
+	must(t, os.WriteFile(filepath.Join(out, "result.json"), []byte(`{"state":"failure","description":"failed at step build, 2s"}`), 0o600))
+	v.api.proc(0).outOfMemory(1)
+	waitState(t, v.e, "check-oom-1", core.ExecExited)
+	r, err := v.e.CheckResult(ctx, "check-oom-1")
+	must(t, err)
+	if r.State != "failure" || r.Description != "ran out of memory (the job's limit is 4.0 GiB); failed at step build, 2s" {
+		t.Fatalf("result: %+v", r)
+	}
+
+	// A job that never hit the limit keeps check-run's own words.
+	must(t, v.e.Start(ctx, spec("check-ok-1", core.KindCheck)))
+	out = filepath.Join(v.e.jobDir("check-ok-1"), "out")
+	must(t, os.MkdirAll(out, 0o700))
+	must(t, os.WriteFile(filepath.Join(out, "result.json"), []byte(`{"state":"failure","description":"failed at step build, 2s"}`), 0o600))
+	v.api.proc(1).exit(1)
+	waitState(t, v.e, "check-ok-1", core.ExecExited)
+	if r, _ := v.e.CheckResult(ctx, "check-ok-1"); r.Description != "failed at step build, 2s" {
+		t.Fatalf("result: %+v", r)
 	}
 }
 

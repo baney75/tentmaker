@@ -519,6 +519,7 @@ section is rewritten.
 - The Windows runner password uses machine-scope DPAPI, protected by the file ACL (SYSTEM and Administrators).
 - Network rules are written at setup. A changed `allow_lan` takes effect only after `sudo tentmaker setup` runs again; until then the loaded rules don't match the config: Linux treats rules missing the LAN as stale and reloads them stricter at the next `Start`, and Windows (description mismatch) refuses jobs. Rules stricter than the config pass. Host facts the rules name (Linux subuid ranges, Tailscale interfaces, on-link IPv6 prefixes and DNS servers; Windows DNS servers) are read again at every `Start`.
 - Linux job units have no `--collect` and set `OOMPolicy=stop`: a unit the OOM killer ended stays loaded with `Result=oom-kill` until `Clean` runs `systemctl reset-failed`, so `CheckResult` can say "ran out of memory" instead of "cancelled" or "no result.json".
+- A Windows job object's memory limit fails the allocation instead of killing the job, so check-run reports an ordinary step failure. The job object posts `JOB_OBJECT_MSG_JOB_MEMORY_LIMIT` to a completion port the process reads; `CheckResult` then says "ran out of memory (the job's limit is N GiB)" ahead of check-run's words. The daemon remembers this only while it tracks the job.
 
 **mesh**
 

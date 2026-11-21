@@ -78,7 +78,10 @@ type ProcSpec struct {
 type Process interface {
 	Done() <-chan struct{} // closed once the main process exited and the job object was emptied
 	ExitCode() int         // valid once Done is closed
-	Terminate() error      // kills every process in the job object
+	// MemoryLimitHit says the job object refused memory past its limit.
+	// Valid once Done is closed.
+	MemoryLimitHit() bool
+	Terminate() error // kills every process in the job object
 }
 
 // API is everything the executor does to Windows. Tests swap in a fake.

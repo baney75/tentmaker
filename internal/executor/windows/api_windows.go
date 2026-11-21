@@ -29,6 +29,12 @@ var (
 	advapi32 = win.NewLazySystemDLL("advapi32.dll")
 	netapi32 = win.NewLazySystemDLL("netapi32.dll")
 	user32   = win.NewLazySystemDLL("user32.dll")
+	kernel32 = win.NewLazySystemDLL("kernel32.dll")
+
+	// x/sys wraps this one, but types its last argument as **Overlapped. A
+	// job object's notice puts a process id there, which the Go runtime
+	// would take for a bad pointer.
+	procGetQueuedCompletionStatus = kernel32.NewProc("GetQueuedCompletionStatus")
 
 	procLogonUserW                = advapi32.NewProc("LogonUserW")
 	procLsaOpenPolicy             = advapi32.NewProc("LsaOpenPolicy")
@@ -569,14 +575,58 @@ func setJobLimits(job win.Handle, p ProcSpec) error {
 	return nil
 }
 
+// Job object notices read from its completion port (winnt.h).
+const (
+	jobMsgJobMemoryLimit = 10 // JOB_OBJECT_MSG_JOB_MEMORY_LIMIT
+	portKeyJob           = 1  // the key the job object posts with
+	portKeyDone          = 2  // wait's marker: every notice before it is read
+)
+
+type jobPortInfo struct {
+	CompletionKey  uintptr
+	CompletionPort win.Handle
+}
+
 type osProcess struct {
-	mu   sync.Mutex
-	job  win.Handle // 0 once closed
-	done chan struct{}
-	code int
+	mu     sync.Mutex
+	job    win.Handle // 0 once closed
+	port   win.Handle // the job object's completion port
+	read   chan struct{}
+	done   chan struct{}
+	code   int
+	memHit bool
 }
 
 func (p *osProcess) Done() <-chan struct{} { return p.done }
+
+func (p *osProcess) MemoryLimitHit() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.memHit
+}
+
+// readPort reads the job object's notices until wait's marker, so none
+// pile up in the port while a job starts process after process.
+func (p *osProcess) readPort() {
+	defer close(p.read)
+	for {
+		var n uint32
+		var key, pid uintptr
+		r, _, _ := procGetQueuedCompletionStatus.Call(uintptr(p.port), uintptr(unsafe.Pointer(&n)),
+			uintptr(unsafe.Pointer(&key)), uintptr(unsafe.Pointer(&pid)), uintptr(win.INFINITE))
+		if r == 0 {
+			return // the port is gone
+		}
+		switch {
+		case key == portKeyDone:
+			return
+		case key == portKeyJob && n == jobMsgJobMemoryLimit:
+			p.mu.Lock()
+			p.memHit = true
+			p.mu.Unlock()
+		}
+	}
+}
 
 func (p *osProcess) ExitCode() int {
 	p.mu.Lock()
@@ -608,6 +658,15 @@ func (p *osProcess) wait(proc win.Handle) {
 	p.job = 0
 	p.code = int(code)
 	p.mu.Unlock()
+	// The port is first in, first out: once readPort sees the marker it has
+	// read every notice the job posted.
+	if win.PostQueuedCompletionStatus(p.port, 0, portKeyDone, nil) == nil {
+		select {
+		case <-p.read:
+		case <-time.After(10 * time.Second):
+		}
+	}
+	win.CloseHandle(p.port)
 	close(p.done)
 }
 
@@ -640,6 +699,22 @@ func (a *OSAPI) StartProcess(p ProcSpec) (Process, error) {
 	}()
 	if err := setJobLimits(job, p); err != nil {
 		return nil, err
+	}
+	// A completion port tells us when the job asked for memory past its
+	// limit; CheckResult reports that.
+	port, err := win.CreateIoCompletionPort(win.InvalidHandle, 0, 0, 1)
+	if err != nil {
+		return nil, fmt.Errorf("CreateIoCompletionPort: %w", err)
+	}
+	defer func() {
+		if !ok {
+			win.CloseHandle(port)
+		}
+	}()
+	jp := jobPortInfo{CompletionKey: portKeyJob, CompletionPort: port}
+	if _, err := win.SetInformationJobObject(job, win.JobObjectAssociateCompletionPortInformation,
+		uintptr(unsafe.Pointer(&jp)), uint32(unsafe.Sizeof(jp))); err != nil {
+		return nil, fmt.Errorf("job completion port: %w", err)
 	}
 	inherit := &win.SecurityAttributes{InheritHandle: 1}
 	inherit.Length = uint32(unsafe.Sizeof(*inherit))
@@ -706,7 +781,8 @@ func (a *OSAPI) StartProcess(p ProcSpec) (Process, error) {
 		clear(secret)
 		stdin.Close()
 	}()
-	proc := &osProcess{job: job, done: make(chan struct{}), code: -1}
+	proc := &osProcess{job: job, port: port, read: make(chan struct{}), done: make(chan struct{}), code: -1}
+	go proc.readPort()
 	go proc.wait(pi.Process)
 	return proc, nil
 }

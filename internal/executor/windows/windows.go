@@ -80,10 +80,12 @@ type Executor struct {
 // job is one tracked job. p is nil while Start is still setting it up;
 // such a job counts as running, so nothing cleans it from under Start.
 type job struct {
-	p     Process
-	timer *time.Timer
-	done  bool
-	code  int
+	p      Process
+	timer  *time.Timer
+	done   bool
+	code   int
+	memory int64 // the job's memory limit
+	oom    bool  // the job object refused memory past it
 }
 
 // New returns an executor. It does not touch the host.
@@ -268,7 +270,7 @@ func (e *Executor) Start(ctx context.Context, spec core.ExecSpec) error {
 		e.mu.Unlock()
 		return fmt.Errorf("job %s already exists", spec.Name)
 	}
-	j := &job{code: -1}
+	j := &job{code: -1, memory: spec.Limits.MemoryBytes}
 	e.jobs[spec.Name] = j // reserve the name; the copy below takes a while
 	e.mu.Unlock()
 	started := false
@@ -343,7 +345,7 @@ func (e *Executor) wait(name string, j *job) {
 	<-p.Done()
 	timer.Stop()
 	e.mu.Lock()
-	j.done, j.code = true, p.ExitCode()
+	j.done, j.code, j.oom = true, p.ExitCode(), p.MemoryLimitHit()
 	e.mu.Unlock()
 	e.log.Info("job exited", "executor", Name, "name", name, "code", j.code)
 }
@@ -707,11 +709,25 @@ func (e *Executor) CheckResult(ctx context.Context, name string) (core.CheckResu
 	e.mu.Lock()
 	j, ok := e.jobs[name]
 	running := ok && !j.done
+	oom, memory := ok && j.oom, int64(0)
+	if ok {
+		memory = j.memory
+	}
 	e.mu.Unlock()
 	if running {
 		return core.CheckResult{}, fmt.Errorf("job %s is still running", name)
 	}
-	return readCheckResult(e.jobDir(name), "out", name), nil
+	res := readCheckResult(e.jobDir(name), "out", name)
+	// The job object's limit makes an allocation fail rather than killing
+	// the job, so check-run reports an ordinary step failure; say why.
+	if oom {
+		why := fmt.Sprintf("ran out of memory (the job's limit is %.1f GiB)", float64(memory)/(1<<30))
+		if res.Description != "" {
+			why += "; " + res.Description
+		}
+		res.State, res.Description = "failure", trunc(why, 1000)
+	}
+	return res, nil
 }
 
 func redact(s string, secret []byte) string {
