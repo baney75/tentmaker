@@ -13,7 +13,7 @@ sudo tentmaker setup
 
 ## Why
 
-Your laptop and desktop sit idle most of the day. Hosted CI minutes cost money, and macOS minutes cost the most. Tentmaker gives CI a fixed slice of each machine you own, a bigger slice when the machine is plugged in, and nothing when the battery runs low or you start a game. Every job runs in a fresh sandbox that is thrown away afterwards, so a job can't leave anything behind for the next one or for you.
+Your laptop and desktop sit idle most of the day. Hosted CI minutes cost money, and macOS minutes cost the most. Tentmaker gives CI a fixed slice of each machine you own, a bigger slice when the machine is plugged in, and nothing when the battery runs low. The fixed slice is reserved for CI, so it keeps running while you play a game or take a call; only the bigger slice gives way. Every job runs in a fresh sandbox that is thrown away afterwards, so a job can't leave anything behind for the next one or for you.
 
 Devices on one [Tailscale](https://tailscale.com) tailnet form a pool and share work. GitHub Actions jobs run on Tentmaker's ephemeral runners. Forgejo, Gitea and GitLab repos run in checks mode, which posts commit statuses.
 
@@ -167,7 +167,7 @@ Boost can also wait until you have been away for a while (`boost_needs_idle`, `i
 
 A device takes as many jobs as fit: each job reserves 2 GiB and 2 CPUs by default. When the budget shrinks, the device drains: it takes no new jobs and lets running ones finish. Only low battery and very low disk stop running jobs.
 
-Guards pause CI when the machine needs itself: less than 20 GiB free disk, less than 2 GiB of memory left for you after a job, a process you list (a game, a video call) running, or load above a limit you set.
+Guards pause CI when the machine needs itself: less than 20 GiB free disk or less than 2 GiB of memory left for you after a job. A process you list (a game, a video call) or load above a limit you set drops boost back to the everyday budget, which stays reserved for CI. `tentmaker pause` stops CI entirely for a while.
 
 ```sh
 tentmaker budget                                        # current profile and why

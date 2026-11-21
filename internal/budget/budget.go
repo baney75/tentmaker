@@ -127,13 +127,9 @@ func (e *Engine) Decide(ctx context.Context, now time.Time, running int) core.De
 		why("no boost budget is set (budget.boost.memory = 0), so boost is the same as everyday")
 	}
 
-	d.Limit = e.limit(d.Profile)
-	d.Slots = slots(d.Limit, e.cfg.Job)
-	if d.Profile != Off && d.Slots == 0 {
-		why("the %s budget (%s, %g CPUs) fits no %s, %g CPU job", d.Profile,
-			guards.FormatBytes(d.Limit.MemoryBytes), d.Limit.CPUs, guards.FormatBytes(int64(e.cfg.Job.Memory)), e.cfg.Job.CPUs)
-	}
-
+	// Everyday is the reserved budget: it keeps running while the user plays
+	// a game, takes a call or loads the machine. Only boost gives way to
+	// them. Memory, disk and battery guards still stop both.
 	g := guards.Check(ctx, e.cfg.Guards, e.cfg.Job, e.probe, e.cfg.StateDir, running)
 	if !g.Admit {
 		d.Admit = false
@@ -142,6 +138,17 @@ func (e *Engine) Decide(ctx context.Context, now time.Time, running int) core.De
 		d.Evict = true
 	}
 	d.Reasons = append(d.Reasons, g.Reasons...)
+	if g.Busy && d.Profile == Boost {
+		d.Profile = Everyday
+		why("you are using the machine, so the reserved everyday budget instead of boost")
+	}
+
+	d.Limit = e.limit(d.Profile)
+	d.Slots = slots(d.Limit, e.cfg.Job)
+	if d.Profile != Off && d.Slots == 0 {
+		why("the %s budget (%s, %g CPUs) fits no %s, %g CPU job", d.Profile,
+			guards.FormatBytes(d.Limit.MemoryBytes), d.Limit.CPUs, guards.FormatBytes(int64(e.cfg.Job.Memory)), e.cfg.Job.CPUs)
+	}
 
 	if running >= d.Slots {
 		d.Admit = false

@@ -23,8 +23,12 @@ type Probe interface {
 
 // Result is what the guards allow right now.
 type Result struct {
-	Admit   bool     `json:"admit"`   // may start new jobs
-	Evict   bool     `json:"evict"`   // must stop running jobs (stop_below_disk)
+	Admit bool `json:"admit"` // may start new jobs
+	Evict bool `json:"evict"` // must stop running jobs (stop_below_disk)
+	// Busy: the user is using the machine (a watched process runs, or load
+	// is high). It never blocks the reserved everyday budget, only boost. A
+	// busy probe that can't be read counts as busy.
+	Busy    bool     `json:"busy"`
 	Reasons []string `json:"reasons"` // one plain sentence per tripped guard
 }
 
@@ -74,21 +78,25 @@ func Check(ctx context.Context, g config.Guards, job config.Job, p Probe, stateD
 		}
 	}
 
+	busy := func(format string, a ...any) {
+		r.Busy = true
+		r.Reasons = append(r.Reasons, fmt.Sprintf(format, a...))
+	}
 	if g.MaxLoadPerCPU > 0 {
 		if load, err := p.LoadPerCPU(ctx); err != nil {
-			block("can't read load (%v), so no new jobs", err)
+			busy("can't read load (%v), so it counts as busy", err)
 		} else if load > g.MaxLoadPerCPU {
-			block("load %.2f per CPU is above %.2f", load, g.MaxLoadPerCPU)
+			busy("load %.2f per CPU is above %.2f", load, g.MaxLoadPerCPU)
 		}
 	}
 
 	if names := wanted(g.PauseWhenRunning); len(names) > 0 {
 		if procs, err := p.Processes(ctx); err != nil {
-			block("can't read the process list (%v), so no new jobs", err)
+			busy("can't read the process list (%v), so it counts as busy", err)
 		} else {
 			for _, w := range names {
 				if matchAny(w.norm, procs) {
-					block("%s is running", w.label)
+					busy("%s is running", w.label)
 				}
 			}
 		}

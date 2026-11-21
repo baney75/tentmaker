@@ -46,6 +46,7 @@ func TestCheck(t *testing.T) {
 		running int
 		admit   bool
 		evict   bool
+		busy    bool     // the user is using the machine: boost drops to everyday
 		reasons []string // substrings, in order
 	}{
 		{name: "healthy", admit: true},
@@ -70,27 +71,27 @@ func TestCheck(t *testing.T) {
 			reasons: []string{"can't read free disk at /state (boom)"}},
 		{name: "load off ignores high load", probe: func(f *Fake) { f.Load = 9; f.LoadErr = boom }, admit: true},
 		{name: "load at limit", g: func(g *config.Guards) { g.MaxLoadPerCPU = 1 }, probe: func(f *Fake) { f.Load = 1 }, admit: true},
-		{name: "load above limit", g: func(g *config.Guards) { g.MaxLoadPerCPU = 1 }, probe: func(f *Fake) { f.Load = 1.4 }, admit: false,
+		{name: "load above limit", g: func(g *config.Guards) { g.MaxLoadPerCPU = 1 }, probe: func(f *Fake) { f.Load = 1.4 }, admit: true, busy: true,
 			reasons: []string{"load 1.40 per CPU is above 1.00"}},
-		{name: "load probe fails closed", g: func(g *config.Guards) { g.MaxLoadPerCPU = 1 }, probe: func(f *Fake) { f.LoadErr = boom }, admit: false,
+		{name: "load probe fails closed", g: func(g *config.Guards) { g.MaxLoadPerCPU = 1 }, probe: func(f *Fake) { f.LoadErr = boom }, admit: true, busy: true,
 			reasons: []string{"can't read load (boom)"}},
 		{name: "configured exe matches plain process", g: func(g *config.Guards) { g.PauseWhenRunning = []string{"Steam.exe"} },
-			probe: func(f *Fake) { f.Procs = []string{"steam"} }, admit: false, reasons: []string{"Steam.exe is running"}},
+			probe: func(f *Fake) { f.Procs = []string{"steam"} }, admit: true, busy: true, reasons: []string{"Steam.exe is running"}},
 		{name: "plain name matches windows exe", g: func(g *config.Guards) { g.PauseWhenRunning = []string{"zoom"} },
-			probe: func(f *Fake) { f.Procs = []string{"zoom.exe"} }, admit: false, reasons: []string{"zoom is running"}},
+			probe: func(f *Fake) { f.Procs = []string{"zoom.exe"} }, admit: true, busy: true, reasons: []string{"zoom is running"}},
 		{name: "case-insensitive", g: func(g *config.Guards) { g.PauseWhenRunning = []string{"OBS"} },
-			probe: func(f *Fake) { f.Procs = []string{"obs"} }, admit: false, reasons: []string{"OBS is running"}},
+			probe: func(f *Fake) { f.Procs = []string{"obs"} }, admit: true, busy: true, reasons: []string{"OBS is running"}},
 		{name: "truncated linux comm matches long name", g: func(g *config.Guards) { g.PauseWhenRunning = []string{"wine64-preloader"} },
-			probe: func(f *Fake) { f.Procs = []string{"wine64-preloade"} }, admit: false, reasons: []string{"wine64-preloader is running"}},
+			probe: func(f *Fake) { f.Procs = []string{"wine64-preloade"} }, admit: true, busy: true, reasons: []string{"wine64-preloader is running"}},
 		{name: "short prefix does not match", g: func(g *config.Guards) { g.PauseWhenRunning = []string{"steamwebhelper"} },
 			probe: func(f *Fake) { f.Procs = []string{"steam"} }, admit: true},
 		{name: "process not running", g: func(g *config.Guards) { g.PauseWhenRunning = []string{"steam.exe", "zoom"} }, admit: true},
 		{name: "process list fails closed", g: func(g *config.Guards) { g.PauseWhenRunning = []string{"steam"} },
-			probe: func(f *Fake) { f.ProcErr = boom }, admit: false, reasons: []string{"can't read the process list (boom)"}},
+			probe: func(f *Fake) { f.ProcErr = boom }, admit: true, busy: true, reasons: []string{"can't read the process list (boom)"}},
 		{name: "every tripped guard is listed",
 			g:     func(g *config.Guards) { g.MaxLoadPerCPU = 0.5; g.PauseWhenRunning = []string{"steam"} },
 			probe: func(f *Fake) { f.Memory = gib; f.Disk = 3 * gib; f.Load = 2; f.Procs = []string{"steam"} },
-			admit: false, evict: true,
+			admit: false, evict: true, busy: true,
 			reasons: []string{"free memory", "below 20 GiB", "stopping running jobs", "load 2.00", "steam is running"}},
 	}
 	for _, tt := range tests {
@@ -104,13 +105,13 @@ func TestCheck(t *testing.T) {
 				tt.probe(&f)
 			}
 			r := Check(context.Background(), g, baseJob, f, "/state", tt.running)
-			if r.Admit != tt.admit || r.Evict != tt.evict {
-				t.Fatalf("admit=%v evict=%v, want %v %v; reasons %q", r.Admit, r.Evict, tt.admit, tt.evict, r.Reasons)
+			if r.Admit != tt.admit || r.Evict != tt.evict || r.Busy != tt.busy {
+				t.Fatalf("admit=%v evict=%v busy=%v, want %v %v %v; reasons %q", r.Admit, r.Evict, r.Busy, tt.admit, tt.evict, tt.busy, r.Reasons)
 			}
-			if tt.admit && len(r.Reasons) != 0 {
+			if tt.admit && !tt.busy && len(r.Reasons) != 0 {
 				t.Fatalf("admitted with reasons %q", r.Reasons)
 			}
-			if !tt.admit && len(r.Reasons) == 0 {
+			if (!tt.admit || tt.busy) && len(r.Reasons) == 0 {
 				t.Fatal("refused with no reason")
 			}
 			i := 0

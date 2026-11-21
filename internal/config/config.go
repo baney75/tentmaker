@@ -136,15 +136,16 @@ type Job struct {
 
 // Guards keep CI out of the way of what the machine is for.
 type Guards struct {
-	// PauseWhenRunning lists process names (case-insensitive) that pause CI,
-	// such as games or a video call. Running jobs finish.
+	// PauseWhenRunning lists process names (case-insensitive), such as games
+	// or a video call, that drop boost to the reserved everyday budget.
 	PauseWhenRunning []string `toml:"pause_when_running" json:"pause_when_running"`
 	MinFreeDisk      Size     `toml:"min_free_disk" json:"min_free_disk"`
 	StopBelowDisk    Size     `toml:"stop_below_disk" json:"stop_below_disk"`
 	// MinFreeMemory: take no new job unless this much memory stays free for
 	// the user after the job's own memory.
 	MinFreeMemory Size `toml:"min_free_memory" json:"min_free_memory"`
-	// MaxLoadPerCPU pauses CI while load average / CPUs exceeds it (0 = off).
+	// MaxLoadPerCPU drops boost to everyday while load average / CPUs
+	// exceeds it (0 = off).
 	MaxLoadPerCPU float64 `toml:"max_load_per_cpu" json:"max_load_per_cpu"`
 	// AllowLAN lets CI jobs reach private (RFC 1918) addresses. The tailnet,
 	// link-local, this host and the mesh port stay blocked either way. Linux

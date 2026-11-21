@@ -122,11 +122,15 @@ func checkDecision(t *testing.T, s scenario) {
 		fail("battery below stop_below without evict")
 	}
 	g := s.probe
-	guardErr := g.MemErr != nil || g.DiskErr != nil ||
-		(s.cfg.Guards.MaxLoadPerCPU > 0 && g.LoadErr != nil) ||
+	if (g.MemErr != nil || g.DiskErr != nil) && d.Admit {
+		fail("admitted with a safety guard error")
+	}
+	// A busy probe that fails counts as busy: the reserved everyday budget
+	// may still run, boost may not.
+	busyErr := (s.cfg.Guards.MaxLoadPerCPU > 0 && g.LoadErr != nil) ||
 		(len(s.cfg.Guards.PauseWhenRunning) > 0 && g.ProcErr != nil)
-	if guardErr && d.Admit {
-		fail("admitted with a guard error")
+	if busyErr && d.Profile == Boost {
+		fail("boost with a busy guard error")
 	}
 	if d.Admit && d.Slots <= s.running {
 		fail("admitted with every slot in use")

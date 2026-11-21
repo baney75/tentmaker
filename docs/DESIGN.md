@@ -16,8 +16,10 @@ contract here first, in the same PR.
 1. **Reliable over clever.** Every external call has a timeout and a backoff. Every state file is
    written atomically. Every probe that fails, fails closed (no new jobs), never open. A runner
    whose state can't be read counts as running, so nothing cuts a live job by mistake.
-2. **The day job wins.** CI drains (stops taking jobs, lets running ones finish) whenever the
-   budget, a guard or the battery says so. Only hard guards stop running jobs.
+2. **The day job wins, and CI keeps its share.** The everyday profile is reserved for CI: it
+   keeps running while the user plays a game, takes a call or loads the machine. Boost is
+   opportunistic and gives way to all of those. CI drains (stops taking jobs, lets running ones
+   finish) when the battery, memory or disk says so. Only hard guards stop running jobs.
 3. **No single point of failure.** Any device with forge credentials is a broker. Workers ask
    every broker they can reach. If the mesh is down, a device with credentials still runs its own
    jobs. If two brokers race for one job, the loser's idle runner is deleted after `idle_ttl`.
@@ -93,7 +95,7 @@ type Probe interface {
     Processes(ctx context.Context) ([]string, error)        // lowercase executable names
 }
 func NewHostProbe(stateDir string) Probe
-type Result struct { Admit, Evict bool; Reasons []string }
+type Result struct { Admit, Evict, Busy bool; Reasons []string }
 func Check(ctx context.Context, g config.Guards, job config.Job, p Probe, stateDir string, running int) Result
 ```
 
@@ -110,8 +112,11 @@ Decision order (first match decides the profile, later steps can only lower it):
 7. Otherwise `everyday`.
 
 Then: `Limit` = the profile's resources (zero for `off`). `Slots = min(floor(Limit.Memory /
-job.memory), floor(Limit.CPUs / job.cpus), job.max_slots if > 0)`. Guards run last: a guard
-failure sets `Admit=false` (and `Evict=true` for `stop_below_disk`). `Admit` is also false when
+job.memory), floor(Limit.CPUs / job.cpus), job.max_slots if > 0)`. Guards run before `Limit`.
+Safety guards (free memory, free disk) set `Admit=false` (and `Evict=true` for
+`stop_below_disk`). Busy guards (`pause_when_running`, `max_load_per_cpu`) set `Busy`, which
+lowers `boost` to `everyday` and never blocks `everyday`; a busy probe that can't be read counts
+as busy. `Admit` is also false when
 `running >= Slots`. Every downgrade appends a plain reason, like "on battery at 31%, below 40%" or
 "steam.exe is running". A boost profile with zero memory means "same as everyday".
 

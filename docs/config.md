@@ -81,11 +81,11 @@ Guards keep CI out of the way of what the machine is for. A failing guard stops 
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `guards.pause_when_running` | list of strings | `[]` | Process names, matched without case, that pause CI while they run, like `"steam.exe"` or `"zoom.us"`. |
+| `guards.pause_when_running` | list of strings | `[]` | Process names, matched without case, that drop boost to the reserved everyday budget while they run, like `"steam.exe"` or `"zoom.us"`. Everyday keeps running. |
 | `guards.min_free_disk` | size | `20GiB` | Take no new jobs with less free disk than this. |
 | `guards.stop_below_disk` | size | `5GiB` | Stop running jobs with less free disk than this. |
 | `guards.min_free_memory` | size | `2GiB` | Take a job only if this much memory stays free for you after the job's own memory. |
-| `guards.max_load_per_cpu` | number | `0` (off) | Pause CI while the 1-minute load average divided by the CPUs is above this. On Windows it is the fraction of CPU time busy. |
+| `guards.max_load_per_cpu` | number | `0` (off) | Drop boost to the reserved everyday budget while the 1-minute load average divided by the CPUs is above this. On Windows it is the fraction of CPU time busy. |
 | `guards.allow_lan` | bool | `false` | Let CI jobs reach private LAN addresses (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16). The tailnet (100.64.0.0/10, fd7a:115c:a1e0::/48), link-local, unique local IPv6, this device's own addresses and the mesh port 7433 stay blocked either way. Linux and Windows; macOS guests never reach the LAN. Run `sudo tentmaker setup` again after changing it: the firewall rules are written at setup, and Tentmaker refuses jobs while the loaded rules don't match. |
 
 ## `[[repos]]`
@@ -160,7 +160,7 @@ name = "owner/app"
 
 ### A desktop
 
-Always plugged in, so boost is the normal state. Overnight it gives CI more; a game pauses it.
+Always plugged in, so boost is the normal state. Overnight it gives CI more; a game drops it back to the everyday budget.
 
 ```toml
 device = "desktop"
