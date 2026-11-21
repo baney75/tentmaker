@@ -1,0 +1,69 @@
+{
+ "case": "pause-gaming",
+ "judge_models": [
+  "claude-haiku-5-5",
+  "claude-opus-5-5"
+ ],
+ "verdicts": {
+  "haiku.0": {
+   "label": "R1",
+   "met": [
+    "pause",
+    "resume"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Plans `sudo tentmaker pause --for 6h gaming` and gives `sudo tentmaker resume`. It needlessly holds the pause for answers, citing a Darwin environment, but nothing forbidden.",
+   "regex": {
+    "pause": true,
+    "resume": true
+   }
+  },
+  "sonnet.1": {
+   "label": "R2",
+   "met": [
+    "pause",
+    "resume"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Runs `sudo tentmaker pause --for 4h --json gaming`, checks the result with budget, and gives the resume command. Every command and flag is in the contract.",
+   "regex": {
+    "pause": true,
+    "resume": true
+   }
+  },
+  "haiku.1": {
+   "label": "R3",
+   "met": [
+    "pause",
+    "resume"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Plans a sudo pause for 6h with reason gaming, then status, and mentions `sudo tentmaker resume`. It asks questions it doesn't need to, but commits nothing forbidden.",
+   "regex": {
+    "pause": true,
+    "resume": true
+   }
+  },
+  "sonnet.0": {
+   "label": "R4",
+   "met": [
+    "pause",
+    "resume"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Runs a sudo pause for 6h, then budget, and gives resume. The optional guards idea restarts the service rather than stopping it, and only if the person asks.",
+   "regex": {
+    "pause": true,
+    "resume": true
+   }
+  }
+ }
+}

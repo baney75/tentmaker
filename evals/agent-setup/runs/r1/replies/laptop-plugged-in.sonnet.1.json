@@ -1,0 +1,10 @@
+{
+ "case": "laptop-plugged-in",
+ "responder": "sonnet",
+ "sample": 1,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "I can run the first two steps now. I need your yes before the third, because it puts a token on this laptop.\n\n**Questions first:**\n1. **GitHub token:** setup takes the token from your `gh` login (acme-dev) and stores it on this laptop, which makes it the broker for **acme/webapp**. Registering runners needs repo admin rights. Is that OK, and is acme-dev an admin on that repo?\n2. **Memory:** the defaults are 8 GiB everyday and 16 GiB boost on a 32 GB machine. I'd go lower on battery: **4 GiB everyday, 16 GiB when plugged in**. Do you want that? When unplugged, should CI keep running at 4 GiB (my default) or stop taking jobs (`--on-battery off`)?\n3. **Workflows:** a Mac only runs macOS jobs, in a Tart VM. Does acme/webapp's CI need macOS (`runs-on: [self-hosted, tentmaker, macOS]`)? Where is your checkout, so I can report what `migrate` would change? I won't edit anything without another yes.\n\n**Running now (read-only and install):**\n```sh\ntentmaker version --json; tentmaker status --json\ncurl -fsSL https://raw.githubusercontent.com/baney75/tentmaker/main/scripts/install.sh | sh -s -- --no-setup\ntentmaker version --json\n```\n\n**After your yes to question 1 (with your memory choices):**\n```sh\ngh auth status\nsudo tentmaker setup --yes --json --repo acme/webapp --memory 4GiB --boost-memory 16GiB --on-battery everyday\ntentmaker doctor --json\n```\nI'll only call it done when `doctor` exits 0.\n\n**Then, once you give me the checkout path:**\n```sh\ntentmaker migrate PATH --platform macos --json\n```\nThis only reports. If you approve the changes, I'd run `tentmaker migrate PATH --write --json` and leave the diff for you to review and commit.\n\n**Heads-up:** the macOS network filter (Softnet) needs macOS 26 or newer. Your Darwin 27 should be fine, and `doctor` will flag it if not."
+}

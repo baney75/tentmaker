@@ -1,0 +1,9 @@
+{
+ "case": "mcp-claude",
+ "responder": "haiku",
+ "sample": 0,
+ "models": [
+  "claude-haiku-5-5"
+ ],
+ "text": "I'd register it with the full binary path so it works regardless of Claude Code's PATH:\n\n```sh\nclaude mcp add tentmaker -- /usr/local/bin/tentmaker mcp\n```\n\nThen confirm it's registered and that the server starts:\n\n```sh\nclaude mcp list\nclaude mcp get tentmaker\n```\n\nRegistration doesn't need `sudo` and doesn't involve a forge token. Claude Code will start the server as your user, so the read tools (`status`, `pool`, `doctor`) will work. The tools that change the device will return an error asking for root or Administrator unless you run the server as root, so use the CLI with `sudo` for those changes.\n\nI haven't asked you anything because this is a local config change that you requested. The default scope is `local`, which applies only to this project. If you want Tentmaker available in every project, I'd use `--scope user` instead:\n\n```sh\nclaude mcp add --scope user tentmaker -- /usr/local/bin/tentmaker mcp\n```\n\nTell me which scope you want and I'll run it."
+}

@@ -1,0 +1,9 @@
+{
+ "case": "migrate-forks",
+ "responder": "haiku",
+ "sample": 1,
+ "models": [
+  "claude-haiku-5-5"
+ ],
+ "text": "I'll start with a dry run. `migrate` without `--write` only reports what it would change, so nothing in the checkout moves yet.\n\n```sh\ncd ~/src/webapp\ngit status --short                      # should print nothing: a clean checkout\ntentmaker doctor --json                 # confirm the broker is still healthy\ntentmaker migrate ~/src/webapp --json   # report only, edits nothing\n```\n\nBefore I write anything, I need answers to these:\n\n1. **Which platform do the jobs need?** The default is Linux. If any job runs on macOS, I'll also run `tentmaker migrate ~/src/webapp --platform macos --json` and report those jobs separately.\n2. **Is acme/webapp private?** Tentmaker refuses public repos without `--allow-public`. The report won't change that, but I want to confirm before any job runs on your machines.\n3. **Can I apply the changes?** If you say yes, I'll run:\n   ```sh\n   tentmaker migrate ~/src/webapp --write --json\n   git -C ~/src/webapp diff\n   ```\n   and commit the result on a new branch, such as `tentmaker-migrate`. I won't push or open a PR unless you ask.\n\nWhen I review the report and diff, I'll check that:\n- Each migrated job runs with `runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('[\"self-hosted\",\"tentmaker\",\"linux\"]') }}`, so fork PRs go to GitHub-hosted runners.\n- Jobs that deploy, publish, sign, use an environment, ask for write permissions, read secrets, or use `sudo` stay on hosted runners, and the report says so.\n- Each migrated workflow gets a concurrency block that cancels a pull request's older run.\n\nAfter the commit, I'll run `tentmaker doctor --json` again. If it still exits 0, you can review the branch and open the PR yourself."
+}

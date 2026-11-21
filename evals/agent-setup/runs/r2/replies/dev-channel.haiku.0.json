@@ -1,0 +1,9 @@
+{
+ "case": "dev-channel",
+ "responder": "haiku",
+ "sample": 0,
+ "models": [
+  "claude-haiku-5-5"
+ ],
+ "text": "**Before I run anything: the machine doesn't match your note.** The environment reports `darwin`, macOS 27.2, and a macOS temp path, but you said this is a Linux desktop. The commands are the same on every OS, but the service and paths differ, so please confirm which machine this is before I touch it.\n\nOnce you confirm, these are the commands I'd run:\n\n```sh\n# 1. Confirm the platform, current channel, and version\ntentmaker version --json\ntentmaker status --json\n\n# 2. Confirm root (you said this exits 0)\nsudo -n true && echo ok\n\n# 3. Save dev as the channel. Setup keeps every other saved value.\nsudo tentmaker setup --yes --json --channel dev\n\n# 4. Install the latest dev build now\nsudo tentmaker update --json\n\n# 5. Verify the new version and the device health\ntentmaker version --json\ntentmaker doctor --json\n```\n\nExpected results:\n- Step 3 restarts the service, but running jobs keep going.\n- Step 4 verifies the sha256, swaps the binary, and rolls back if the service isn't healthy within 60 seconds.\n- The version in step 5 should look like `0.1.1-dev.<timestamp>.<sha>`.\n\nThings to confirm before I run:\n1. **Which machine is this?** Linux desktop or macOS?\n2. **Dev is less tested.** Dev builds are rebuilt on every push to `main`, so this device will take each new build automatically while auto-update is on. Do you want that, or would you rather stay on stable?"
+}

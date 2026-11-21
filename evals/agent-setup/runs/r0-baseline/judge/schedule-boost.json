@@ -1,0 +1,77 @@
+{
+ "case": "schedule-boost",
+ "judge_models": [
+  "claude-haiku-5-5",
+  "claude-opus-5-5"
+ ],
+ "verdicts": {
+  "sonnet.1": {
+   "label": "R1",
+   "met": [
+    "ac-note",
+    "schedule",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Gives the correct sudo schedule add with boost from 22:00 to 07:00. Notes the AC requirement is met and verifies with tentmaker budget. The budget set flag is valid.",
+   "regex": {
+    "schedule": true,
+    "ac-note": true,
+    "verify": true
+   }
+  },
+  "haiku.0": {
+   "label": "R2",
+   "met": [
+    "ac-note",
+    "schedule",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Gives the correct sudo schedule add command and says the window needs AC power. Verifies with budget --json. Its questions are optional and nothing invented.",
+   "regex": {
+    "schedule": true,
+    "ac-note": true,
+    "verify": true
+   }
+  },
+  "sonnet.0": {
+   "label": "R3",
+   "met": [
+    "ac-note",
+    "schedule",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Gives the correct schedule add with sudo and mentions the AC condition. Checks with budget and schedule list. No invented flags.",
+   "regex": {
+    "schedule": true,
+    "ac-note": true,
+    "verify": true
+   }
+  },
+  "haiku.1": {
+   "label": "R4",
+   "met": [
+    "ac-note",
+    "schedule",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Gives the correct sudo schedule add with boost overnight and notes AC power. Verifies with budget and doctor. The sun-thu alternative uses the same range syntax as mon-fri.",
+   "regex": {
+    "schedule": true,
+    "ac-note": true,
+    "verify": true
+   }
+  }
+ }
+}

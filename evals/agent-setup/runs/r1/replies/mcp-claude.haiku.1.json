@@ -1,0 +1,9 @@
+{
+ "case": "mcp-claude",
+ "responder": "haiku",
+ "sample": 1,
+ "models": [
+  "claude-haiku-5-5"
+ ],
+ "text": "I'd run this to register the server. It's a local config change that's easy to undo.\n\n```sh\nclaude mcp add tentmaker -- /usr/local/bin/tentmaker mcp\n```\n\nI'm using the absolute path so the server starts even if `/usr/local/bin` isn't on the PATH that Claude Code sees. This adds the server to the local scope, so it applies only to the current project. For every project, add `--scope user`:\n\n```sh\nclaude mcp add --scope user tentmaker -- /usr/local/bin/tentmaker mcp\n```\n\nThen I'd check that it registered and can start:\n\n```sh\nclaude mcp list\nclaude mcp get tentmaker\n```\n\nBefore I run anything, I'd ask you one thing: **local or user scope?** Local is the default. User scope makes the tools available in every project on this Mac.\n\nTwo things to know after it's registered:\n\n- **Read tools** (`status`, `pool`, `doctor`) work for your user account.\n- **Tools that change the device** need root. The MCP server inherits the privileges of the account that starts Claude Code, so I won't run Claude Code under `sudo` to get them. For changes, use the CLI with `sudo tentmaker ...` in your own terminal."
+}

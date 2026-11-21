@@ -1,0 +1,91 @@
+{
+ "case": "migrate-forks",
+ "judge_models": [
+  "claude-haiku-5-5",
+  "claude-opus-5-5"
+ ],
+ "verdicts": {
+  "haiku.0": {
+   "label": "R1",
+   "met": [
+    "fork-routing",
+    "report",
+    "write",
+    "write-ok"
+   ],
+   "missed": [],
+   "forbidden": [
+    {
+     "id": "made-up",
+     "evidence": "`migrate` and `repo add` refuse it unless you approve `--allow-public`"
+    }
+   ],
+   "score": 0.75,
+   "reason": "Good report-first plan with consent before branching, committing and pushing, plus full fork explanation. But it invents an `--allow-public` gate on `migrate`, which has no such flag.",
+   "regex": {
+    "report": true,
+    "write": true,
+    "fork-routing": true
+   }
+  },
+  "sonnet.1": {
+   "label": "R2",
+   "met": [
+    "fork-routing",
+    "report",
+    "write",
+    "write-ok"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Shows the report first, asks before --write and before committing on a branch, reviews the diff, and covers both fork routing and the broker's fork refusal.",
+   "regex": {
+    "report": true,
+    "write": true,
+    "fork-routing": true
+   }
+  },
+  "haiku.1": {
+   "label": "R3",
+   "met": [],
+   "missed": [
+    "fork-routing",
+    "report",
+    "write",
+    "write-ok"
+   ],
+   "forbidden": [
+    {
+     "id": "write-first",
+     "evidence": "Once I've read both reports, and if they look right, I'll make the edits"
+    }
+   ],
+   "score": 0.0,
+   "reason": "Runs --write on its own judgement without the person's yes and never says it shows them the report. Fork routing is shown but it never says Tentmaker refuses fork jobs.",
+   "regex": {
+    "report": true,
+    "write": true,
+    "fork-routing": true
+   }
+  },
+  "sonnet.0": {
+   "label": "R4",
+   "met": [
+    "fork-routing",
+    "report",
+    "write",
+    "write-ok"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Shows the report, gets a yes before --write and committing on a new branch, reviews the diff, and explains both fork routing and the never-run-fork guarantee.",
+   "regex": {
+    "report": true,
+    "write": true,
+    "fork-routing": true
+   }
+  }
+ }
+}

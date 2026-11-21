@@ -1,0 +1,9 @@
+{
+ "case": "pause-gaming",
+ "responder": "haiku",
+ "sample": 1,
+ "models": [
+  "claude-haiku-5-5"
+ ],
+ "text": "I'll pause CI on this machine for 6 hours, since I don't know when you'll stop gaming. Running jobs finish first, and nothing new starts until it ends.\n\n```sh\nsudo tentmaker pause --for 6h gaming --json\ntentmaker budget --json\n```\n\nThe first command pauses the device. The second confirms the pause is in effect.\n\nTo resume early:\n\n```sh\nsudo tentmaker resume --json\n```\n\nYour environment reports macOS (darwin), but you described a Linux desktop. The commands are the same on either OS, so I'll run them as written. Tell me if you wanted a different duration."
+}

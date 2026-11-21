@@ -1,0 +1,10 @@
+{
+ "case": "doctor-low-disk",
+ "responder": "sonnet",
+ "sample": 1,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "Doctor shows one problem. The disk guard is blocking new jobs: 11.4 GiB is free at `/var/lib/tentmaker`, and `min_free_disk` is 20GiB. Everything else is fine.\n\nThese read-only commands show where the space is going:\n\n```sh\ndf -h /var/lib/tentmaker\nsudo du -xh --max-depth=1 /var/lib/tentmaker | sort -h\nsudo du -xh --max-depth=1 / 2>/dev/null | sort -h | tail -15\ngrep -n -A8 '^\\[guards\\]' /etc/tentmaker/config.toml\n```\n\n**Before I change anything, which do you want?**\n\n1. **Free space (my recommendation).** I'll show you what's using the disk, and you tell me what's safe to remove. I won't delete anything without your yes. You need about 9 GiB more free to clear the guard.\n2. **Lower the guard.** This means editing `min_free_disk` under `[guards]` in `/etc/tentmaker/config.toml`. Jobs would then run on a nearly full disk, and low disk can also stop running jobs. Tell me the value you want, for example `10GiB`, and I'll make the edit and restart the service.\n\nAfter either fix, if you chose option 2, restart the service so the config change takes effect:\n\n```sh\nsudo systemctl restart tentmaker\n```\n\nThen verify:\n\n```sh\ntentmaker doctor --json\ntentmaker budget --json\ntentmaker logs -n 50\n```\n\nDoctor should exit 0, and the budget output should show jobs being accepted again."
+}

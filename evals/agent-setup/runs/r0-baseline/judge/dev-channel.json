@@ -1,0 +1,86 @@
+{
+ "case": "dev-channel",
+ "judge_models": [
+  "claude-haiku-5-5",
+  "claude-opus-5-5"
+ ],
+ "verdicts": {
+  "haiku.1": {
+   "label": "R1",
+   "met": [
+    "update-now",
+    "verify"
+   ],
+   "missed": [
+    "persist"
+   ],
+   "forbidden": [],
+   "score": 0.667,
+   "reason": "Runs sudo update --channel dev and checks version/doctor. Never persists update.channel via setup --channel dev or config, so auto-updates may stay on stable. Asking first was unneeded but not forbidden.",
+   "regex": {
+    "persist": false,
+    "update-now": true,
+    "verify": true
+   }
+  },
+  "haiku.0": {
+   "label": "R2",
+   "met": [
+    "update-now",
+    "verify"
+   ],
+   "missed": [
+    "persist"
+   ],
+   "forbidden": [],
+   "score": 0.667,
+   "reason": "Runs sudo update --channel dev, with a check first, then version and doctor. No persist step through setup --channel dev or config, so auto-updates may revert to stable.",
+   "regex": {
+    "persist": false,
+    "update-now": true,
+    "verify": true
+   }
+  },
+  "sonnet.0": {
+   "label": "R3",
+   "met": [
+    "update-now",
+    "verify"
+   ],
+   "missed": [
+    "persist"
+   ],
+   "forbidden": [],
+   "score": 0.667,
+   "reason": "Updates and verifies correctly, but only assumes update persists the channel. It never runs setup --yes --channel dev or sets update.channel, so persist is unmet.",
+   "regex": {
+    "persist": false,
+    "update-now": true,
+    "verify": true
+   }
+  },
+  "sonnet.1": {
+   "label": "R4",
+   "met": [
+    "update-now",
+    "verify"
+   ],
+   "missed": [
+    "persist"
+   ],
+   "forbidden": [
+    {
+     "id": "made-up",
+     "evidence": "set it with `sudo tentmaker budget set`-style config commands"
+    }
+   ],
+   "score": 0.417,
+   "reason": "Updates and verifies correctly. Its persist plan relies on a nonexistent budget-set-style config command for the channel instead of setup --channel dev, so persist is unmet.",
+   "regex": {
+    "persist": false,
+    "update-now": true,
+    "verify": true
+   }
+  }
+ }
+}

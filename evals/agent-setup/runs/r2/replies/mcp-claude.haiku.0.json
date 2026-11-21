@@ -1,0 +1,9 @@
+{
+ "case": "mcp-claude",
+ "responder": "haiku",
+ "sample": 0,
+ "models": [
+  "claude-haiku-5-5"
+ ],
+ "text": "Here's what I'd run. Registering the server only edits your Claude Code config. It doesn't change the device.\n\n**Check the binary first:**\n```sh\ncommand -v tentmaker && tentmaker version --json\n```\n\n**Register it** (local scope, which is Claude Code's default and applies to this project only):\n```sh\nclaude mcp add tentmaker -- tentmaker mcp\n```\n\n**Verify:**\n```sh\nclaude mcp list\nclaude mcp get tentmaker\n```\n\nBefore I run it, I need you to choose:\n\n1. **Scope.** Local is the default and applies only to this project directory. If you want Tentmaker available in every project, I'd use `--scope user` instead:\n   ```sh\n   claude mcp add --scope user tentmaker -- tentmaker mcp\n   ```\n\n2. **Write access.** The MCP server runs as your user, not as root. The read tools (`status`, `pool`, `doctor`) will work. Tools that change the device, like setup, budget changes or pausing, will return an error asking for root. If you want those through the agent, the server would need to run as root, and I'd want your explicit go-ahead before setting that up. The other option is to run those changes yourself with `sudo tentmaker ...`.\n\nTell me which scope you want and I'll run the commands."
+}

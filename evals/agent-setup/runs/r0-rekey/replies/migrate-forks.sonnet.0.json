@@ -1,0 +1,10 @@
+{
+ "case": "migrate-forks",
+ "responder": "sonnet",
+ "sample": 0,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "I'd start with a read-only report. It changes nothing.\n\n```sh\ncd ~/src/webapp\ntentmaker migrate . --json\n```\n\nIf any workflows have macOS jobs, I'd also run:\n\n```sh\ntentmaker migrate . --platform macos --json\n```\n\n`migrate` already handles the fork requirement: the jobs it moves get a `runs-on` that sends fork PRs to `ubuntu-latest` and everything else to `[self-hosted, tentmaker, linux]`. Tentmaker also never runs a fork job on your machines, whatever the workflow says, so the routing is just a convenience.\n\nI'll show you the report, including the jobs it leaves alone. It skips jobs that deploy, publish, release or sign, use an environment, ask for write permissions or read secrets. It also skips Linux jobs that use `sudo` and runner images it can't stand in for.\n\n**Before I edit your files, I need a yes on these:**\n1. Run `migrate --write` on `.github/workflows` in acme/webapp once you've seen the report.\n2. Which platform should the moved jobs target: Linux, macOS, or both? The default is Linux.\n3. Commit the change on a new branch. I won't push or open a PR unless you ask.\n\nAfter your yes, I'd run:\n\n```sh\ntentmaker migrate . --write --json\ngit diff\ngit switch -c tentmaker-runners\ngit add .github/workflows\ngit commit -m \"Run CI on Tentmaker runners\"\n```\n\nAdd `--platform macos` to the `--write` command if the macOS jobs are in scope. `migrate --write` also adds a concurrency block that cancels a pull request's older run. You'll see that in the diff.\n\nOne note: my shell's working directory is a temp directory, not the repo, so I'm using the `~/src/webapp` path explicitly."
+}

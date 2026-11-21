@@ -1,0 +1,9 @@
+{
+ "case": "pause-gaming",
+ "responder": "haiku",
+ "sample": 0,
+ "models": [
+  "claude-haiku-5-5"
+ ],
+ "text": "Before I pause it, two things to check:\n\n1. **Which machine?** Your message says this is a Linux desktop, but the environment I can see reports macOS (Darwin). Confirm you mean the machine Tentmaker is running on, since the pause applies only there.\n2. **How long?** Tonight could mean 4 hours or until morning. Pick a duration.\n\nOnce you confirm, I'd run:\n\n```sh\nsudo tentmaker pause --for 6h gaming --json\ntentmaker status --json\n```\n\n(Swap `6h` for your number. The `--json` on `status` confirms the pause took effect.)\n\nPausing lets running jobs finish and stops new ones from starting. To end it early:\n\n```sh\nsudo tentmaker resume --json\n```"
+}

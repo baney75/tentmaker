@@ -1,0 +1,10 @@
+{
+ "case": "schedule-boost",
+ "responder": "sonnet",
+ "sample": 0,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "Yes. A schedule window with the boost profile does it. The laptop is plugged in, so the window's boost profile applies. A window also ignores `boost_needs_idle`, which is why boost is rarely reached today.\n\nBefore I run anything, which hours do you want? I'd guess 22:00 to 07:00, Monday to Friday. If that's right, this is the command:\n\n```sh\nsudo tentmaker schedule add --name weeknights --days mon-fri --from 22:00 --to 07:00 --profile boost --json\n```\n\nThen check it took:\n\n```sh\ntentmaker budget --json\n```\n\n- **Capacity:** each job reserves 2 GiB and 2 CPUs by default. Boost at 12 GiB fits up to 6 jobs at once, as long as the CPUs allow it. Everyday at 4 GiB fits 2.\n- **Midnight spans:** a `to` earlier than `from` runs across midnight. I don't know whether `mon-fri` counts the day the window starts or the day each hour falls on. The Friday-night and Monday-early-morning edges may differ, so I'd check `budget` on one of those mornings.\n- **Guards:** the window raises the budget but doesn't override the guards. Low free disk (under 20 GiB), a listed process running, or high load still pauses CI.\n\nWant me to run it with 22:00 to 07:00, or different hours?"
+}

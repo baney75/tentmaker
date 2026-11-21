@@ -1,0 +1,10 @@
+{
+ "case": "schedule-boost",
+ "responder": "sonnet",
+ "sample": 0,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "Yes. A schedule window can set the boost profile for weeknight hours, so the device would use its 12 GiB boost budget instead of the 4 GiB everyday one. Because it's plugged in, the \"window set to boost still needs AC power\" condition is already met.\n\nI'd ask you two things before changing anything:\n\n1. **Which hours?** I'd default to 22:00 to 07:00, Monday to Friday. A window that starts Friday night may or may not run into Saturday morning, which I can't tell from the docs. Do you want that, or should it stop Friday at 07:00?\n2. **Is 12 GiB overnight OK?** That's the amount of memory CI could take while you're asleep. It also means more concurrent jobs, since each job reserves 2 GiB and 2 CPUs by default.\n\nIf yes, I'd first look at why boost is rarely reached, since that tells me whether a window alone is enough:\n\n```sh\ntentmaker budget --json\ntentmaker schedule list --json\n```\n\n`schedule list` isn't in what I've read, so I'd check docs/CLI.md before relying on it. If it doesn't exist, I'd skip it.\n\nThen I'd add the window, which needs root (and `sudo -n` works here):\n\n```sh\nsudo tentmaker schedule add --name weeknights --days mon-fri --from 22:00 --to 07:00 --profile boost\ntentmaker budget --json\n```\n\nThe second command is the check. During the window it should report boost and say why. If it still says everyday, then `boost_needs_idle = true` is likely holding it back. That setting waits for you to be away (default 10 minutes), and the docs don't say whether it also applies inside a schedule window. In that case I'd tell you and ask before changing it, since turning it off would let boost start while you're at the laptop. I'd look up the exact key in docs/config.md rather than guess a flag.\n\nTell me the hours and I'll run it."
+}

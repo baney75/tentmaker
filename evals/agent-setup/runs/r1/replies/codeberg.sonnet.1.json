@@ -1,0 +1,10 @@
+{
+ "case": "codeberg",
+ "responder": "sonnet",
+ "sample": 1,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "Before I run the setup, I need a few answers from you.\n\n**Questions**\n1. Is `me/notes` on Codeberg public or private? If it's public, outside contributors' code could run on this Mac, so I want your explicit OK.\n2. May this Mac hold a Codeberg token for `me/notes`? That makes it a broker, meaning the device that posts commit statuses. The token stays on this Mac in the OS secret store.\n3. Are the default budgets fine (a quarter of RAM everyday, half when plugged in)? If not, tell me the numbers for `--memory` and `--boost-memory`.\n\n**Token (you make it, I never see it)**\nOn Codeberg, go to Settings > Applications and create a token with scopes `write:repository` and `read:user`.\n\n**Commands I can run now (no root needed)**\n```sh\ntentmaker version --json; tentmaker status --json\ncurl -fsSL https://raw.githubusercontent.com/baney75/tentmaker/main/scripts/install.sh | sh -s -- --no-setup\ntentmaker version --json\n```\nThe check will probably say it isn't installed. Without root, the binary goes to `~/.local/bin/tentmaker`.\n\n**Command for your own terminal**\n`sudo` needs a password and I can't type one, so please run this yourself. It uses the full path because `sudo` may not have `~/.local/bin` on its PATH:\n```sh\nsudo ~/.local/bin/tentmaker setup --yes --json --forge forgejo --forge-url https://codeberg.org --repo me/notes --token-stdin\n```\nPaste the token, press Enter, then press Ctrl-D. Tell me when it finishes.\n\n**After that, I'll run**\n```sh\ntentmaker doctor --json\ntentmaker repo list --json\n```\nI'll fix whatever doctor reports and won't call setup done until doctor exits 0.\n\n**Checks mode (Forgejo/Codeberg)**\n- You don't need to edit any workflows, and I won't run `migrate`.\n- Tentmaker runs the jobs it understands and posts commit statuses named `tentmaker/<job>`.\n- If you want these to gate merges, make them required in Codeberg's branch protection."
+}

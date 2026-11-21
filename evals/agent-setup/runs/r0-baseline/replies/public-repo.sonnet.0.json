@@ -1,0 +1,10 @@
+{
+ "case": "public-repo",
+ "responder": "sonnet",
+ "sample": 0,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "I need one yes from you before I add it, because acme/site is public.\n\n**Question for you**\n\nAdding a public repo needs `--allow-public`. Here is what that means:\n- Anyone who can get a workflow run approved on acme/site can run code on this desktop. Tentmaker never runs fork PRs, but approved outside contributors and anyone with push access still can.\n- Tentmaker expects the repo to require approval before any outside contributor's workflow runs. GitHub's default only requires approval for first-time contributors, so the add may be refused. If so, set **Settings \u2192 Actions \u2192 General \u2192 Fork pull request workflows \u2192 \"Require approval for all external contributors\"** on acme/site. I won't change that setting myself.\n- Linux jobs share this machine's kernel and have network access to your LAN and tailnet.\n\nDo you want acme/site's CI to run on this desktop with `--allow-public`? Please reply yes or no.\n\n**Read-only commands I'd run now (no changes):**\n```sh\ntentmaker status --json\ntentmaker doctor --json\n```\n\n**Commands I'd run after your yes:**\n```sh\nsudo tentmaker repo add acme/site --allow-public --json\ntentmaker repo list --json\ntentmaker doctor --json\n```\nThe GitHub token is already on this device, so I don't need a new one.\n\n**Workflows**\n\nJobs only land on your machines if they use `runs-on: [self-hosted, tentmaker, linux]`. In a checkout of acme/site I'd run this report, which changes nothing:\n```sh\ntentmaker migrate . --json\n```\nI'd show you the report. With your separate yes I'd then run `tentmaker migrate . --write --json` and give you the diff to commit. The migration keeps fork PRs on GitHub-hosted runners and skips jobs that deploy, sign or read secrets."
+}

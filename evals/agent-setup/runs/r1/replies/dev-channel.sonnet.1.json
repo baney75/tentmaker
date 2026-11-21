@@ -1,0 +1,10 @@
+{
+ "case": "dev-channel",
+ "responder": "sonnet",
+ "sample": 1,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "I don't need to ask you anything first. Switching channels isn't one of the actions that needs your approval, and `sudo -n true` already exits 0, so I can run these without a password prompt.\n\n```sh\ntentmaker version --json\ntentmaker status --json\nsudo tentmaker setup --yes --json --channel dev\nsudo tentmaker update --check --json\nsudo tentmaker update --json\ntentmaker version --json\ntentmaker doctor --json\n```\n\n1. The first two commands record the current version and confirm Tentmaker is set up and running. If `status` exits 4, it isn't set up, and this switch doesn't apply yet.\n2. `setup --yes --channel dev` saves the dev channel, so auto-updates follow it. It keeps every other setting you chose before. It also restarts the service, but running jobs keep going.\n3. `update --check` shows which dev build it would install. Then `update` installs it. It verifies the sha256, swaps the binary in, restarts the service, and rolls back on its own if the service isn't healthy within 60 seconds.\n4. The final `version` should show a version like `0.1.1-dev.<timestamp>.<sha>`. `doctor` should exit 0. If it reports a problem, I'll apply the fix it gives and rerun it. If the same problem survives two fixes, I'll stop and report it.\n\nI'm not using `update --channel dev` on its own. It would install one dev build but leave auto-updates on stable, so the machine would drift back.\n\nThe dev channel is rebuilt on every push to `main`, so it can break. If it does, `sudo tentmaker rollback` returns you to the previous binary. To go back to stable permanently, run `sudo tentmaker setup --yes --json --channel stable`, then `sudo tentmaker update --json`."
+}

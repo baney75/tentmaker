@@ -1,0 +1,10 @@
+{
+ "case": "add-devices",
+ "responder": "sonnet",
+ "sample": 0,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "I'd add both as workers, meaning they take jobs from this laptop and hold no forge token, so I wouldn't need your approval for a token or any cost. I haven't yet checked that they allow Tailscale SSH for you or that `sudo` works there without a password. `devices add` needs both, since nobody is there to type a password, so I'd check first.\n\n```sh\ntentmaker status --json\ntailscale ssh desktop sudo -n true; echo \"desktop exit=$?\"\ntailscale ssh homeserver sudo -n true; echo \"homeserver exit=$?\"\n```\n\nIf a host exits 0, I add it:\n\n```sh\ntentmaker devices add desktop --json\ntentmaker devices add homeserver --json\n```\n\nThen I verify:\n\n```sh\ntentmaker pool --json\n```\n\n`pool` should list both new devices with their budgets and free slots. If either one is missing, I'd run `tentmaker doctor --json` on this laptop and apply its fix.\n\nIf a check fails, I'll stop and report it rather than work around it:\n- **Tailscale SSH refused:** you'd need to allow it for your user in your tailnet ACLs.\n- **`sudo` asks for a password:** you'd need to either set up passwordless sudo on that host, or run the installer and `sudo tentmaker setup --yes` on the machine yourself.\n\nQuestions for you:\n1. Are the default budgets fine? Each device gets a quarter of its RAM every day and half while plugged in. If you want something specific, I'd add `--memory 4GiB --boost-memory 16GiB` to each `devices add` command.\n2. Do you want either machine to serve acme/webapp directly? That would mean giving it a forge token, so I'd ask you again before doing it."
+}

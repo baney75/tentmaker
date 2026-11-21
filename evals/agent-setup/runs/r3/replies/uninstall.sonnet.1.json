@@ -1,0 +1,10 @@
+{
+ "case": "uninstall",
+ "responder": "sonnet",
+ "sample": 1,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "I'd ask you two things before running anything.\n\n**Questions**\n1. **Purge:** \"Completely\" means `--purge`, which permanently deletes the config, the forge token for acme/webapp, state, cache and logs. Is that what you want? Reinstalling later would mean setting up from scratch.\n2. **Workflows:** This laptop is the only device serving acme/webapp, and its workflows use `runs-on: [self-hosted, tentmaker, ...]`. Once Tentmaker is gone, those jobs will queue forever waiting for a runner. Should I first help you change `runs-on` back to a hosted runner (e.g. `ubuntu-latest` or `macos-latest`) on a branch for you to review? `migrate` has no undo, so that would be a manual edit, and I won't write to your files without your yes. Or will you handle the workflows yourself?\n\n**Commands once you say yes**\n\nRead-only check first:\n```sh\ntentmaker status --json\n```\n\nRemove the service and sandboxes, and purge everything else:\n```sh\nsudo tentmaker uninstall --purge --yes --json\n```\n\nThe uninstall leaves the binary, so delete it:\n```sh\nsudo rm /usr/local/bin/tentmaker\n```\n\nVerify:\n```sh\ncommand -v tentmaker || echo \"tentmaker removed\"\nlaunchctl print system/dev.tentmaker.daemon 2>&1 | head -n 2\n```\n\nThe `launchctl` line should report that the service isn't found. If `uninstall` reports any failed step, I'll stop and show you its `fix` message rather than deleting things by hand."
+}

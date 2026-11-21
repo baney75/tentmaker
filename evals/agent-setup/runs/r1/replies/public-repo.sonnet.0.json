@@ -1,0 +1,10 @@
+{
+ "case": "public-repo",
+ "responder": "sonnet",
+ "sample": 0,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "Before I add a public repo, I need your yes on a few things.\n\n**Questions**\n1. **Public repo risk:** acme/site is public, so anyone who can get a workflow run approved on it would run code on this desktop. Tentmaker never runs fork PRs, but an outside contributor whose run you approve can still run code here. Do you want `--allow-public` for acme/site?\n2. **Fork approval setting:** the repo is on GitHub's default, which is approval for first-time contributors only. Tentmaker refuses that. `--enable` changes the repo's setting to require approval for all outside contributors, which affects everyone who contributes to acme/site. Is that OK, or would you rather change it yourself in the repo's Actions settings?\n3. **Workflow edits:** the repo's workflows need `runs-on: [self-hosted, tentmaker, linux]` to reach your machines. I'd run `migrate` as a report only first, and I won't write any files or commit without a separate yes from you.\n4. **Token admin rights:** the stored GitHub token must be an admin of acme/site. Is it?\n\n**Commands I'd run now (read-only)**\n```sh\ntentmaker status --json\ntentmaker doctor --json\ntentmaker repo list --json\n```\n\n**Commands I'd run after your yes to 1 and 2**\n```sh\nsudo tentmaker repo add acme/site --allow-public --enable --json\ntentmaker repo list --json     # confirm acme/site shows up\ntentmaker doctor --json        # must exit 0\n```\n\n**Then, inside a checkout of acme/site**\n```sh\ntentmaker migrate . --json     # report only\n```\nI'll show you the report. Only after your yes to question 3 would I run `tentmaker migrate . --write --json`, review `git diff`, and commit on a branch.\n\nThe `repo add` command uses the token already stored on this device, so no new token is needed. Jobs from forks will still never run here."
+}

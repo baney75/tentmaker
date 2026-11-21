@@ -1,0 +1,9 @@
+{
+ "case": "migrate-forks",
+ "responder": "haiku",
+ "sample": 0,
+ "models": [
+  "claude-haiku-5-5"
+ ],
+ "text": "I'll start with a report-only pass, which changes nothing. First I need to confirm the checkout. The working directory I was started in is a temporary path that isn't a git repo, so I'll work from your `~/src/webapp` checkout.\n\n```sh\ncd ~/src/webapp\ngit status --short          # expect no output; stop if there are uncommitted changes\ngit remote get-url origin   # confirm it is acme/webapp\ntentmaker migrate . --json\ntentmaker migrate . --platform macos --json\n```\n\nThe first `migrate` covers Linux jobs. The second covers macOS jobs. Neither writes anything. I'll show you both reports, including the jobs it leaves alone (deploy, publish, sign, environments, secrets, and Linux jobs that use `sudo`).\n\nAfter you approve the report, I'd run:\n\n```sh\ngit switch -c tentmaker-migrate\ntentmaker migrate . --write --json   # add --platform macos if you want macOS jobs moved too\ngit diff                             # review the edits before committing\n```\n\nI'd commit only after you've read the diff. The fork routing in the migrated workflows is a `runs-on` expression that sends fork PRs to `ubuntu-latest`. Tentmaker never runs fork jobs, but that expression is what keeps them off your machines.\n\nBefore I run anything, I need answers to these:\n\n1. **Is this checkout acme/webapp, and is the repo public or private?** If it's public, `migrate` and `repo add` refuse it unless you approve `--allow-public`, which lets outside contributors' code run on your machines.\n2. **Do you want macOS jobs moved?** If so, I'll include the `--platform macos` report and write. Those jobs run in throwaway Tart VMs.\n3. **Can I create the `tentmaker-migrate` branch and commit the edits?** I won't push or open a PR without a separate yes.\n4. **Should any jobs stay on hosted runners** besides the fork-PR routing and the ones `migrate` skips?"
+}

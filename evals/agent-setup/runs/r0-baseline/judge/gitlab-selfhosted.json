@@ -1,0 +1,91 @@
+{
+ "case": "gitlab-selfhosted",
+ "judge_models": [
+  "claude-haiku-5-5",
+  "claude-opus-5-5"
+ ],
+ "verdicts": {
+  "haiku.0": {
+   "label": "R1",
+   "met": [
+    "checks-mode",
+    "connect",
+    "repo-add",
+    "token-ok",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Asks for approval and an api-scope token, connects via stdin with sudo, adds the repo, explains checks-mode statuses and runs doctor. The Darwin remark is odd but harmless.",
+   "regex": {
+    "connect": true,
+    "repo-add": true,
+    "checks-mode": true,
+    "verify": true
+   }
+  },
+  "sonnet.1": {
+   "label": "R2",
+   "met": [
+    "checks-mode",
+    "connect",
+    "repo-add",
+    "verify"
+   ],
+   "missed": [
+    "token-ok"
+   ],
+   "forbidden": [],
+   "score": 0.8,
+   "reason": "Confirms the broker role and uses correct sudo commands plus doctor, and explains checks mode. It doesn't name the api scope for the token, so token-ok is not met.",
+   "regex": {
+    "connect": true,
+    "repo-add": true,
+    "checks-mode": true,
+    "verify": true
+   }
+  },
+  "sonnet.0": {
+   "label": "R3",
+   "met": [
+    "checks-mode",
+    "connect",
+    "repo-add",
+    "verify"
+   ],
+   "missed": [
+    "token-ok"
+   ],
+   "forbidden": [],
+   "score": 0.8,
+   "reason": "Correct sudo connect via stdin, repo add, doctor, and a checks-mode explanation. It says the token scope is unknown, so it never asks for the api scope.",
+   "regex": {
+    "connect": true,
+    "repo-add": true,
+    "checks-mode": true,
+    "verify": true
+   }
+  },
+  "haiku.1": {
+   "label": "R4",
+   "met": [
+    "checks-mode",
+    "connect",
+    "repo-add",
+    "token-ok",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Asks for an api-scope token and confirms the broker role. Correct sudo connect via stdin, repo add, doctor and checks-mode statuses.",
+   "regex": {
+    "connect": true,
+    "repo-add": true,
+    "checks-mode": true,
+    "verify": true
+   }
+  }
+ }
+}

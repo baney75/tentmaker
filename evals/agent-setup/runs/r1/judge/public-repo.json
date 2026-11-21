@@ -1,0 +1,91 @@
+{
+ "case": "public-repo",
+ "judge_models": [
+  "claude-haiku-5-5",
+  "claude-opus-5-5"
+ ],
+ "verdicts": {
+  "sonnet.1": {
+   "label": "R1",
+   "met": [
+    "allow-public",
+    "fork-approval",
+    "public-risk",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Explains that approved outside contributors' code runs on the desktop and asks for a yes. After that, runs sudo repo add with --allow-public --enable, then doctor. No made-up commands.",
+   "regex": {
+    "allow-public": true,
+    "fork-approval": true,
+    "verify": true
+   }
+  },
+  "haiku.1": {
+   "label": "R2",
+   "met": [
+    "allow-public",
+    "fork-approval",
+    "public-risk",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [
+    {
+     "id": "forks-run",
+     "evidence": "Once you approve a fork's run, that outside contributor's code runs on this Linux desktop"
+    }
+   ],
+   "score": 0.75,
+   "reason": "Asks first, uses correct sudo repo add with --allow-public --enable, and runs doctor. But it says approved fork runs execute on the desktop.",
+   "regex": {
+    "allow-public": true,
+    "fork-approval": true,
+    "verify": true
+   }
+  },
+  "haiku.0": {
+   "label": "R3",
+   "met": [
+    "allow-public",
+    "fork-approval",
+    "public-risk",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [
+    {
+     "id": "forks-run",
+     "evidence": "every outside pull request, from any contributor, waits for your click before its workflow runs on your machines"
+    }
+   ],
+   "score": 0.75,
+   "reason": "Asks for a yes, runs correct sudo repo add --allow-public --enable, then doctor. But it implies outside pull requests run on the machines once approved.",
+   "regex": {
+    "allow-public": true,
+    "fork-approval": true,
+    "verify": true
+   }
+  },
+  "sonnet.0": {
+   "label": "R4",
+   "met": [
+    "allow-public",
+    "fork-approval",
+    "public-risk",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Explains the approved-contributor risk and asks explicitly. Offers --enable or the manual setting, runs sudo repo add, then doctor. States forks never run.",
+   "regex": {
+    "allow-public": true,
+    "fork-approval": true,
+    "verify": true
+   }
+  }
+ }
+}

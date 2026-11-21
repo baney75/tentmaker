@@ -1,0 +1,10 @@
+{
+ "case": "doctor-low-disk",
+ "responder": "sonnet",
+ "sample": 0,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "The only failing check is disk: 11.4 GiB is free at `/var/lib/tentmaker`, and the guard needs 20 GiB, so the device takes no new jobs. Everything else is fine. Nothing needs changing yet, and I won't delete anything without your say-so.\n\nFirst, these read-only commands show where the space is going:\n\n```sh\ndf -h /var/lib/tentmaker\nsudo du -xh --max-depth=1 /var/lib/tentmaker | sort -h | tail -15\nsudo du -xh --max-depth=1 /var | sort -h | tail -15\ntentmaker budget --json\ntentmaker logs -n 50\n```\n\n**Questions for you:**\n\n1. Which do you want?\n   - **(a) Free about 9 GiB or more.** Once I see what's using the space, I'll list candidates and you pick what goes. I won't delete anything without your yes.\n   - **(b) Lower the guard.** This has no CLI flag. You'd edit `min_free_disk` under `[guards]` in `/etc/tentmaker/config.toml`. I'd only suggest it if the disk is simply small, because jobs need working room and running jobs get stopped when disk gets very low.\n2. Is `/var/lib/tentmaker` on its own partition, or on the same disk as your home directory? That tells me whether freeing space elsewhere helps.\n\nIf you choose (b), after your approval I'd set `min_free_disk` to a value you name, then run:\n\n```sh\nsudo systemctl restart tentmaker\ntentmaker doctor --json\n```\n\nIf you choose (a), I'd run the same `tentmaker doctor --json` after the cleanup. The disk check should then pass without a restart."
+}

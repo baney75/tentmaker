@@ -1,0 +1,9 @@
+{
+ "case": "public-repo",
+ "responder": "haiku",
+ "sample": 1,
+ "models": [
+  "claude-haiku-5-5"
+ ],
+ "text": "I haven't changed anything yet. Making acme/site public-repo ready means turning on fork approval on GitHub and letting this desktop run code that outsiders can trigger, so I need your go-ahead first.\n\n**Read-only checks I'd run now:**\n```sh\ntentmaker status --json\ntentmaker repo list --json\ntentmaker doctor --json\n```\n\n**Once you say yes, I'd run:**\n```sh\nsudo tentmaker repo add acme/site --allow-public --enable --json\ntentmaker doctor --json\n```\n`--enable` changes acme/site's GitHub settings so every outside contributor's workflow run needs your approval. The default, first-time-contributor-only approval isn't enough for this, so I'd set it.\n\n**Before I run that, please confirm:**\n1. **The risk.** Fork pull requests never run on this desktop. But code from outside contributors that you merge, and any workflow an outsider can trigger on the repo itself (for example, one that runs on issue comments), would run here. Those jobs can reach your LAN and tailnet, because only macOS VMs are isolated. Are you okay with that?\n2. **Fork approval.** Is it fine for me to set \"require approval for all outside contributors\" on acme/site, which changes the repo's settings on GitHub?\n3. **Migrating workflows.** Do you want me to change acme/site's workflows to `runs-on: [self-hosted, tentmaker, linux]`? If so, tell me where the checkout is on this machine. I'd first run `tentmaker migrate PATH --json` and show you the report, and I'd edit files only after you say yes. Migrated jobs send fork PRs to GitHub-hosted runners.\n4. **Platform.** Do you need macOS or Windows jobs too? This desktop only runs Linux jobs. Windows devices run Windows jobs only in v0.1, and macOS jobs need a Mac in the pool.\n5. **Cost.** Should I assume the setup costs nothing extra beyond your existing machines and GitHub plan?"
+}

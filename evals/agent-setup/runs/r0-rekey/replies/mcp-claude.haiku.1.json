@@ -1,0 +1,9 @@
+{
+ "case": "mcp-claude",
+ "responder": "haiku",
+ "sample": 1,
+ "models": [
+  "claude-haiku-5-5"
+ ],
+ "text": "I'd run this, with no questions first. Registering the server only edits Claude Code's config, and the user asked for it directly.\n\n```sh\n# Register the server for all of your projects (user scope).\n# The absolute path avoids depending on PATH when Claude Code launches it.\nclaude mcp add --scope user tentmaker -- /usr/local/bin/tentmaker mcp\n\n# Confirm it's registered and connects.\nclaude mcp list\ntentmaker version --json\n```\n\nExpected results:\n\n- `claude mcp list` shows `tentmaker` with a connected status.\n- The read tools (`status`, `pool`, `doctor`) work as your normal user.\n- Tools that change the device (setup, budget, pause, update) return an error unless the MCP server runs as root. For those, run the matching `sudo tentmaker ...` command in your terminal.\n\nIf you want the server only in this project, drop `--scope user`. Claude Code then stores it for this directory only."
+}

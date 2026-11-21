@@ -1,0 +1,10 @@
+{
+ "case": "dev-channel",
+ "responder": "sonnet",
+ "sample": 0,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "I don't need to ask anything first. Switching channels doesn't touch a forge token, a public repo or any of your files, and `setup --yes` keeps every value you set before. It does restart the service, but running jobs keep going.\n\n```sh\n# 1. Confirm the current state and channel\ntentmaker version --json\ntentmaker status --json\n\n# 2. Save the dev channel (keeps all other settings)\nsudo tentmaker setup --yes --json --channel dev\n\n# 3. Install the current dev build\nsudo tentmaker update --json\n\n# 4. Verify\ntentmaker version --json\ntentmaker doctor --json\n```\n\n- I'm not using `update --channel dev` alone, because that installs one dev build and leaves auto-updates on stable. Step 2 is what saves the channel.\n- Step 3 updates between jobs, verifies the sha256, swaps the binary, restarts the service and rolls back automatically if the service isn't healthy within 60 seconds.\n- Success means the version in step 4 looks like `0.1.1-dev.<timestamp>.<sha>` and `doctor` exits 0. If `doctor` reports a problem, I'll apply its fix and rerun it.\n- To go back to stable, run `sudo tentmaker rollback` for the previous binary, or `sudo tentmaker setup --yes --channel stable` followed by `sudo tentmaker update`.\n\nDev builds are rebuilt on every push to `main`, so they can be less stable than releases."
+}

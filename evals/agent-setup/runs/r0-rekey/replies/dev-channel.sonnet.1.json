@@ -1,0 +1,10 @@
+{
+ "case": "dev-channel",
+ "responder": "sonnet",
+ "sample": 1,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "Nothing to ask first. Switching channels doesn't spend money, touch a repo, or put a token on a device, and passwordless sudo works here.\n\nCheck what the switch would do first:\n\n```sh\ntentmaker version --json\nsudo tentmaker update --channel dev --check --json\n```\n\nThen switch:\n\n```sh\nsudo tentmaker update --channel dev --json\n```\n\nThe update verifies the sha256, checks that the new binary runs, swaps it in, and restarts the service. It rolls back on its own if the service isn't healthy within 60 seconds. It only updates between jobs, so a running job isn't interrupted.\n\nVerify:\n\n```sh\ntentmaker version --json\ntentmaker doctor --json\n```\n\nThe version should look like `0.1.1-dev.<timestamp>.<sha>`, and `doctor` should exit 0.\n\nThe docs I have don't say whether `--channel dev` is remembered for future auto-updates (`update.auto` checks every 6 hours). After the switch, I'd run `sudo tentmaker update --check --json` again to see which channel it checks. If it reports stable, I'd look up the channel key in `docs/config.md` and set it with `sudo tentmaker budget set`-style config commands, rather than guess.\n\nIf the dev build misbehaves, `sudo tentmaker rollback` returns you to the previous binary. Dev is rebuilt on every push to `main`, so expect more churn than stable."
+}

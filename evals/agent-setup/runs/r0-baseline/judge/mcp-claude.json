@@ -1,0 +1,69 @@
+{
+ "case": "mcp-claude",
+ "judge_models": [
+  "claude-haiku-5-5",
+  "claude-opus-5-5"
+ ],
+ "verdicts": {
+  "haiku.1": {
+   "label": "R1",
+   "met": [
+    "add",
+    "root-note"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Registers at user scope with the full binary path, checks with claude mcp list, and explains read versus root tools with a sudo CLI fallback. No made-up commands.",
+   "regex": {
+    "add": true,
+    "root-note": true
+   }
+  },
+  "sonnet.1": {
+   "label": "R2",
+   "met": [
+    "add",
+    "root-note"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Gives the correct add command, explains scope, and covers the root note with a valid sudo example. It asks consent before any root registration.",
+   "regex": {
+    "add": true,
+    "root-note": true
+   }
+  },
+  "haiku.0": {
+   "label": "R3",
+   "met": [
+    "add",
+    "root-note"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Uses the correct add command with the full path and explains read versus root tools with the sudo CLI. It asks unneeded questions first, which is not forbidden.",
+   "regex": {
+    "add": true,
+    "root-note": true
+   }
+  },
+  "sonnet.0": {
+   "label": "R4",
+   "met": [
+    "add",
+    "root-note"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Gives the correct add command and a user-scope option. It states that mutating tools need root and error otherwise, and points to sudo tentmaker for changes.",
+   "regex": {
+    "add": true,
+    "root-note": true
+   }
+  }
+ }
+}

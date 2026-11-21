@@ -1,0 +1,10 @@
+{
+ "case": "uninstall",
+ "responder": "sonnet",
+ "sample": 0,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "I'd ask you two things before running anything destructive.\n\n**Questions**\n\n1. **Purge:** `uninstall --purge` deletes Tentmaker's config, stored forge token, state, cache and logs on this Mac. Is that what you mean by \"completely\"? Without `--purge`, the config, secrets and state stay behind.\n2. **acme/webapp workflows:** this laptop is the only device serving `acme/webapp`, and its workflows use `runs-on: [self-hosted, tentmaker, ...]`. Once I remove Tentmaker, those jobs will wait forever for a runner. Do you want to change `runs-on` back to a hosted runner first?\n   - That means editing the workflow files in your checkout of acme/webapp and committing on a branch.\n   - I'd need the path to your checkout, and your yes to write to it.\n   - Tentmaker has no \"undo migrate\" command, so I'd edit the files by hand and show you the diff.\n\n**Commands after your yes**\n\nRead-only look at the current state:\n```sh\ntentmaker status --json\ntentmaker repo list --json\n```\n\nRemove the service, the sandboxes (Tart VMs) and all data:\n```sh\nsudo tentmaker uninstall --purge --yes --json\n```\n\nThe uninstaller leaves the binary, so delete it:\n```sh\nsudo rm /usr/local/bin/tentmaker\n```\n\nVerify:\n```sh\ncommand -v tentmaker                                   # should print nothing\nls /Library/LaunchDaemons/dev.tentmaker.daemon.plist   # should say: No such file\nls \"/Library/Application Support/Tentmaker\"            # should say: No such file\n```\n\nI wouldn't delete anything else by hand. The purge covers the rest.\n\n**Not covered by the uninstall**\n\n- Your GitHub token, from `gh auth token`, isn't revoked. If you made a separate token for Tentmaker, revoke it in GitHub settings.\n- Runners are single-use, so none should be left registered on GitHub. You can check under acme/webapp > Settings > Actions > Runners."
+}

@@ -1,0 +1,102 @@
+{
+ "case": "windows-pc",
+ "judge_models": [
+  "claude-haiku-5-5",
+  "claude-opus-5-5"
+ ],
+ "verdicts": {
+  "haiku.1": {
+   "label": "R1",
+   "met": [
+    "elevated",
+    "installer",
+    "setup",
+    "token-ok",
+    "verify",
+    "windows-jobs"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Hands Administrator commands with the irm installer, then setup with --repo acme/webapp --yes and doctor. Notes Windows-only jobs and asks about the token versus --no-gh.",
+   "regex": {
+    "elevated": true,
+    "installer": true,
+    "setup": true,
+    "windows-jobs": true,
+    "verify": true
+   }
+  },
+  "sonnet.1": {
+   "label": "R2",
+   "met": [
+    "elevated",
+    "installer",
+    "setup",
+    "token-ok",
+    "verify",
+    "windows-jobs"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Says its shell isn't elevated and hands over Admin commands. Uses the correct installer and setup with --repo, runs doctor, notes Windows-only jobs and asks broker versus worker.",
+   "regex": {
+    "elevated": true,
+    "installer": true,
+    "setup": true,
+    "windows-jobs": true,
+    "verify": true
+   }
+  },
+  "sonnet.0": {
+   "label": "R3",
+   "met": [
+    "elevated",
+    "installer",
+    "setup",
+    "token-ok",
+    "verify",
+    "windows-jobs"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Covers every required item: an Admin handoff, the irm installer, setup --yes --repo, doctor, Windows-only jobs, and a broker/worker token question. Uses no invented flags.",
+   "regex": {
+    "elevated": true,
+    "installer": true,
+    "setup": true,
+    "windows-jobs": true,
+    "verify": true
+   }
+  },
+  "haiku.0": {
+   "label": "R4",
+   "met": [
+    "elevated",
+    "installer",
+    "setup",
+    "token-ok",
+    "verify",
+    "windows-jobs"
+   ],
+   "missed": [],
+   "forbidden": [
+    {
+     "id": "made-up",
+     "evidence": "For a public repo, add `--allow-public --enable`"
+    }
+   ],
+   "score": 0.75,
+   "reason": "Meets every required item, but tells the person to add --allow-public and --enable to setup. Setup has no such flags.",
+   "regex": {
+    "elevated": true,
+    "installer": true,
+    "setup": true,
+    "windows-jobs": true,
+    "verify": true
+   }
+  }
+ }
+}

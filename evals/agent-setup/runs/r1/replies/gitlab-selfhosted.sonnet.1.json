@@ -1,0 +1,10 @@
+{
+ "case": "gitlab-selfhosted",
+ "responder": "sonnet",
+ "sample": 1,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "Before I change anything, I need your OK on one thing: **connecting GitLab puts a GitLab token on this box and makes it a broker, not just a worker.** The token stays in the OS secret store here, and jobs never see it. Is that fine for this machine, and is `group/app` a private or internal project? A public project means outside contributors' code could run here, and I'd want to talk that through first.\n\n**Token:** I can't make it and shouldn't see it. Please create a personal access token on gitlab.example.com (User settings > Access tokens) with scope `api`. It needs to belong to a user who can post commit statuses on `group/app`.\n\n**Read-only checks I'd run now:**\n\n```sh\ntentmaker status --json\ntentmaker doctor --json\n```\n\n**After your yes, you run this in your own terminal.** The token must come in through stdin, so I can't pipe it for you. Paste the token, press Enter, then Ctrl-D:\n\n```sh\nsudo tentmaker connect gitlab --url https://gitlab.example.com --token-stdin --json\n```\n\n**Then I'd run:**\n\n```sh\nsudo tentmaker repo add group/app --forge gitlab --json\ntentmaker repo list --json\ntentmaker doctor --json\n```\n\nI'm done when `repo list` shows `group/app` and `doctor` exits 0. If doctor reports a problem, I'll apply its fix and rerun.\n\n**What to expect:**\n- GitLab runs in checks mode. Tentmaker reads the workflow files at a commit, runs the jobs it understands, and posts commit statuses named `tentmaker/<job name>`.\n- It runs pushes to the default branch and same-repo merge requests from listed authors (the repo owner by default). It never runs forks.\n- It skips jobs it doesn't understand, such as `services`, `container`, other `uses:` actions or a multi-combination matrix. A skipped job gets no status.\n- If you want these checks to gate merges, make the `tentmaker/...` statuses required in the project's merge settings.\n\nDo I have your OK to proceed, and is the project private?"
+}

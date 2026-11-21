@@ -1,0 +1,10 @@
+{
+ "case": "laptop-plugged-in",
+ "responder": "sonnet",
+ "sample": 0,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "I'd run the install now, since it changes nothing about your repos or tokens, and hold off on setup until you've answered a few questions.\n\n**Run now (read-only check, then install the binary only):**\n```sh\ntentmaker version --json; tentmaker status --json\ncurl -fsSL https://raw.githubusercontent.com/baney75/tentmaker/main/scripts/install.sh | sh -s -- --no-setup\ntentmaker version --json\n```\n\n**Questions before I run setup:**\n\n1. **Token on this laptop.** Setup with `--repo` gives this MacBook a GitHub token, taken from `gh auth token` as acme-dev and stored in the macOS secret store. That makes it a broker, and a compromised token could queue jobs on it. Registering runners needs admin on acme/webapp, so is acme-dev an admin there? OK to proceed with that token on this machine?\n2. **Memory numbers.** You have 32 GB. I'd suggest 4 GiB as the everyday limit (always) and 16 GiB as the boost limit (plugged in only). The defaults would be 8 GiB and 16 GiB. Are those OK, or do you want other numbers?\n3. **On battery.** By default the laptop keeps running jobs at the 4 GiB limit on battery, and stops taking new jobs below 40% charge. If you'd rather it take no jobs at all on battery, I'll add `--on-battery off`. Which do you want?\n4. **Workflow changes (optional).** To send acme/webapp's jobs to this laptop, its workflows need a `runs-on: [self-hosted, tentmaker, macOS]` edit. Where is your local checkout? I'd run a read-only `tentmaker migrate` report there and show you before changing anything.\n\n**After your yes, I'd run:**\n```sh\nsudo tentmaker setup --yes --json --repo acme/webapp --memory 4GiB --boost-memory 16GiB\ntentmaker doctor --json\n```\n\nIf `doctor` reports a problem, I'll apply its fix and rerun. Then I'll do the migrate report from question 4 if you give me the path.\n\nSince acme/webapp is private, `--allow-public` isn't needed."
+}

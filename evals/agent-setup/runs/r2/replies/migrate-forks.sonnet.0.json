@@ -1,0 +1,10 @@
+{
+ "case": "migrate-forks",
+ "responder": "sonnet",
+ "sample": 0,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "I'll start with a read-only report, which changes nothing and needs no sudo:\n\n```sh\ncd ~/src/webapp\ntentmaker migrate . --json\n```\n\nIf the report shows macOS jobs, I'll also run `tentmaker migrate . --platform macos --json`, since the default platform is Linux.\n\nThe report lists what migrate would change and what it would leave alone. It skips jobs that deploy, publish, release or sign, use an environment, ask for write permissions or read secrets. It also skips Linux jobs that use `sudo` and runner images Tentmaker doesn't cover. Fork routing comes with the rewrite: each migrated job gets `runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('[\"self-hosted\",\"tentmaker\",\"linux\"]') }}`. Fork PRs then go to GitHub-hosted runners, and Tentmaker refuses to run a fork's job anyway.\n\n**I need your yes before I edit anything.** Once you've seen the report, tell me:\n1. Whether I may rewrite `.github/workflows` in place with `--write`.\n2. Whether you want the skipped jobs (deploy, secrets and so on) left on GitHub-hosted runners. That is what migrate does by default.\n3. Whether acme/webapp is public. If it is, we should talk about `--allow-public` before relying on this.\n\nAfter your yes, I'll run:\n\n```sh\ntentmaker migrate . --write --json\ngit diff\ngit switch -c tentmaker-runners\n```\n\nI'll show you the diff. I won't commit, push or open a PR unless you tell me to."
+}

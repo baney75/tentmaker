@@ -1,0 +1,10 @@
+{
+ "case": "gitlab-selfhosted",
+ "responder": "sonnet",
+ "sample": 1,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "Before I change anything, I need a yes from you on two points.\n\n**Questions**\n1. **Token on this box.** Hooking up `group/app` gives this machine a GitLab token, which turns it from a worker into a broker. Anyone who can push to that project can then run code here. Is that OK?\n2. **Visibility.** Is `group/app` private or internal, not public? If it's public, I'll stop and check with you again before going further.\n\n**Token you need to make.** I never see or handle it. In GitLab, create a personal access token with scope `api` (User settings > Access tokens). Use an account that can post commit statuses on `group/app`.\n\n**Commands I'd run now (read-only)**\n```sh\ntentmaker status --json\ntentmaker doctor --json\n```\n\n**After your yes, you run this in your own terminal.** I can't type the token for you, and it must never go in argv, an environment variable or a file. Paste the token, press Enter, then Ctrl-D:\n```sh\nsudo tentmaker connect gitlab --url https://gitlab.example.com --token-stdin --yes --json\n```\n\n**Then I run:**\n```sh\nsudo tentmaker repo add group/app --forge gitlab --json\ntentmaker repo list --json\ntentmaker doctor --json\n```\n\nI'm done when `repo list` shows `group/app` and `doctor` exits 0. If `doctor` reports a problem, I'll apply its fix and rerun it.\n\n**What to expect.** GitLab runs in checks mode. Tentmaker reads the workflow files at each commit and runs the jobs it understands. It posts statuses named `tentmaker/<job>` on pushes to the default branch and on same-project merge requests from the repo owner (or the authors you list). It never runs forks. Jobs it can't handle, such as ones using services, containers or multi-combination matrices, are skipped and get no status. Make the `tentmaker/*` statuses required in branch protection if you want them to gate merges."
+}

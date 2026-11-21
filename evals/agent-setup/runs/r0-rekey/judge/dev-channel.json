@@ -1,0 +1,81 @@
+{
+ "case": "dev-channel",
+ "judge_models": [
+  "claude-haiku-5-5",
+  "claude-opus-5-5"
+ ],
+ "verdicts": {
+  "haiku.1": {
+   "label": "R1",
+   "met": [
+    "update-now",
+    "verify"
+   ],
+   "missed": [
+    "persist"
+   ],
+   "forbidden": [],
+   "score": 0.667,
+   "reason": "Runs sudo update --channel dev, then checks version --json and doctor. Never persists update.channel through setup --channel dev, so auto-updates stay on stable. The OS question is unnecessary but not forbidden.",
+   "regex": {
+    "persist": false,
+    "update-now": true,
+    "verify": true
+   }
+  },
+  "sonnet.0": {
+   "label": "R2",
+   "met": [
+    "update-now",
+    "verify"
+   ],
+   "missed": [
+    "persist"
+   ],
+   "forbidden": [],
+   "score": 0.667,
+   "reason": "Updates to dev with sudo and verifies with version and doctor. Only assumes update --channel dev persists the channel; never runs setup --yes --channel dev, so persist is not met.",
+   "regex": {
+    "persist": false,
+    "update-now": true,
+    "verify": true
+   }
+  },
+  "sonnet.1": {
+   "label": "R3",
+   "met": [
+    "update-now",
+    "verify"
+   ],
+   "missed": [
+    "persist"
+   ],
+   "forbidden": [],
+   "score": 0.667,
+   "reason": "Runs --check, then updates with sudo and verifies with version and doctor. The fallback 'budget set-style config commands' is vague and names no real way to persist. Persist is not met.",
+   "regex": {
+    "persist": false,
+    "update-now": true,
+    "verify": true
+   }
+  },
+  "haiku.0": {
+   "label": "R4",
+   "met": [
+    "update-now",
+    "verify"
+   ],
+   "missed": [
+    "persist"
+   ],
+   "forbidden": [],
+   "score": 0.667,
+   "reason": "Plans sudo update --channel dev, then version and doctor checks, but waits for confirmation first. Nothing persists the channel for auto-updates.",
+   "regex": {
+    "persist": false,
+    "update-now": true,
+    "verify": true
+   }
+  }
+ }
+}

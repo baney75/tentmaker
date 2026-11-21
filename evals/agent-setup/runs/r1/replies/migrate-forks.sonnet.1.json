@@ -1,0 +1,10 @@
+{
+ "case": "migrate-forks",
+ "responder": "sonnet",
+ "sample": 1,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "I'd start with a read-only report, since `migrate` without `--write` changes nothing and needs no sudo:\n\n```sh\ncd ~/src/webapp\ntentmaker migrate . --json\ntentmaker migrate . --platform macos --json   # only if any jobs run on macOS\n```\n\nThe fork requirement is already built in. Migrated jobs get a `runs-on` that sends fork pull requests to `ubuntu-latest` and everything else to `[self-hosted, tentmaker, linux]`. Tentmaker also never runs a fork's job, even if a workflow is edited to ask for it.\n\n**What I'd ask you before writing anything:**\n\n1. Does `acme/webapp` have any macOS jobs? If so, they need the macOS pass. Windows jobs only run on a Windows device.\n2. Is `acme/webapp` private? If it's public, I'd stop, because that needs `--allow-public` and approval for all outside contributors.\n3. Once you've seen the report, may I edit `.github/workflows` in place? `migrate` skips and reports jobs that deploy, publish, release or sign, use an environment, ask for write permissions or read secrets, or use `sudo` on Linux. Those stay on GitHub-hosted runners unless you say otherwise.\n\n**After you say yes**, I'd run:\n\n```sh\ngit switch -c tentmaker-runners\ntentmaker migrate . --write --json\ngit diff\n```\n\nIf the diff looks right, I'd commit it on that branch:\n\n```sh\ngit add .github/workflows\ngit commit -m \"Run CI on Tentmaker runners; fork PRs stay on GitHub-hosted\"\n```\n\nI wouldn't push or open a PR unless you ask. Each migrated workflow also gets a concurrency block that cancels a pull request's older run."
+}

@@ -1,0 +1,9 @@
+{
+ "case": "mcp-claude",
+ "responder": "haiku",
+ "sample": 1,
+ "models": [
+  "claude-haiku-5-5"
+ ],
+ "text": "Run these commands. Registering the server only changes Claude Code's config, so it doesn't need `sudo`.\n\n```sh\nclaude mcp add --scope user tentmaker -- /usr/local/bin/tentmaker mcp\nclaude mcp list\n```\n\nI used `--scope user` so the server is available in every project. Claude Code's default scope is `local`, which limits it to the current project. I used the full path to the binary so the server still starts if Claude Code's environment doesn't include `/usr/local/bin` in its `PATH`.\n\nBefore you run it, I need to know one thing: which scope do you want? Use `user` for every project or `local` for only this one.\n\nAfter registration, the read tools (`status`, `pool`, `doctor`) work as your user. Tools that change the device need the server to run as root, so they will return an error unless you run the server with `sudo`. I don't recommend that for a Claude Code session."
+}

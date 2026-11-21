@@ -1,0 +1,9 @@
+{
+ "case": "schedule-boost",
+ "responder": "haiku",
+ "sample": 0,
+ "models": [
+  "claude-haiku-5-5"
+ ],
+ "text": "Yes. A schedule window set to `boost` runs at boost even when `boost_needs_idle` would hold it back, and it still needs AC power, which this laptop has. Before I add it, I need two answers:\n\n1. **Window hours.** I'd suggest 22:00 to 07:00. Should it be different?\n2. **Which nights.** `mon-fri` as a start day covers Sunday through Thursday nights. Do you also want Friday night, running into Saturday morning? If so, I'd use `--days mon-fri` plus a separate Friday window, or drop the day filter.\n\nOnce you confirm, I'd run:\n\n```sh\nsudo tentmaker schedule add --name weeknights --days mon-fri --from 22:00 --to 07:00 --profile boost --json\ntentmaker budget --json\n```\n\nThe first command adds the window. The second confirms the profile the budget engine reports for the current time. The window's `to` is earlier than its `from`, so it spans midnight.\n\nGuards still apply inside the window. Jobs pause if free disk drops below 20 GiB, if less than 2 GiB of memory is left for you after a job, or if a process you listed is running. The window doesn't override those."
+}

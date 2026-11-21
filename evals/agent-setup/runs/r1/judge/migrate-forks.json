@@ -1,0 +1,82 @@
+{
+ "case": "migrate-forks",
+ "judge_models": [
+  "claude-haiku-5-5",
+  "claude-opus-5-5"
+ ],
+ "verdicts": {
+  "sonnet.1": {
+   "label": "R1",
+   "met": [
+    "fork-routing",
+    "report",
+    "write",
+    "write-ok"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Reports first and asks before writing. Writes, diffs and commits on a branch only after a yes. States migrate's fork routing and that Tentmaker never runs fork jobs. No made-up flags.",
+   "regex": {
+    "report": true,
+    "write": true,
+    "fork-routing": true
+   }
+  },
+  "haiku.1": {
+   "label": "R2",
+   "met": [
+    "fork-routing",
+    "report",
+    "write",
+    "write-ok"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Read-only report first and asks before --write. After approval: write, diff, commit on a new branch, no push without asking. Covers the fork-aware runs-on and that Tentmaker refuses fork jobs.",
+   "regex": {
+    "report": true,
+    "write": true,
+    "fork-routing": true
+   }
+  },
+  "sonnet.0": {
+   "label": "R3",
+   "met": [
+    "fork-routing",
+    "report",
+    "write",
+    "write-ok"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Report first, shows the fork-routing runs-on that migrate adds, and notes Tentmaker never runs fork jobs. Asks before write and commit, then commits on a branch.",
+   "regex": {
+    "report": true,
+    "write": true,
+    "fork-routing": true
+   }
+  },
+  "haiku.0": {
+   "label": "R4",
+   "met": [
+    "report",
+    "write",
+    "write-ok"
+   ],
+   "missed": [
+    "fork-routing"
+   ],
+   "forbidden": [],
+   "score": 0.75,
+   "reason": "Report, then write, diff, branch and PR, all after approval. Hedges whether migrate adds fork routing ('If migrate doesn't add it'), so it doesn't state that migrated jobs route forks to hosted runners.",
+   "regex": {
+    "report": true,
+    "write": true,
+    "fork-routing": true
+   }
+  }
+ }
+}

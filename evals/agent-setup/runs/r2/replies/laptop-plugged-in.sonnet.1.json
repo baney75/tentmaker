@@ -1,0 +1,10 @@
+{
+ "case": "laptop-plugged-in",
+ "responder": "sonnet",
+ "sample": 1,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "I'll start with the read-only checks and the install, which need no sign-off. The setup step gives this laptop a GitHub token for acme/webapp, so I'll wait for your yes before running it.\n\n**Running now:**\n\n```sh\ntentmaker version --json; tentmaker status --json\ncurl -fsSL https://raw.githubusercontent.com/baney75/tentmaker/main/scripts/install.sh | sh -s -- --no-setup\ntentmaker version --json\n```\n\n**Questions before I run setup:**\n\n1. **Token on this laptop.** Setup would take your `gh` login (acme-dev) token and store it in the macOS secret store, which makes this MacBook the broker for acme/webapp. Is that OK? acme-dev also needs admin on acme/webapp, because registering runners requires it.\n2. **Memory limits.** You have 32 GB. I'd use these:\n   - Everyday: **4 GiB** at any time, including on battery.\n   - Boost: **12 GiB**, only while plugged in.\n\n   Do you want different numbers? Also say if you'd rather CI stop completely on battery (`--on-battery off`). Otherwise it keeps running at 4 GiB.\n\n**After your yes, I'd run:**\n\n```sh\nsudo tentmaker setup --yes --json --repo acme/webapp --memory 4GiB --boost-memory 12GiB\ntentmaker doctor --json\n```\n\nI'll apply the fix doctor prints for any problem and rerun it until it exits 0.\n\n**Not done yet:** your workflows still run on GitHub-hosted runners until `runs-on` points at the pool. Afterwards I'll run `tentmaker migrate <checkout> --json`, which only reports. I'll show you the report and only edit files with `--write` if you say yes."
+}

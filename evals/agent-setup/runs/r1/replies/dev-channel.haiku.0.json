@@ -1,0 +1,9 @@
+{
+ "case": "dev-channel",
+ "responder": "haiku",
+ "sample": 0,
+ "models": [
+  "claude-haiku-5-5"
+ ],
+ "text": "I haven't changed anything yet. Two things first:\n\n**Ask before running:** Your message says this is a Linux desktop, but the environment reports Darwin 27.2.0 (macOS) with a `/private/var/...` working directory. The install paths and service commands differ between the two, so please confirm which machine this is. If it's the Linux desktop, I'll run the Linux commands below from that machine. If it's the Mac, I'll use the macOS paths and `launchctl` instead.\n\n**Commands I'd run** (after you confirm; none of them need a forge token):\n\n```sh\n# 1. Record the current state (no root needed)\ntentmaker version --json\ntentmaker status --json\n\n# 2. Save the dev channel and keep every other setting\nsudo tentmaker setup --yes --json --channel dev\n\n# 3. Install the current dev build\nsudo tentmaker update --json\n\n# 4. Confirm the service is healthy on dev\ntentmaker version --json\ntentmaker doctor --json\n```\n\nIf step 4 shows a problem, or you want to go back, the undo is:\n\n```sh\nsudo tentmaker rollback\nsudo tentmaker setup --yes --json --channel stable\n```\n\n**Things to know before you say yes:**\n- The dev channel is rebuilt on every push to `main`, so it is less tested than stable. Auto-updates will keep pulling dev builds until you switch back.\n- Setup restarts the service. A job that is already running will finish, but no new jobs are taken during the restart.\n\nShould I go ahead, and is this the Linux desktop or the Mac?"
+}

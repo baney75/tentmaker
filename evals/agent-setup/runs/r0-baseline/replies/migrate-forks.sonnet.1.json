@@ -1,0 +1,10 @@
+{
+ "case": "migrate-forks",
+ "responder": "sonnet",
+ "sample": 1,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "I'll start with a report-only run, which changes nothing, and ask before writing any files.\n\n**Step 1: report (no changes)**\n```sh\ncd ~/src/webapp\ntentmaker migrate . --json\n```\nIf any of your jobs run on macOS, also run:\n```sh\ntentmaker migrate . --platform macos --json\n```\nMigrated jobs get a `runs-on` that sends fork PRs to `ubuntu-latest` and everything else to `[self-hosted, tentmaker, linux]`. Tentmaker also refuses to run fork jobs at the broker, so a workflow edit can't override that.\n\nI'll show you the report. It leaves alone any job that deploys, publishes, releases or signs, uses an environment, asks for write permissions or reads secrets. It also skips Linux jobs that use `sudo` and runner images Tentmaker can't stand in for. Those jobs stay on GitHub-hosted runners unless you change them yourself.\n\n**Step 2: write the changes (after your yes)**\n```sh\ntentmaker migrate . --write --json\ngit diff\n```\nThen, if you want me to, I'll commit it on a branch:\n```sh\ngit switch -c tentmaker-migrate\ngit add .github/workflows\ngit commit -m \"Run CI on Tentmaker, keep fork PRs on hosted runners\"\n```\nI won't push or open a PR unless you say so.\n\n**Questions before I start:**\n1. Are any of your jobs macOS or Windows, or are they all Linux? That decides whether I run the macOS report too.\n2. Is it OK for me to run `migrate --write` once you've seen the report, and to commit on a new branch afterwards?\n\nAlso, my shell is currently in a temp directory that isn't a git repo. I'll `cd ~/src/webapp` first, as above."
+}

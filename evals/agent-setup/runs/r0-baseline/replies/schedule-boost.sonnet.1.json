@@ -1,0 +1,10 @@
+{
+ "case": "schedule-boost",
+ "responder": "sonnet",
+ "sample": 1,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "Yes. Add a schedule window that uses the boost profile overnight. Boost takes 12 GiB instead of 4 GiB, and at the default 2 GiB per job that is roughly 6 jobs at once instead of 2. The laptop is always plugged in, so the AC-power requirement for a boost window is already met.\n\nBefore I run it, I need two answers:\n\n1. **What hours?** I'd use 22:00 to 07:00, the same as the README example. Say if you want different times.\n2. **Should Friday night run into Saturday morning?** I don't know whether `--days mon-fri` means windows that start Monday to Friday or windows that fall in those days. I'd rather not guess, so I'll check `docs/config.md` before I add it.\n\nOne more caveat. `boost_needs_idle = true` is probably why it rarely reaches boost now. The docs don't say whether a boost window skips the idle check. If it doesn't, the laptop reaches boost 10 minutes after you step away (the default `idle_after`), which is fine overnight. I'll verify that after adding the window.\n\nOnce you confirm the hours, these are the commands:\n\n```sh\n# 1. See the current state (read-only)\ntentmaker budget --json\n\n# 2. Add the weekday-night boost window (changes config, needs root)\nsudo tentmaker schedule add --name weeknights --days mon-fri --from 22:00 --to 07:00 --profile boost\n\n# 3. Check that the window is recognised\ntentmaker budget --json\n```\n\nRun step 3 again during the window to confirm the profile is boost. If it still says everyday because of the idle check, there are two options. One is to set `boost_needs_idle = false` in the config, which affects boost at all hours. The other is to raise the everyday budget with `sudo tentmaker budget set --memory 8GiB`. I'd only do either with your okay."
+}

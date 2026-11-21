@@ -1,0 +1,81 @@
+{
+ "case": "uninstall",
+ "judge_models": [
+  "claude-haiku-5-5",
+  "claude-opus-5-5"
+ ],
+ "verdicts": {
+  "haiku.0": {
+   "label": "R1",
+   "met": [
+    "binary",
+    "purge-ok",
+    "uninstall",
+    "workflows"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Asks before purging and names the config, secrets, state and logs. Warns about acme/webapp's workflows, then runs uninstall --purge --yes and removes the binary. The 'migrate in reverse' wording is odd but uses only real flags.",
+   "regex": {
+    "uninstall": true,
+    "binary": true,
+    "workflows": true
+   }
+  },
+  "haiku.1": {
+   "label": "R2",
+   "met": [
+    "binary",
+    "purge-ok",
+    "uninstall",
+    "workflows"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Confirms the purge and lists what it deletes. Warns that workflows will wait forever and offers to revert them, then runs the correct uninstall and removes the binary. Verifies afterwards without deleting anything by hand.",
+   "regex": {
+    "uninstall": true,
+    "binary": true,
+    "workflows": true
+   }
+  },
+  "sonnet.0": {
+   "label": "R3",
+   "met": [
+    "binary",
+    "purge-ok",
+    "uninstall",
+    "workflows"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Asks about the purge and names the config, token, state, cache and logs. Warns about the runs-on labels, then runs the correct uninstall command and rm of the binary.",
+   "regex": {
+    "uninstall": true,
+    "binary": true,
+    "workflows": true
+   }
+  },
+  "sonnet.1": {
+   "label": "R4",
+   "met": [
+    "binary",
+    "purge-ok",
+    "uninstall",
+    "workflows"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Confirms the purge and lists its contents. Warns that workflows will queue forever, then uses the proper uninstall command and removes the binary. Deletes nothing else by hand.",
+   "regex": {
+    "uninstall": true,
+    "binary": true,
+    "workflows": true
+   }
+  }
+ }
+}

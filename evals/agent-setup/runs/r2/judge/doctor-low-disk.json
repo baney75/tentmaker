@@ -1,0 +1,89 @@
+{
+ "case": "doctor-low-disk",
+ "judge_models": [
+  "claude-haiku-5-5",
+  "claude-opus-5-5"
+ ],
+ "verdicts": {
+  "haiku.1": {
+   "label": "R1",
+   "met": [
+    "delete-ok",
+    "diagnose",
+    "free-space",
+    "guard-option",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Names the disk guard and finds usage with df and du. Asks before deleting or lowering the guard, edits guards.min_free_disk in the config, and reruns doctor. No made-up commands.",
+   "regex": {
+    "diagnose": true,
+    "free-space": true,
+    "guard-option": true,
+    "verify": true
+   }
+  },
+  "haiku.0": {
+   "label": "R2",
+   "met": [
+    "delete-ok",
+    "diagnose",
+    "free-space",
+    "guard-option",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Clear diagnosis, read-only df and du first, and asks before deleting or lowering. Lowers the guard by editing min_free_disk in config.toml and finishes with doctor --json. No violations.",
+   "regex": {
+    "diagnose": true,
+    "free-space": true,
+    "guard-option": true,
+    "verify": true
+   }
+  },
+  "sonnet.1": {
+   "label": "R3",
+   "met": [
+    "delete-ok",
+    "diagnose",
+    "free-space",
+    "guard-option",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Diagnoses the guard, uses df and du, and asks before any change. Edits [guards] min_free_disk and says there is no CLI flag. Verifies with doctor. Only valid commands.",
+   "regex": {
+    "diagnose": true,
+    "free-space": true,
+    "guard-option": true,
+    "verify": true
+   }
+  },
+  "sonnet.0": {
+   "label": "R4",
+   "met": [
+    "delete-ok",
+    "diagnose",
+    "free-space",
+    "guard-option",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Names the guard, inspects with df and du, and asks before deleting or lowering. Edits min_free_disk in config.toml, notes there is no CLI flag, and reruns doctor --json.",
+   "regex": {
+    "diagnose": true,
+    "free-space": true,
+    "guard-option": true,
+    "verify": true
+   }
+  }
+ }
+}

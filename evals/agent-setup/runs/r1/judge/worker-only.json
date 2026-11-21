@@ -1,0 +1,85 @@
+{
+ "case": "worker-only",
+ "judge_models": [
+  "claude-haiku-5-5",
+  "claude-opus-5-5"
+ ],
+ "verdicts": {
+  "haiku.1": {
+   "label": "R1",
+   "met": [
+    "explain",
+    "install",
+    "setup-worker",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Installs with install.sh and sets up with --no-gh and no --repo. Explains the default pool and the same tailnet user. Runs doctor and pool. It wrongly claims a Mac can't run Linux jobs, but this isn't a forbidden item.",
+   "regex": {
+    "install": true,
+    "setup-worker": true,
+    "explain": true,
+    "verify": true
+   }
+  },
+  "sonnet.0": {
+   "label": "R2",
+   "met": [
+    "explain",
+    "install",
+    "setup-worker",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Installs with install.sh and sets up a --no-gh worker. Explains that the same tailnet user and pool name are needed. Runs doctor, then pool from the laptop. All flags are valid.",
+   "regex": {
+    "install": true,
+    "setup-worker": true,
+    "explain": true,
+    "verify": true
+   }
+  },
+  "sonnet.1": {
+   "label": "R3",
+   "met": [
+    "explain",
+    "install",
+    "setup-worker",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Installs with install.sh and sets up a --no-gh worker with no --repo. Explains the pool and tailnet requirement. Verifies with doctor and pool.",
+   "regex": {
+    "install": true,
+    "setup-worker": true,
+    "explain": true,
+    "verify": true
+   }
+  },
+  "haiku.0": {
+   "label": "R4",
+   "met": [
+    "explain",
+    "install",
+    "setup-worker",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Installs with install.sh and runs a sudo --no-gh worker setup. Explains that the mini joins the laptop's pool as a worker on the same tailnet. Runs doctor and pool. No made-up flags.",
+   "regex": {
+    "install": true,
+    "setup-worker": true,
+    "explain": true,
+    "verify": true
+   }
+  }
+ }
+}

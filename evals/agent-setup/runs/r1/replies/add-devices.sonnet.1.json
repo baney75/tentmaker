@@ -1,0 +1,10 @@
+{
+ "case": "add-devices",
+ "responder": "sonnet",
+ "sample": 1,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "I'd add both as workers (no forge token), so nothing from the \"ask first\" list applies. I'd check two things first, since I haven't verified them yet.\n\n**Questions for you**\n1. Are the defaults OK for each box (everyday memory = a quarter of RAM, boost on AC = half)? If not, give me the numbers for `--memory` and `--boost-memory`.\n2. Should they stay workers? That's what I'll do, and it means no `--repo` and no token on those machines. Tell me if either should hold a token and serve a repo instead.\n\n**Commands I'd run (none need sudo here)**\n\nConfirm this laptop is set up:\n```sh\ntentmaker status --json\n```\n\nCheck that Tailscale SSH works and that sudo needs no password on each host:\n```sh\ntailscale ssh desktop true\ntailscale ssh desktop sudo -n true\ntailscale ssh homeserver true\ntailscale ssh homeserver sudo -n true\n```\nIf either check fails on a host, I'll stop and tell you. The fix is on that host: allow Tailscale SSH for you in the tailnet ACLs, or add a passwordless sudo rule for your user. I can't type a sudo password remotely.\n\nAdd the devices:\n```sh\ntentmaker devices add desktop --json\ntentmaker devices add homeserver --json\n```\nIf you want custom budgets, I'd append, for example, `--memory 4GiB --boost-memory 16GiB`.\n\nVerify that both show up in the pool:\n```sh\ntentmaker pool --json\n```\n\nIf `devices add` reports a problem on either host, I'll run `tailscale ssh HOST tentmaker doctor --json`. I'd apply the fix it names and rerun. If the same problem survives two fixes, I'll stop and report."
+}

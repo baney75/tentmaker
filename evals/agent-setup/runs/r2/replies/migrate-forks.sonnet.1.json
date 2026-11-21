@@ -1,0 +1,10 @@
+{
+ "case": "migrate-forks",
+ "responder": "sonnet",
+ "sample": 1,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "First I'll run the read-only report. It changes nothing and needs no sudo:\n\n```sh\ntentmaker migrate ~/src/webapp --json\n```\n\nIf any jobs use macOS runners, I'll also run the same report for them:\n\n```sh\ntentmaker migrate ~/src/webapp --platform macos --json\n```\n\nThe migration points jobs at `[self-hosted, tentmaker, <os>]` and adds the fork-routing expression. Pull requests from forks go to `ubuntu-latest`, and everything else goes to your machines. Tentmaker also never runs a fork's job on its own, whatever the workflow says. Jobs that deploy, publish, sign, use an environment, ask for write permissions or read secrets are left alone and listed in the report, as are Linux jobs that use `sudo`.\n\nI'll show you that report and **wait for your yes before writing anything**. After you confirm, I'd run:\n\n```sh\ntentmaker migrate ~/src/webapp --write --json\ngit -C ~/src/webapp diff\n```\n\nThen I'd review the diff with you. I'd only commit on a new branch (for example `git -C ~/src/webapp switch -c tentmaker-runners`) if you say so, and I wouldn't push or open a PR without asking.\n\nTwo questions before I start:\n1. Do any of your jobs run on macOS or Windows, or are they all Linux?\n2. Is `acme/webapp` private? Doctor is clean, so I assume it is. If it's public, tell me, because that changes what I'd check."
+}

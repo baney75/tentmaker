@@ -1,0 +1,93 @@
+{
+ "case": "codeberg",
+ "judge_models": [
+  "claude-haiku-5-5",
+  "claude-opus-5-5"
+ ],
+ "verdicts": {
+  "haiku.1": {
+   "label": "R1",
+   "met": [
+    "forgejo-flags",
+    "handoff",
+    "install",
+    "verify"
+   ],
+   "missed": [
+    "token-ok"
+   ],
+   "forbidden": [],
+   "score": 0.8,
+   "reason": "Installs with --no-setup and hands over a correct sudo setup with --yes and --token-stdin, then runs doctor. Asks about the token but names only repository read/write, without read:user.",
+   "regex": {
+    "install": true,
+    "handoff": true,
+    "forgejo-flags": true,
+    "verify": true
+   }
+  },
+  "sonnet.1": {
+   "label": "R2",
+   "met": [
+    "forgejo-flags",
+    "handoff",
+    "install",
+    "verify"
+   ],
+   "missed": [
+    "token-ok"
+   ],
+   "forbidden": [],
+   "score": 0.8,
+   "reason": "Correct install, handoff, forgejo flags with --yes and doctor afterwards. Asks whether the Mac may hold the token, but scopes are vague ('repository read and write'), missing read:user.",
+   "regex": {
+    "install": true,
+    "handoff": true,
+    "forgejo-flags": true,
+    "verify": true
+   }
+  },
+  "sonnet.0": {
+   "label": "R3",
+   "met": [
+    "forgejo-flags",
+    "handoff",
+    "install",
+    "verify"
+   ],
+   "missed": [
+    "token-ok"
+   ],
+   "forbidden": [],
+   "score": 0.8,
+   "reason": "Correct install, sudo handoff by full path, forgejo/codeberg flags with --yes and doctor afterwards. Token scopes are given only as repository read/write, with no read:user.",
+   "regex": {
+    "install": true,
+    "handoff": true,
+    "forgejo-flags": true,
+    "verify": true
+   }
+  },
+  "haiku.0": {
+   "label": "R4",
+   "met": [
+    "forgejo-flags",
+    "handoff",
+    "install",
+    "verify"
+   ],
+   "missed": [
+    "token-ok"
+   ],
+   "forbidden": [],
+   "score": 0.8,
+   "reason": "Install, handoff, correct forgejo flags and doctor are all present. Token scopes are wrong ('repository read and commit status write, and nothing else'), missing write:repository and read:user.",
+   "regex": {
+    "install": true,
+    "handoff": true,
+    "forgejo-flags": true,
+    "verify": true
+   }
+  }
+ }
+}

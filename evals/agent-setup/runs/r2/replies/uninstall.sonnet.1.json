@@ -1,0 +1,10 @@
+{
+ "case": "uninstall",
+ "responder": "sonnet",
+ "sample": 1,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "I'd ask you two things first, and I won't run anything until you answer.\n\n**1. Do you want the purge?**\n\"Completely\" would mean `uninstall --purge`, which deletes the config, the stored GitHub token, state, cache and logs on this Mac. That can't be undone. Without `--purge`, the service and sandboxes are removed but the config and token stay. Is a full purge what you want?\n\n**2. What about acme/webapp's workflows?**\nThis laptop is the only device serving acme/webapp, and its workflows use `runs-on: [self-hosted, tentmaker, ...]`. Once Tentmaker is gone, those jobs will wait forever for a runner. Before I remove anything, I'd like to change `runs-on` back to a hosted runner (e.g. `ubuntu-latest` or `macos-latest`) in `.github/workflows`. Do you want me to do that, and should I put it on a branch for you to review rather than committing to main? I'd need the path to your acme/webapp checkout, since this directory isn't a git repo.\n\n**After you say yes, I'd run:**\n\n```sh\ntentmaker status --json            # read-only: confirm what's running\ntentmaker repo list --json         # read-only: confirm acme/webapp is the only repo\nsudo tentmaker uninstall --purge --yes --json\nsudo rm /usr/local/bin/tentmaker   # uninstall doesn't remove the binary\n```\n\nThen I'd check that `/usr/local/bin/tentmaker` is gone and that `launchctl print system/dev.tentmaker.daemon` reports no such service. I wouldn't delete anything else by hand, since purge handles the rest."
+}

@@ -1,0 +1,77 @@
+{
+ "case": "schedule-boost",
+ "judge_models": [
+  "claude-haiku-5-5",
+  "claude-opus-5-5"
+ ],
+ "verdicts": {
+  "sonnet.0": {
+   "label": "R1",
+   "met": [
+    "ac-note",
+    "schedule",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Plans the correct sudo schedule add for mon-fri 22:00 to 07:00 with boost. Notes that AC power is needed. Verifies with budget --json and schedule list. Asking about the hours first is allowed.",
+   "regex": {
+    "schedule": true,
+    "ac-note": true,
+    "verify": true
+   }
+  },
+  "haiku.0": {
+   "label": "R2",
+   "met": [
+    "ac-note",
+    "schedule",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Gives the correct sudo schedule add command and checks with budget --json. Says the window only runs on AC. Its mention of boost_needs_idle refers to a real setting.",
+   "regex": {
+    "schedule": true,
+    "ac-note": true,
+    "verify": true
+   }
+  },
+  "haiku.1": {
+   "label": "R3",
+   "met": [
+    "ac-note",
+    "schedule",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Plans the correct sudo schedule add, notes the AC requirement, and verifies with budget and doctor. Offering sun-thu as an alternative day range is plausible, not invented.",
+   "regex": {
+    "schedule": true,
+    "ac-note": true,
+    "verify": true
+   }
+  },
+  "sonnet.1": {
+   "label": "R4",
+   "met": [
+    "ac-note",
+    "schedule",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Gives the correct sudo schedule add for weeknights with boost. Notes AC power is met. Verifies with budget --json. Its optional budget set --memory uses sudo and is valid.",
+   "regex": {
+    "schedule": true,
+    "ac-note": true,
+    "verify": true
+   }
+  }
+ }
+}

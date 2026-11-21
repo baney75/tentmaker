@@ -1,0 +1,9 @@
+{
+ "case": "dev-channel",
+ "responder": "haiku",
+ "sample": 1,
+ "models": [
+  "claude-haiku-5-5"
+ ],
+ "text": "Before I run anything, one thing to check: you described a Linux desktop, but this environment reports Darwin (macOS 27.2). The `tentmaker` commands below are the same on every OS, but I want you to confirm which machine this is.\n\nCommands I'd run, in order:\n\n```sh\n# 1. Record the current state (stable)\ntentmaker version --json\ntentmaker status --json\n\n# 2. Switch to the dev channel, verify the new binary, restart the service\nsudo tentmaker update --channel dev --json\n\n# 3. Confirm the channel and health\ntentmaker version --json\ntentmaker doctor --json\n```\n\nExpected results:\n- Step 2 downloads the latest `dev` prerelease, checks its sha256, and restarts the service. If the service isn't healthy within 60 seconds, it rolls back automatically.\n- Step 3 should show `channel: dev` and a version like `0.1.1-dev.<timestamp>.<commit>`, and `doctor` should exit 0.\n\nIf `doctor` fails, I'll apply each fix it prints and rerun it. If the dev build misbehaves, `sudo tentmaker rollback --json` returns you to the previous stable binary.\n\nTwo things to know first:\n- Dev builds are rebuilt on every push to `main`, so they are less tested than stable. Since this switch is for a machine you use, you may prefer to stay on stable.\n- With `update.auto` on, the device will keep pulling new dev builds every 6 hours, between jobs. To stop that, turn off auto-update or switch back with `sudo tentmaker update --channel stable`.\n\nShould I go ahead? And is this the Linux desktop, or the Mac?"
+}

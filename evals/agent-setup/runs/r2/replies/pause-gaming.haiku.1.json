@@ -1,0 +1,9 @@
+{
+ "case": "pause-gaming",
+ "responder": "haiku",
+ "sample": 1,
+ "models": [
+  "claude-haiku-5-5"
+ ],
+ "text": "Pausing now. I'll use a 6-hour window as a placeholder until you tell me when tonight ends.\n\n```sh\nsudo tentmaker pause --for 6h gaming --json\ntentmaker status --json\n```\n\nThe first command pauses CI. The second confirms the pause took effect. Running jobs finish, and no new jobs start until the pause ends.\n\nBefore I run it, I need two things:\n\n1. **How long should the pause last?** If you tell me when you'll be done, I'll set the duration to match. You can also end it early with `sudo tentmaker resume`.\n2. **Which machine is this?** The environment I can see reports `darwin` (macOS), but you described a Linux desktop. Tentmaker's pause command is the same on both, but I want to be sure I'm pausing the right device before I change anything. If you have more than one device in the pool, I can run `tentmaker pool --json` to see them all."
+}

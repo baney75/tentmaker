@@ -1,0 +1,10 @@
+{
+ "case": "laptop-plugged-in",
+ "responder": "sonnet",
+ "sample": 1,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "I'd run the read-only check now, then ask you one thing before installing and setting up.\n\n**Run now (read-only):**\n```sh\ntentmaker version --json; tentmaker status --json\n```\nTentmaker isn't installed, so this should report command not found.\n\n**Ask you first:**\n1. **Token on this laptop.** Setup pulls the token from `gh auth token` (signed in as acme-dev). That makes this MacBook a broker for acme/webapp, and the token is stored in the macOS secret store. Is that OK? The acme-dev account also needs admin on acme/webapp, because registering runners requires it.\n2. **Memory numbers.** I'd propose:\n   - **Everyday:** 4 GiB, which is what CI may use while you work.\n   - **Boost:** 16 GiB, only while plugged in. The default would be half your RAM.\n   - **On battery:** stay at the everyday 4 GiB. I can set it to stop taking jobs entirely if you prefer.\n\n   Tell me if you want different numbers.\n\nThe repo is private, so I won't pass `--allow-public`, and nothing here costs money.\n\n**Once you say yes:**\n\n1. Install the binary without running setup:\n```sh\ncurl -fsSL https://raw.githubusercontent.com/baney75/tentmaker/main/scripts/install.sh | sh -s -- --no-setup\n```\n2. Run setup. This works non-interactively because `sudo -n` succeeds and `--yes` avoids prompts:\n```sh\nsudo tentmaker setup --yes --json --repo acme/webapp --memory 4GiB --boost-memory 16GiB\n```\n3. Verify:\n```sh\ntentmaker doctor --json\ntentmaker budget --json\n```\nIf `doctor` reports a problem, I'll apply its fix and rerun. I'll stop and tell you if the same problem survives two fixes.\n\n**Afterwards:** to send jobs here, workflows need `runs-on: [self-hosted, tentmaker, macOS]`. I can run `tentmaker migrate` in a checkout of acme/webapp to show what it would change. I'd only edit files with `--write` or commit anything after you approve it."
+}

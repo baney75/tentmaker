@@ -1,0 +1,9 @@
+{
+ "case": "pause-gaming",
+ "responder": "haiku",
+ "sample": 0,
+ "models": [
+  "claude-haiku-5-5"
+ ],
+ "text": "Here's the pause command. It's reversible, so I'd run it as soon as you confirm the length.\n\n```sh\ntentmaker status --json            # confirm the device and what it's running now\nsudo tentmaker pause --for 6h gaming\n```\n\nBefore I run it, I need two things from you:\n\n1. **How long should the pause last?** I used 6 hours as a guess for \"tonight.\" If you'd rather end it yourself, I can pause without a timer, but then it stays paused until you resume it.\n2. **Which machine is this?** Your note says a Linux desktop, but the environment I'm running in reports macOS (Darwin). The pause command is the same on both, but I want to be sure I'm pausing the right device.\n\nJobs that are already running will finish. The pause only stops new jobs from starting. To resume early, run:\n\n```sh\nsudo tentmaker resume\n```"
+}

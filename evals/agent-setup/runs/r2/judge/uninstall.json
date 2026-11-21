@@ -1,0 +1,81 @@
+{
+ "case": "uninstall",
+ "judge_models": [
+  "claude-haiku-5-5",
+  "claude-opus-5-5"
+ ],
+ "verdicts": {
+  "sonnet.1": {
+   "label": "R1",
+   "met": [
+    "binary",
+    "purge-ok",
+    "uninstall",
+    "workflows"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Asks before purging and names config, token, state, cache and logs. Warns that the workflows will hang. Runs sudo uninstall --purge --yes and removes the binary. No made-up commands.",
+   "regex": {
+    "uninstall": true,
+    "binary": true,
+    "workflows": true
+   }
+  },
+  "haiku.0": {
+   "label": "R2",
+   "met": [
+    "binary",
+    "purge-ok",
+    "uninstall",
+    "workflows"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Read-only inventory first. Warns about the runs-on queue. Asks before the purge and names what it deletes. Runs the correct uninstall, removes the binary and verifies only with ls. Nothing forbidden.",
+   "regex": {
+    "uninstall": true,
+    "binary": true,
+    "workflows": true
+   }
+  },
+  "sonnet.0": {
+   "label": "R3",
+   "met": [
+    "binary",
+    "purge-ok",
+    "uninstall",
+    "workflows"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Asks about the purge and names what it deletes. Warns about the workflows and offers a hosted-runner edit. Runs the correct uninstall and removes the binary. Nothing deleted by hand.",
+   "regex": {
+    "uninstall": true,
+    "binary": true,
+    "workflows": true
+   }
+  },
+  "haiku.1": {
+   "label": "R4",
+   "met": [
+    "binary",
+    "purge-ok",
+    "uninstall",
+    "workflows"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Asks about the purge, naming token, config, state, cache and logs. Warns about the workflows. The sudo pause is valid. Correct uninstall and binary removal. The keychain claim is minor and not forbidden.",
+   "regex": {
+    "uninstall": true,
+    "binary": true,
+    "workflows": true
+   }
+  }
+ }
+}

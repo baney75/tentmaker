@@ -1,0 +1,10 @@
+{
+ "case": "mcp-claude",
+ "responder": "sonnet",
+ "sample": 1,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "I'd run this. It needs no sudo and doesn't touch Tentmaker's config.\n\n```sh\nclaude mcp add tentmaker -- tentmaker mcp\n```\n\nThen check that it registered:\n\n```sh\nclaude mcp list\n```\n\n**Questions for you first:**\n\n1. **Scope:** by default this registers the server for the current project only, and this directory isn't a git repo. If you want it available in every project, I'd use this instead:\n   ```sh\n   claude mcp add --scope user tentmaker -- tentmaker mcp\n   ```\n2. **Read-only or full control:** the read tools (`status`, `pool`, `doctor`) work as your normal user, which is what the command above gives you. Tools that change the device (budget, repos, updates) only work if the MCP server runs as root, so with this setup they'd return an error saying so. I wouldn't change that without your say-so, since it hands an agent root-level control of the machine. For those changes I'd use the CLI with `sudo` instead.\n\nTell me which scope you want and I'll run it."
+}
