@@ -81,12 +81,16 @@ switch ($Mode) {
     'oom' {
         # Allocate past the job's limit (2 GiB in the harness). The sandbox
         # must stop the job; a line here means it didn't.
+        # Native memory, not .NET arrays: .NET caps its own heap at 75% of a
+        # job object's limit and fails first, so arrays never test the
+        # sandbox's limit. AllocHGlobal commits outside that heap, against
+        # the job object's limit alone.
         # A failed allocation ends the script with an error, as it would end
         # any program.
         $ErrorActionPreference = 'Stop'
-        $chunks = [System.Collections.Generic.List[byte[]]]::new()
-        for ($i = 0; $i -lt 128; $i++) { $chunks.Add([byte[]]::new(64MB)) }
-        if ($chunks.Count -eq 128) { Write-Output "ATTACK memory-limit SUCCEEDED allocated $($chunks.Count * 64) MiB" }
+        $blocks = [System.Collections.Generic.List[IntPtr]]::new()
+        for ($i = 0; $i -lt 128; $i++) { $blocks.Add([System.Runtime.InteropServices.Marshal]::AllocHGlobal(64MB)) }
+        if ($blocks.Count -eq 128) { Write-Output "ATTACK memory-limit SUCCEEDED allocated $($blocks.Count * 64) MiB" }
         exit 0
     }
     'pids' {

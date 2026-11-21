@@ -719,8 +719,9 @@ func (e *Executor) CheckResult(ctx context.Context, name string) (core.CheckResu
 	}
 	res := readCheckResult(e.jobDir(name), "out", name)
 	// The job object's limit makes an allocation fail rather than killing
-	// the job, so check-run reports an ordinary step failure; say why.
-	if oom {
+	// the job, so check-run reports an ordinary step failure; say why. A
+	// job that got by without that memory and passed stays passed.
+	if oom && res.State != "success" {
 		why := fmt.Sprintf("ran out of memory (the job's limit is %.1f GiB)", float64(memory)/(1<<30))
 		if res.Description != "" {
 			why += "; " + res.Description

@@ -1032,6 +1032,17 @@ func TestCheckResultOutOfMemory(t *testing.T) {
 	if r, _ := v.e.CheckResult(ctx, "check-ok-1"); r.Description != "failed at step build, 2s" {
 		t.Fatalf("result: %+v", r)
 	}
+
+	// A job refused memory once that still passed keeps its pass.
+	must(t, v.e.Start(ctx, spec("check-pass-1", core.KindCheck)))
+	out = filepath.Join(v.e.jobDir("check-pass-1"), "out")
+	must(t, os.MkdirAll(out, 0o700))
+	must(t, os.WriteFile(filepath.Join(out, "result.json"), []byte(`{"state":"success","description":"ok"}`), 0o600))
+	v.api.proc(2).outOfMemory(0)
+	waitState(t, v.e, "check-pass-1", core.ExecExited)
+	if r, _ := v.e.CheckResult(ctx, "check-pass-1"); r.State != "success" || r.Description != "ok" {
+		t.Fatalf("result: %+v", r)
+	}
 }
 
 func TestUninstall(t *testing.T) {
