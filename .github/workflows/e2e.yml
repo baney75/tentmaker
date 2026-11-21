@@ -119,7 +119,9 @@ jobs:
       - name: doctor
         run: |
           rc=0
-          tentmaker doctor --json >"$RUNNER_TEMP/doctor.json" || rc=$?
+          # The sandbox checks read root-only state, so the full doctor
+          # runs under sudo; a user's doctor is checked next.
+          sudo tentmaker doctor --json >"$RUNNER_TEMP/doctor.json" || rc=$?
           cat "$RUNNER_TEMP/doctor.json"
           jq -e '.checks | length > 0' "$RUNNER_TEMP/doctor.json" >/dev/null || { echo "::error::doctor ran no checks"; exit 1; }
           # Every failed or warned check says how to fix it.
@@ -136,6 +138,18 @@ jobs:
           else
             test "$ok" = true || { echo "::error::doctor found problems"; exit 1; }
           fi
+
+      - name: doctor as a user
+        run: |
+          rc=0
+          tentmaker doctor --json >"$RUNNER_TEMP/doctor-user.json" || rc=$?
+          cat "$RUNNER_TEMP/doctor-user.json"
+          # It skips the sandbox checks and says how to run them, instead of
+          # calling a working machine broken.
+          jq -e '[.checks[] | select(.check == "executor" and .status == "warn" and .fix == "sudo tentmaker doctor")] | length == 1' "$RUNNER_TEMP/doctor-user.json" >/dev/null ||
+            { echo "::error::a user's doctor did not say it skipped the sandbox checks"; exit 1; }
+          test "$rc" = 0 && jq -e '.ok == true' "$RUNNER_TEMP/doctor-user.json" >/dev/null ||
+            { echo "::error::a user's doctor found problems on a working machine (exit $rc)"; exit 1; }
 
       - name: budget
         run: |

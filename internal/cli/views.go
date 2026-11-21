@@ -443,10 +443,13 @@ func (a *app) doctorData(ctx context.Context) doctorView {
 		in.ConfigErr = cerr
 	}
 	binary := daemon.NewBinary(daemon.BinaryOptions{Version: a.env.Version, CacheDir: rc.CacheDir, Executable: a.env.Executable})
-	in.Executors, in.ExecProblems = a.env.Executors(rc, binary, nil)
 	if a.env.IsRoot() {
+		in.Executors, in.ExecProblems = a.env.Executors(rc, binary, nil)
 		in.Forges = daemon.BuildForges(rc, a.env.Secrets, a.env.NewForge, nil)
 	} else {
+		// The sandboxes keep their state where only root can read it, so
+		// as a user these checks would call a working machine broken.
+		in.SkipExecutors = "the sandbox checks read files only root can read, so they were not run"
 		in.SkipForges = "forge tokens are readable only as root, so they were not checked"
 	}
 	if rc.Mesh.Enabled {

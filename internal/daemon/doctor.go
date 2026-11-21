@@ -51,6 +51,8 @@ type DoctorInput struct {
 	Executors    []core.Executor
 	ExecProblems []core.Problem // from executor.ForHost
 	Forges       Forges
+	// SkipExecutors, when set, says why the sandbox checks didn't run.
+	SkipExecutors string
 	// SkipForges, when set, says why the forge checks didn't run.
 	SkipForges  string
 	Tailscale   mesh.Tailscale // nil when mesh is off
@@ -189,6 +191,9 @@ func checkBinary(in DoctorInput) []Finding {
 }
 
 func checkExecutors(ctx context.Context, in DoctorInput) []Finding {
+	if in.SkipExecutors != "" {
+		return []Finding{{Check: "executor", Status: Warn, What: in.SkipExecutors, Fix: "sudo tentmaker doctor"}}
+	}
 	var out []Finding
 	for _, p := range in.ExecProblems {
 		out = append(out, Finding{Check: p.Check, Status: Fail, What: p.What, Fix: p.Fix})

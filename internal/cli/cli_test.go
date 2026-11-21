@@ -800,8 +800,9 @@ func TestDaemonCommand(t *testing.T) {
 func TestMCPController(t *testing.T) {
 	f := newFixture(t)
 	f.setUp()
-	f.serveControl()
+	// Set before the server starts: its handler reads isRoot.
 	f.isRoot = false
+	f.serveControl()
 	inR, inW := io.Pipe()
 	outR, outW := io.Pipe()
 	f.env.Stdin = inR
@@ -927,5 +928,44 @@ func TestSetupMacOSGuestsFlag(t *testing.T) {
 	}
 	if code := f.run("", "setup", "--yes", "--json", "--no-mesh", "--no-gh", "--no-service"); code != ExitOK || f.installOpts.MacOSGuests {
 		t.Fatalf("without the flag: exit %d opts %+v", code, f.installOpts)
+	}
+}
+
+// TestDoctorAsUserSkipsSandboxChecks: the sandbox checks read state only
+// root can read (the runner's podman socket, the nft table, root-only
+// files, Tart's home), so a user's doctor would report a working machine
+// as broken. It says it skipped them and how to run them instead.
+func TestDoctorAsUserSkipsSandboxChecks(t *testing.T) {
+	f := newFixture(t)
+	f.setUp()
+	built := 0
+	f.env.Executors = func(cfg config.Config, bin func(core.Platform) (string, error), log *slog.Logger) ([]core.Executor, []core.Problem) {
+		built++
+		return nil, []core.Problem{{Check: "podman socket", What: "not readable as this user", Fix: "run sudo tentmaker setup"}}
+	}
+	f.isRoot = false
+	f.run("", "doctor", "--json")
+	if built != 0 {
+		t.Errorf("user doctor built the executors %d times", built)
+	}
+	out := f.jsonObject([]string{"doctor"})
+	var skip map[string]any
+	for _, c := range out["checks"].([]any) {
+		c := c.(map[string]any)
+		switch c["check"] {
+		case "executor":
+			skip = c
+		case "podman socket":
+			t.Errorf("user doctor ran a sandbox check: %v", c)
+		}
+	}
+	if skip == nil || skip["status"] != "warn" || skip["fix"] != "sudo tentmaker doctor" {
+		t.Errorf("user doctor does not say the sandbox checks were skipped: %v", out["checks"])
+	}
+
+	f.isRoot = true
+	f.run("", "doctor", "--json")
+	if built != 1 || !strings.Contains(f.stdout.String(), `"check": "podman socket"`) {
+		t.Errorf("root doctor built the executors %d times and did not report their problem:\n%s", built, f.stdout)
 	}
 }

@@ -148,7 +148,8 @@ job (`tentmaker-runner`, and on Linux its subordinate uids) gets 403 on every ro
 caller it can't name, and everyone but root and SYSTEM when the runner's ids can't be read. Any
 other local user reads GET /v1/status and /v1/pool. GET /v1/doctor makes the daemon call the
 forges, so it needs the token or an admin caller (root, SYSTEM or an elevated Administrator); a
-`tentmaker doctor` that can't use it runs doctor locally. POST /v1/pause {reason, for_s},
+`tentmaker doctor` that can't use it runs doctor locally. Run as a user, that local doctor skips the
+sandbox checks, which read state only root can read, and says to run `sudo tentmaker doctor`. POST /v1/pause {reason, for_s},
 /v1/resume, /v1/reload need the token in `Authorization: Bearer`, read from
 `<state>/control.token` (32 random bytes hex, mode 0600 root, or SYSTEM+Administrators on
 Windows), created by the daemon at start. The client sends the token on GETs too when it can
