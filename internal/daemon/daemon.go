@@ -47,6 +47,8 @@ type Updater interface {
 	Check(ctx context.Context, channel, current string) (update.Release, bool, error)
 	Download(ctx context.Context, rel update.Release, dir string) (string, error)
 	Apply(ctx context.Context, newBin, curBin, wantVersion string) error
+	// Rollback restores the binary Apply replaced.
+	Rollback(curBin string) error
 }
 
 // ExecutorFactory builds this host's executors (executor.ForHost).
@@ -254,6 +256,7 @@ type Daemon struct {
 
 	wComp, bComp, nComp *comp
 
+	guard    updateGuard
 	ctlAddr  string
 	restart  chan struct{}
 	exitErr  error
@@ -273,6 +276,7 @@ func New(o Options) *Daemon {
 		problems:  map[string][]core.Problem{},
 		keys:      map[string]string{},
 		restart:   make(chan struct{}),
+		guard:     updateGuard{fs: osStateFS{}, dir: o.Paths.State},
 	}
 }
 
@@ -336,6 +340,13 @@ func (d *Daemon) Run(ctx context.Context) error {
 	d.started = d.o.Now()
 	d.mu.Unlock()
 
+	// Before anything else, so a new binary that fails while building its
+	// components still rolls back.
+	watch, err := d.checkPendingUpdate()
+	if err != nil {
+		return err
+	}
+
 	cfg, err := d.load()
 	if err != nil {
 		d.log.Error("config not loaded; serving status only until it is fixed and reloaded", "error", err)
@@ -360,6 +371,10 @@ func (d *Daemon) Run(ctx context.Context) error {
 		go func() { defer wg.Done(); d.pauseLoop(ctx) }()
 		go func() { defer wg.Done(); d.updateLoop(ctx) }()
 		go func() { defer wg.Done(); d.hupLoop(ctx) }()
+		if watch != nil {
+			wg.Add(1)
+			go func() { defer wg.Done(); d.watchUpdate(ctx, *watch) }()
+		}
 		wg.Wait()
 		return nil
 	})
@@ -720,6 +735,10 @@ func (d *Daemon) autoUpdate(ctx context.Context, cfg config.Config) error {
 	if err != nil || !newer {
 		return err
 	}
+	if d.guard.isBad(rel.Version) {
+		d.log.Debug("skipping an update that was rolled back before", "version", rel.Version)
+		return nil
+	}
 	// Wait (up to the next check) for a moment with no job running.
 	deadline := d.o.Now().Add(d.o.UpdateEvery)
 	for d.runningJobs() > 0 {
@@ -762,12 +781,104 @@ func (d *Daemon) autoUpdate(ctx context.Context, cfg config.Config) error {
 	if err := d.o.Updater.Apply(dctx, bin, exe, rel.Version); err != nil {
 		return err
 	}
+	if err := d.guard.markPending(d.o.Version, rel.Version, d.o.Now()); err != nil {
+		d.log.Warn("pending-update marker not written; a bad update won't roll back on its own", "error", err)
+	}
 	d.log.Info("update applied; exiting so the service manager starts the new binary", "version", rel.Version)
 	d.exitOnce.Do(func() {
 		d.exitErr = ErrRestart
 		close(d.restart)
 	})
 	return nil
+}
+
+// checkPendingUpdate acts on the marker a self-update left. It returns the
+// marker to watch while this binary proves itself, or an error wrapping
+// ErrRestart after a rollback, so the service manager starts the previous
+// binary.
+func (d *Daemon) checkPendingUpdate() (*pendingUpdate, error) {
+	p, ok := d.guard.pending()
+	switch decideStart(p, ok, d.o.Version, d.o.Now()) {
+	case verdictWatch:
+		d.log.Info("running a new update; it has to get healthy", "from", p.From, "to", p.To, "within", UpdateGrace.String())
+		return &p, nil
+	case verdictRollback:
+		return nil, d.rollback(p)
+	case verdictStale:
+		d.log.Info("clearing a pending-update marker for another version", "to", p.To, "running", d.o.Version)
+		if err := d.guard.clearPending(); err != nil {
+			d.log.Warn("pending-update marker not cleared", "error", err)
+		}
+	}
+	return nil, nil
+}
+
+// watchUpdate clears the marker once this binary is healthy, or rolls back
+// when the grace ends first.
+func (d *Daemon) watchUpdate(ctx context.Context, p pendingUpdate) {
+	for {
+		if d.healthy() {
+			if err := d.guard.clearPending(); err != nil {
+				d.log.Warn("pending-update marker not cleared", "error", err)
+			}
+			d.log.Info("update healthy", "version", d.o.Version)
+			return
+		}
+		if decideStart(p, true, d.o.Version, d.o.Now()) == verdictRollback {
+			if err := d.rollback(p); err != nil {
+				d.exitOnce.Do(func() {
+					d.exitErr = err
+					close(d.restart)
+				})
+			}
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+}
+
+// healthy: the control API serves and the worker has ticked since start.
+func (d *Daemon) healthy() bool {
+	d.mu.RLock()
+	w, addr, started := d.worker, d.ctlAddr, d.started
+	d.mu.RUnlock()
+	if addr == "" && d.o.ControlAddr != "-" {
+		return false
+	}
+	return w != nil && !w.Status().LastTick.Before(started)
+}
+
+// rollback restores the previous binary, records p.To as bad and clears
+// the marker. It returns an error wrapping ErrRestart when the previous
+// binary is in place, and nil when it couldn't roll back (this binary
+// keeps running).
+func (d *Daemon) rollback(p pendingUpdate) error {
+	if err := d.guard.markBad(p.To); err != nil {
+		d.log.Warn("bad version not recorded; auto-update may try it again", "version", p.To, "error", err)
+	}
+	defer func() {
+		if err := d.guard.clearPending(); err != nil {
+			d.log.Warn("pending-update marker not cleared", "error", err)
+		}
+	}()
+	exe, err := d.o.Executable()
+	if err == nil {
+		if r, rerr := filepath.EvalSymlinks(exe); rerr == nil {
+			exe = r
+		}
+		err = d.o.Updater.Rollback(exe)
+	}
+	if err != nil {
+		d.log.Error("the update did not get healthy and rollback failed; staying on it", "version", p.To, "error", err)
+		return nil
+	}
+	d.log.Error("the update did not get healthy in time; rolled back, and auto-update will skip it",
+		"bad", p.To, "back_to", p.From, "within", UpdateGrace.String())
+	return fmt.Errorf("rolled back the update to %s: %w", p.To, ErrRestart)
 }
 
 func (d *Daemon) runningJobs() int {

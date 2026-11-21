@@ -82,8 +82,14 @@ func (f *fakeTS) WhoIs(ctx context.Context, addr string) (mesh.Identity, error) 
 }
 
 type fakeUpdater struct {
-	newer   atomic.Bool
-	applied atomic.Int32
+	newer      atomic.Bool
+	applied    atomic.Int32
+	rolledBack atomic.Value // string: the binary rolled back
+}
+
+func (f *fakeUpdater) Rollback(curBin string) error {
+	f.rolledBack.Store(curBin)
+	return nil
 }
 
 func (f *fakeUpdater) Check(ctx context.Context, channel, current string) (update.Release, bool, error) {
@@ -152,7 +158,7 @@ func (r *rig) save() {
 	}
 }
 
-func (r *rig) start() {
+func (r *rig) launch() {
 	r.t.Helper()
 	r.d = New(Options{
 		ConfigPath: r.paths.Config,
@@ -184,6 +190,11 @@ func (r *rig) start() {
 	r.cancel = cancel
 	r.done = make(chan error, 1)
 	go func() { r.done <- r.d.Run(ctx) }()
+}
+
+func (r *rig) start() {
+	r.t.Helper()
+	r.launch()
 	r.eventually("control API up", func() bool { return r.d.ControlAddress() != "" })
 }
 
@@ -393,6 +404,93 @@ func TestDaemonAutoUpdateRestarts(t *testing.T) {
 	}
 	if r.up.applied.Load() != 1 {
 		t.Errorf("applied %d times", r.up.applied.Load())
+	}
+	// The pending-update marker tells the new binary to prove itself.
+	b, err := os.ReadFile(filepath.Join(r.paths.State, "update-pending.json"))
+	if err != nil {
+		t.Fatalf("no pending-update marker: %v", err)
+	}
+	var m struct {
+		From, To string
+		At       time.Time
+	}
+	if err := json.Unmarshal(b, &m); err != nil || m.From != "1.2.3" || m.To != "9.9.9" || time.Since(m.At) > time.Minute {
+		t.Fatalf("marker %s (%v)", b, err)
+	}
+}
+
+func writeMarker(t *testing.T, r *rig, age time.Duration, to string) string {
+	t.Helper()
+	b, _ := json.Marshal(map[string]any{"from": "1.2.2", "to": to, "at": time.Now().Add(-age)})
+	p := filepath.Join(r.paths.State, "update-pending.json")
+	if err := os.MkdirAll(r.paths.State, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// A new binary that keeps failing before it gets healthy is restarted by
+// the service manager; once the update is 2 minutes old, the next start
+// rolls back and exits so the previous binary runs.
+func TestDaemonRollsBackAnUnhealthyUpdate(t *testing.T) {
+	r := newRig(t, func(c *config.Config) { c.Mesh.Enabled = false })
+	marker := writeMarker(t, r, 3*time.Minute, "1.2.3")
+	r.launch()
+	select {
+	case err := <-r.done:
+		if !errors.Is(err, ErrRestart) {
+			t.Fatalf("run returned %v, want a restart", err)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("no rollback restart")
+	}
+	if got, _ := r.up.rolledBack.Load().(string); got != "/usr/local/bin/tentmaker" {
+		t.Fatalf("rolled back %q", got)
+	}
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("marker left: %v", err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(r.paths.State, "update-bad.json")); !strings.Contains(string(b), `"1.2.3"`) {
+		t.Errorf("bad version not recorded: %s", b)
+	}
+}
+
+func TestDaemonClearsMarkerOnceHealthy(t *testing.T) {
+	r := newRig(t, func(c *config.Config) { c.Mesh.Enabled = false })
+	marker := writeMarker(t, r, 10*time.Second, "1.2.3")
+	r.start()
+	r.eventually("the marker to go", func() bool {
+		_, err := os.Stat(marker)
+		return errors.Is(err, os.ErrNotExist)
+	})
+	if got, _ := r.up.rolledBack.Load().(string); got != "" {
+		t.Fatalf("rolled back a healthy update")
+	}
+	if err := r.stop(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A version that was rolled back is never auto-applied again.
+func TestDaemonSkipsARolledBackVersion(t *testing.T) {
+	r := newRig(t, func(c *config.Config) { c.Update.Auto = true; c.Mesh.Enabled = false })
+	if err := os.MkdirAll(r.paths.State, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(r.paths.State, "update-bad.json"), []byte(`{"versions":["9.9.9"]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r.up.newer.Store(true)
+	r.start()
+	time.Sleep(time.Second)
+	if n := r.up.applied.Load(); n != 0 {
+		t.Fatalf("applied a rolled-back version %d times", n)
+	}
+	if err := r.stop(); err != nil {
+		t.Fatal(err)
 	}
 }
 

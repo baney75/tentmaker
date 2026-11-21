@@ -340,6 +340,13 @@ are rediscovered every 30 s; a peer failing 3 calls in a row is skipped for a mi
   check, swap atomically (Windows: rename the running exe aside, then move the new one in), restart
   the service, and roll back to the old binary if the daemon isn't healthy within 60 s. Auto-update
   only between jobs.
+- Auto-update has no one watching, so the daemon guards itself: before it exits into the new
+  binary it writes `<state>/update-pending.json` (from, to, time). The new binary deletes it once
+  the control API serves and the worker has ticked. If the marker is older than 2 minutes when a
+  daemon starts, or the grace ends before the binary gets healthy, the daemon rolls back to
+  `<bin>.prev`, adds the version to `<state>/update-bad.json` (auto-update skips those), deletes
+  the marker and exits, so the service manager starts the previous binary. A marker for another
+  version is deleted.
 
 Install:
 
