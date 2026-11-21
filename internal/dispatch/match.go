@@ -146,13 +146,14 @@ func MatchJob(jobLabels, base []string, platforms []core.Platform) (core.Platfor
 }
 
 // matchCheckPlatform picks the worker platform for a check job: the same OS,
-// and the same arch when the job names one.
+// and the same arch when the job names one, by its runner label so aliases
+// match (x64, amd64 and x86_64 are one arch).
 func matchCheckPlatform(want core.Platform, platforms []core.Platform) (core.Platform, bool) {
 	for _, p := range platforms {
 		if !strings.EqualFold(p.OS, want.OS) {
 			continue
 		}
-		if want.Arch == "" || strings.EqualFold(p.Arch, want.Arch) {
+		if want.Arch == "" || ArchLabel(p.Arch) == ArchLabel(want.Arch) {
 			return p, true
 		}
 	}

@@ -639,13 +639,13 @@ func runsOn(v *val, ctx exprCtx, forgejo bool) (core.Platform, string) {
 		switch {
 		case strings.HasPrefix(ll, "ubuntu"):
 			bad = setOS("linux")
-			p.Arch = hostedArch(ll)
+			hostedArch(&p, ll)
 		case strings.HasPrefix(ll, "macos-") || ll == "macos-latest":
 			bad = setOS("macos")
-			p.Arch = macArch(ll)
+			hostedArch(&p, ll)
 		case strings.HasPrefix(ll, "windows-"):
 			bad = setOS("windows")
-			p.Arch = hostedArch(ll)
+			hostedArch(&p, ll)
 		case ll == "linux":
 			bad = setOS("linux")
 		case ll == "macos" || ll == "osx" || ll == "darwin":
@@ -669,27 +669,12 @@ func runsOn(v *val, ctx exprCtx, forgejo bool) (core.Platform, string) {
 	return p, ""
 }
 
-func hostedArch(label string) string {
+// hostedArch: a hosted image label names an OS, not an arch, so it leaves
+// Arch empty (any arch) unless it is an -arm image. It never clears an arch
+// another label named. Pinning ubuntu-latest to x64 kept it off every arm64
+// worker with no status (review r1 partA second-F4).
+func hostedArch(p *core.Platform, label string) {
 	if strings.HasSuffix(label, "-arm") || strings.HasSuffix(label, "-arm64") {
-		return "arm64"
+		p.Arch = "arm64"
 	}
-	return "x64"
-}
-
-// macArch: macos-13 and older and the -large sizes are Intel; the rest are
-// Apple silicon.
-func macArch(label string) string {
-	switch {
-	case strings.HasSuffix(label, "-xlarge"):
-		return "arm64"
-	case strings.HasSuffix(label, "-large"):
-		return "x64"
-	}
-	rest := strings.TrimPrefix(label, "macos-")
-	num, _, _ := strings.Cut(rest, "-")
-	num, _, _ = strings.Cut(num, ".")
-	if n, err := strconv.Atoi(num); err == nil && n < 14 {
-		return "x64"
-	}
-	return "arm64"
 }

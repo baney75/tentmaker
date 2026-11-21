@@ -300,7 +300,8 @@ func New(o Options) *Client                            // implements core.Status
   `image:` ignored or mapped to linux) into `CheckJob`s. Supported: `run` steps, `shell` bash/sh/pwsh,
   `env` at workflow/job/step level with literal values, `working-directory`, `continue-on-error`,
   `timeout-minutes`, `runs-on` mapped to a platform (ubuntu-* -> linux, macos-* -> macos, windows-*
-  -> windows, self-hosted label lists by their os label), `actions/checkout` (the archive is the
+  -> windows, self-hosted label lists by their os label; a hosted label sets only the OS, and
+  an arch comes only from an `-arm` or `-arm64` suffix or an `arm64`/`x64` label), `actions/checkout` (the archive is the
   checkout), cache actions (skipped), and setup actions mapped to `Tool` (setup-go, setup-node,
   setup-python, setup-java, mlugg/setup-zig, hustcer/setup-nu, dtolnay/rust-toolchain). Anything
   else (other `uses:`, `${{ }}` expressions outside env literals that can be resolved from `github.sha`,
@@ -514,7 +515,11 @@ section is rewritten.
   limit (review r1 first-F1). A host whose rules predate this keeps the old fence until `sudo
   tentmaker setup` runs again.
 - `CheckBundle.ArchiveRef` replaces the forge URL and header the broker used to send (review finding: a check job could read the forge token from its bundle). `Header` stays in the struct only so a worker can recognize and refuse an older broker's bundle.
-- An empty `Platform.Arch` means any arch.
+- An empty `Platform.Arch` means any arch. Hosted `runs-on` labels (ubuntu-latest, macos-15,
+  windows-2022) name an OS, not an arch, so Plan leaves Arch empty for them; only `-arm`/`-arm64`
+  images or an explicit `arm64`/`x64` label pin one. Check matching compares arches through
+  `ArchLabel`, so x64, amd64 and x86_64 are the same arch. Before, ubuntu-latest pinned x64 and
+  never ran on an arm64 worker, with no status (review r1 partA second-F4).
 - `ListDir` returns sorted entry names, and `ErrNotFound` for a missing folder.
 - GitLab `after_script` runs as a final continue-on-error step, not as an always-run step.
 - A matrix job plans one check job per combination (at most 256), each with its own status

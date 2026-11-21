@@ -49,7 +49,7 @@ func TestPlanGoCI(t *testing.T) {
 		t.Fatalf("jobs = %v", got)
 	}
 	j := jobs[0]
-	if j.Name != "Go" || j.Platform != (core.Platform{OS: "linux", Arch: "x64"}) || j.Timeout != 20*time.Minute {
+	if j.Name != "Go" || j.Platform != (core.Platform{OS: "linux"}) || j.Timeout != 20*time.Minute {
 		t.Fatalf("job = %+v", j)
 	}
 	if Context(j) != "tentmaker/Go" {
@@ -169,7 +169,7 @@ func TestPlanLocalStudio(t *testing.T) {
 	if !reflect.DeepEqual(byID["channels"].Steps[0].Tool, map[string]string{"nu": "0.117.0"}) {
 		t.Fatalf("channels = %+v", byID["channels"].Steps[0])
 	}
-	if p := byID["macos"].Platform; p != (core.Platform{OS: "macos", Arch: "arm64"}) {
+	if p := byID["macos"].Platform; p != (core.Platform{OS: "macos"}) {
 		t.Fatalf("macos platform = %+v", p)
 	}
 	app := byID["macos-app"].Steps
@@ -177,7 +177,7 @@ func TestPlanLocalStudio(t *testing.T) {
 		t.Fatalf("macos-app last step = %+v", last)
 	}
 	win := byID["windows"]
-	if win.Platform != (core.Platform{OS: "windows", Arch: "x64"}) {
+	if win.Platform != (core.Platform{OS: "windows"}) {
 		t.Fatalf("windows platform = %+v", win.Platform)
 	}
 	if s := win.Steps[1]; s.Shell != "pwsh" || s.Run != "rustup toolchain install" {
@@ -316,12 +316,17 @@ func TestRunsOn(t *testing.T) {
 		want    core.Platform
 		bad     bool
 	}{
-		{"ubuntu-latest", false, core.Platform{OS: "linux", Arch: "x64"}, false},
+		// A hosted image label names only the OS: any arch (review r1
+		// partA second-F4). An arch stays only when the workflow names one.
+		{"ubuntu-latest", false, core.Platform{OS: "linux"}, false},
 		{"ubuntu-24.04-arm", false, core.Platform{OS: "linux", Arch: "arm64"}, false},
-		{"macos-latest", false, core.Platform{OS: "macos", Arch: "arm64"}, false},
-		{"macos-13", false, core.Platform{OS: "macos", Arch: "x64"}, false},
-		{"macos-15-large", false, core.Platform{OS: "macos", Arch: "x64"}, false},
-		{"windows-2025", false, core.Platform{OS: "windows", Arch: "x64"}, false},
+		{"windows-11-arm", false, core.Platform{OS: "windows", Arch: "arm64"}, false},
+		{"macos-latest", false, core.Platform{OS: "macos"}, false},
+		{"macos-13", false, core.Platform{OS: "macos"}, false},
+		{"macos-15-large", false, core.Platform{OS: "macos"}, false},
+		{"windows-2025", false, core.Platform{OS: "windows"}, false},
+		{"[arm64, ubuntu-latest]", false, core.Platform{OS: "linux", Arch: "arm64"}, false},
+		{"[ubuntu-latest, x64]", false, core.Platform{OS: "linux", Arch: "x64"}, false},
 		{"[self-hosted, tentmaker, linux]", false, core.Platform{OS: "linux"}, false},
 		{"[self-hosted, macOS, ARM64]", false, core.Platform{OS: "macos", Arch: "arm64"}, false},
 		{"{group: big, labels: [linux, x64]}", false, core.Platform{OS: "linux", Arch: "x64"}, false},
