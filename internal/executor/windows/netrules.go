@@ -26,11 +26,13 @@ const (
 // Blocked ranges. Windows Firewall has no "this host" match, so the host's
 // own addresses are covered by the loopback rule only where Windows routes
 // them through loopback; the mesh port is blocked on every address.
+// New-NetFirewallRule refuses an IPv6 loopback, unspecified or multicast
+// address, so ::1 is not in HostRange: Windows Firewall cannot match it.
 var (
 	TailnetV4 = "100.64.0.0/10"
 	TailnetV6 = "fd7a:115c:a1e0::/48"
 	LANv4     = []string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"}
-	HostRange = []string{"0.0.0.0/8", "127.0.0.0/8", "169.254.0.0/16", "::1/128", "fc00::/7", "fe80::/10"}
+	HostRange = []string{"0.0.0.0/8", "127.0.0.0/8", "169.254.0.0/16", "fc00::/7", "fe80::/10"}
 	Loopback  = netip.MustParseAddr("127.0.0.1")
 )
 
@@ -129,17 +131,25 @@ func FirewallRules(p NetPolicy) []FirewallRule {
 	}
 	rules = append(rules, FirewallRule{Name: "Tentmaker-Allow-Relay", Display: "Tentmaker: CI jobs reach the source archive relay",
 		Action: "Allow", Protocol: "TCP", RemoteAddress: []string{Loopback.String()}, RemotePort: []string{fmt.Sprint(RelayPort)}})
-	if len(p.Resolvers) > 0 {
-		var rs []string
-		for _, r := range p.Resolvers {
+	var rs []string
+	for _, r := range p.Resolvers {
+		if firewallAddr(r) {
 			rs = append(rs, r.String())
 		}
+	}
+	if len(rs) > 0 {
 		for _, proto := range []string{"UDP", "TCP"} {
 			rules = append(rules, FirewallRule{Name: "Tentmaker-Allow-DNS-" + proto, Display: "Tentmaker: CI jobs reach the DNS servers (" + proto + ")",
 				Action: "Allow", Protocol: proto, RemoteAddress: rs, RemotePort: []string{"53"}})
 		}
 	}
 	return rules
+}
+
+// firewallAddr reports whether New-NetFirewallRule takes a as a remote
+// address; it refuses IPv6 loopback, unspecified and multicast addresses.
+func firewallAddr(a netip.Addr) bool {
+	return !a.Is6() || a.Is4In6() || !(a.IsLoopback() || a.IsUnspecified() || a.IsMulticast())
 }
 
 // otherPorts is every port but open, as Windows Firewall port ranges.
