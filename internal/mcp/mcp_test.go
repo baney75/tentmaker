@@ -385,13 +385,17 @@ func TestConcurrentAndCancel(t *testing.T) {
 	if m := s.call(2, "ping", nil); m.Error != nil {
 		t.Fatal(m.Error)
 	}
+	// The call runs on its own goroutine; cancel it only once Update is
+	// running, or a busy machine cancels it before it starts.
+	for deadline := time.Now().Add(5 * time.Second); fc.last() != "update "; time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("update never started; last call %q", fc.last())
+		}
+	}
 	s.send(`{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":"slow","reason":"user"}}`)
 	// The canceled call sends nothing; the next response is the ping.
 	if m := s.call(3, "ping", nil); string(m.ID) != "3" {
 		t.Fatalf("got a response for %s", m.ID)
-	}
-	if fc.last() != "update " {
-		t.Errorf("update called with %q", fc.last())
 	}
 }
 
