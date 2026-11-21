@@ -94,36 +94,6 @@ func TestFirewallScriptAddsBeforeItRemoves(t *testing.T) {
 	}
 }
 
-// New-NetFirewallRule refuses the whole rule when -RemoteAddress names an
-// IPv6 loopback, unspecified or multicast address ("An unspecified,
-// multicast, broadcast, or loopback IPv6 address was specified"), which
-// failed setup on every Windows host.
-func TestFirewallRulesUseAddressesWindowsAccepts(t *testing.T) {
-	p := NetPolicy{SID: testSID, Resolvers: []netip.Addr{
-		netip.MustParseAddr("168.63.129.16"), netip.MustParseAddr("::1"), netip.MustParseAddr("fd7a:115c:a1e0::53"),
-	}}
-	for _, lan := range []bool{false, true} {
-		p.AllowLAN = lan
-		for _, r := range FirewallRules(p) {
-			for _, a := range r.RemoteAddress {
-				for _, end := range strings.Split(a, "-") {
-					addr, err := netip.ParseAddr(end)
-					if err != nil {
-						pf, perr := netip.ParsePrefix(end)
-						if perr != nil {
-							t.Fatalf("%s: %q is not an address, prefix or range", r.Name, a)
-						}
-						addr = pf.Addr()
-					}
-					if addr.Is6() && (addr.IsLoopback() || addr.IsUnspecified() || addr.IsMulticast()) {
-						t.Errorf("%s (allow_lan=%v) names %s, which Windows Firewall refuses", r.Name, lan, a)
-					}
-				}
-			}
-		}
-	}
-}
-
 func TestCarve(t *testing.T) {
 	for _, c := range []struct {
 		prefix string
@@ -170,12 +140,14 @@ func TestFirewallRulesAvoidRefusedIPv6(t *testing.T) {
 		return a.Is6() && !a.Is4In6() && (a.IsLoopback() || a.IsUnspecified() || a.IsMulticast())
 	}
 	var rules []FirewallRule
-	for _, rs := range [][]string{{"168.63.129.16"}, {"::1", "fec0:0:0:ffff::1", "127.0.0.53"}} {
-		p := NetPolicy{SID: testSID}
-		for _, r := range rs {
-			p.Resolvers = append(p.Resolvers, netip.MustParseAddr(r))
+	for _, rs := range [][]string{{"168.63.129.16"}, {"::1", "fec0:0:0:ffff::1", "127.0.0.53", "fd7a:115c:a1e0::53"}} {
+		for _, lan := range []bool{false, true} {
+			p := NetPolicy{SID: testSID, AllowLAN: lan}
+			for _, r := range rs {
+				p.Resolvers = append(p.Resolvers, netip.MustParseAddr(r))
+			}
+			rules = append(rules, FirewallRules(p)...)
 		}
-		rules = append(rules, FirewallRules(p)...)
 	}
 	for _, r := range rules {
 		for _, s := range r.RemoteAddress {

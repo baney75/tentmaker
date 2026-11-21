@@ -226,28 +226,42 @@ physical LAN only, never what the tailnet routes.
   `tentmaker.service`) loads it at boot. `checkNet` compares the loaded rules element by element
   (nft lists sets sorted and single addresses without a length). A missing table, chain or jump
   for the runner's uid refuses the job. Loaded rules that lack a piece (a new subuid range,
-  Tailscale interface or on-link prefix, or a rule an older version did not write) are stale:
-  `Start` rewrites the file from the host's current facts, reloads it and checks again.
+  Tailscale interface or on-link prefix, or a rule an older version did not write) are stale, and
+  so are rules whose DNS servers are not exactly the host's current ones (a new DHCP resolver):
+  `Start` rewrites the file and the job resolv.conf from the host's current facts, reloads the
+  rules and checks again.
 - Linux job units also get `InaccessiblePaths=-` for tailscaled's `/run/tailscale`,
   `/var/run/tailscale` and `/var/lib/tailscale` (its LocalAPI socket is mode 0666, and firewall
   rules don't see Unix sockets), and for `/home` and `/root` unless the job dir is under them.
   Not `ProtectHome=yes`: it also hides `/run/user`, the job's runtime dir and podman socket. The
   runner's `user@<uid>.service` drop-in hides the same tailscaled paths from the podman service and
   its containers and orders the manager `After=tailscaled.service`.
-- Windows (`netrules.go`): Windows Firewall outbound rules in group "Tentmaker" with `LocalUser`
-  `D:(A;;CC;;;<runner SID>)`, made with the NetSecurity cmdlets through `API.PowerShell`. Block
-  rules beat allow rules, so the blocked ranges leave out 127.0.0.1 and any resolver inside them,
-  and those addresses get block rules for every port but the allowed one. Every rule's description
-  names the rules version, the runner SID and `allow_lan`; the check compares it, and fails when any
-  firewall profile is off. Windows Firewall refuses an IPv6 loopback, unspecified or multicast
-  remote address (and with it the whole rule), so the rules leave out ::1 and any such resolver;
-  port 7433 stays blocked on ::1 by the port rule. Windows doesn't send every own address through
-  loopback, so `Tentmaker-Block-Self` blocks this host's unicast addresses (`Get-NetIPAddress`, all
-  interfaces) that the fixed ranges miss: its global IPv6 address, and its LAN address under
-  `allow_lan`. A DNS server that is this host gets the port-53 hole instead. The check reads the
-  host's addresses and the rule's addresses in the same PowerShell call; when only they differ
-  (DHCP, a new prefix), `Start` changes that one rule in place (`Set-NetFirewallRule`, never the
-  whole group) and checks again. Any other difference refuses the job.
+- Windows (`netrules.go`, `wfp.go`): two layers, both scoped to the runner SID.
+  - Windows Firewall outbound rules in group "Tentmaker" with `LocalUser` `D:(A;;CC;;;<runner
+    SID>)`, made with the NetSecurity cmdlets through `API.PowerShell`, for traffic to other hosts.
+    Block rules beat allow rules, so the blocked ranges leave out 127.0.0.1 and any resolver inside
+    them, and those addresses get block rules for every port but the allowed one. Windows Firewall
+    refuses an IPv6 loopback, unspecified or multicast remote address (and with it the whole
+    rule), so the rules leave out ::1 and any such resolver. Every rule's description names the
+    rules version, the runner SID and `allow_lan`, and every rule's name ends in a hash of its
+    content and that description. Setup adds each wanted rule that isn't there by name and only
+    then removes the group's other rules, so a rerun never unblocks anything in between.
+  - Windows Firewall does not filter traffic to the host itself: a live run reached decoys on
+    127.0.0.1, ::1 and the host's own addresses through loaded, enabled block rules. So Tentmaker
+    adds persistent WFP filters (`API.SetWFP`, fwpuclnt.dll through `x/sys/windows`, no cgo) in its
+    own provider and a sublayer of weight 0xffff, at `FWPM_LAYER_ALE_AUTH_CONNECT_V4` and `_V6`.
+    Every filter matches `FWPM_CONDITION_ALE_USER_ID` (the same SDDL) and the
+    `FWP_CONDITION_FLAG_IS_LOOPBACK` flag, which Windows sets on traffic to any of its own
+    addresses: permit TCP 127.0.0.1:7434 (the relay) and port 53 to the configured DNS servers,
+    then block the rest with `FWPM_FILTER_FLAG_CLEAR_ACTION_RIGHT`. The filters have fixed keys;
+    `SetWFP` deletes every Tentmaker key and adds the wanted filters in one transaction, and
+    reads them back by key. Each filter's description spells out all of its conditions.
+  - `checkNet` reads the profiles, the group's rules and the DNS servers (`Get-DnsClientServerAddress`,
+    the command setup used) in one PowerShell call, plus the WFP filters. A firewall profile that
+    is off, no rules, no filters, or a rule or filter for another SID, `allow_lan` or version
+    refuses the job. The right ones with a rule or filter missing or extra (a new DNS server, or
+    one deleted by hand) are stale: `Start` writes the rules and filters again and checks once
+    more. When WFP refuses the filters, setup fails and so does `Start`.
 - macOS: the Softnet rules already cover all of it (Softnet's default drops non-global IPv4 and all
   IPv6); `allow_lan` does nothing there.
 
@@ -480,7 +494,7 @@ section is rewritten.
 - `SetPoolLimit` is a no-op on macOS and Windows.
 - Linux and Windows keep a copy of the tentmaker binary for check jobs. Setup writes it, and each check `Start` compares it with `Binary(platform)` (size, then sha256; equal pairs are remembered by size and mtime) and replaces it atomically when they differ, so an update never leaves check jobs on the old binary. Linux writes it root-owned 0755; Windows renames the old exe aside first (a running check may hold it) and deletes it once free. (internal/executor/guestbin)
 - The Windows runner password uses machine-scope DPAPI, protected by the file ACL (SYSTEM and Administrators).
-- Network rules are written at setup. A changed `allow_lan` takes effect only after `sudo tentmaker setup` runs again; until then the loaded rules don't match the config: Linux treats rules missing the LAN as stale and reloads them stricter at the next `Start`, and Windows (description mismatch) refuses jobs. Rules stricter than the config pass. Host facts the rules name (Linux subuid ranges, Tailscale interfaces and on-link IPv6 prefixes; Windows own addresses) are read again at every `Start`.
+- Network rules are written at setup. A changed `allow_lan` takes effect only after `sudo tentmaker setup` runs again; until then the loaded rules don't match the config: Linux treats rules missing the LAN as stale and reloads them stricter at the next `Start`, and Windows (description mismatch) refuses jobs. Rules stricter than the config pass. Host facts the rules name (Linux subuid ranges, Tailscale interfaces, on-link IPv6 prefixes and DNS servers; Windows DNS servers) are read again at every `Start`.
 - Linux job units have no `--collect` and set `OOMPolicy=stop`: a unit the OOM killer ended stays loaded with `Result=oom-kill` until `Clean` runs `systemctl reset-failed`, so `CheckResult` can say "ran out of memory" instead of "cancelled" or "no result.json".
 
 **mesh**
