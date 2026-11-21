@@ -108,7 +108,22 @@ func (c controller) Update(ctx context.Context, channel string) (any, error) {
 		return nil, err
 	}
 	v, err := c.a.update(ctx, channel, false)
-	return v, mcpErr(err)
+	if err != nil {
+		return v, mcpErr(err)
+	}
+	// The tool promises that passing a channel switches the device to it.
+	if channel != "" && v.Applied && !v.RolledBack {
+		cfg, _, lerr := c.a.loadConfig()
+		if lerr == nil && cfg.Update.Channel != channel {
+			cfg.Update.Channel = channel
+			if serr := c.a.saveConfig(cfg); serr != nil {
+				v.Note += "; the channel was not saved: " + serr.Error()
+			} else {
+				v.Note += "; switched to the " + channel + " channel (" + c.a.reload() + ")"
+			}
+		}
+	}
+	return v, nil
 }
 
 func (a *app) cmdMCP(args []string) (any, error) {

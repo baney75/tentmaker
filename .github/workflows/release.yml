@@ -109,8 +109,9 @@ jobs:
     needs: test
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    # Two dev releases never interleave; a newer push waits, and a waiting
-    # older one is superseded.
+    # Two dev releases never interleave. With cancel-in-progress false,
+    # GitHub lets the running dev release finish and cancels only a pending
+    # one: a newer push waits, and replaces any older push still waiting.
     concurrency:
       group: release-dev
       cancel-in-progress: false

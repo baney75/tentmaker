@@ -878,3 +878,40 @@ func TestFixturePathsAreTemp(t *testing.T) {
 		}
 	}
 }
+
+// The MCP update tool says passing a channel switches the device to it.
+func TestMCPUpdateSwitchesChannel(t *testing.T) {
+	f := newFixture(t)
+	f.setUp()
+	f.isRoot = true
+	f.up.newer = true
+	f.svc.installed = true
+	f.serveControl()
+	f.daemon.mu.Lock()
+	f.daemon.version = "9.9.9"
+	f.daemon.mu.Unlock()
+	a := &app{env: f.env, ctx: context.Background(), json: true}
+	if _, err := (controller{a}).Update(context.Background(), "dev"); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.config().Update.Channel; got != "dev" {
+		t.Fatalf("channel after an update on dev: %q", got)
+	}
+	// Omitting the channel keeps the configured one.
+	if _, err := (controller{a}).Update(context.Background(), ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.config().Update.Channel; got != "dev" {
+		t.Fatalf("channel after an update with none given: %q", got)
+	}
+	// An update that rolls back switches nothing.
+	defer func(d time.Duration) { UpdateHealthWait = d }(UpdateHealthWait)
+	UpdateHealthWait = 300 * time.Millisecond
+	f.daemon.mu.Lock()
+	f.daemon.version = "1.0.0"
+	f.daemon.mu.Unlock()
+	(controller{a}).Update(context.Background(), "stable")
+	if got := f.config().Update.Channel; got != "dev" {
+		t.Fatalf("a rolled-back update switched the channel to %q", got)
+	}
+}
