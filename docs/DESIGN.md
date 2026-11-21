@@ -498,8 +498,9 @@ are rediscovered every 30 s; a peer failing 3 calls in a row is skipped for a mi
   check, swap atomically (Windows: rename the running exe aside, then move the new one in), restart
   the service, and roll back to the old binary if the daemon isn't healthy within 60 s. Auto-update
   only between jobs: after the download it takes `Worker.Hold`, which closes admission and counts
-  jobs under one lock, and keeps it through the swap and exit, so no job starts between the last
-  zero-jobs check and the restart. A hold is memory only; a restart drops it.
+  jobs under one lock, and keeps it through the swap and exit; a worker checks admission again under
+  the lock that adds a job's record and declines the offer if it closed, so no job starts between
+  the last zero-jobs check and the restart. A hold is memory only; a restart drops it.
 - `tentmaker update` (CLI and the MCP tool) pauses new jobs through the control API and waits up
   to 30 min for running ones, because the restart ends them (on Windows the daemon's job object
   kills them). If they don't finish it resumes and changes nothing; `--force` (CLI only) skips the

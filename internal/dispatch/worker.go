@@ -946,7 +946,16 @@ func (w *Worker) start(ctx context.Context, src core.WorkSource, off core.WorkOf
 		MaxDuration: w.o.Config.Job.MaxDuration.D(), TestWorkers: tw}
 	rec := &jobRec{Name: name, Source: source, Kind: kind, Executor: e.name, Forge: off.Job.Forge, Repo: off.Job.Repo,
 		Job: off.Job.Name, JobID: off.Job.ID, Platform: off.Platform, Started: now, Limits: w.limits, starting: true}
+	// Admission is checked again under the lock that adds the job record:
+	// a Hold, Pause or Shutdown since exchange counted free slots must
+	// see either this job or no start (review r2 partA sol-F1).
 	w.mu.Lock()
+	if w.freeLocked(w.decision, w.now()) == 0 || w.capacityLocked(e) == 0 {
+		w.dropRelaysLocked(name)
+		w.mu.Unlock()
+		w.decline(source, off, "admission closed before the start")
+		return false
+	}
 	w.st.Jobs = append(w.st.Jobs, rec)
 	w.st.Dirty = true
 	w.mu.Unlock()
