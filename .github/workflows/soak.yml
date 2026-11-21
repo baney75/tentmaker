@@ -6,10 +6,11 @@
 # samples the daemon: RSS, goroutines, heap, open fds, job units in
 # tentmaker.slice, the runner user's podman containers and the files under
 # the state and jobs dirs. It asserts that every branch got exactly one
-# final success, that RSS and goroutines grow by less than 20% after the
-# first 10 minutes (a least-squares slope), that nothing is left behind, and
-# that the state dir stays bounded (check logs pruned at 200; 210 old ones
-# are planted first). metrics/soak.json has the series and verdicts.
+# final success, that RSS, goroutines and open fds grow by less than 20%
+# after the first 10 minutes (a least-squares slope; heap is reported), that
+# nothing is left behind, and that the state dir stays bounded (check logs
+# pruned at 200; 210 old ones are planted first). metrics/soak.json has the
+# series and verdicts.
 #
 # The throwaway commits are pushed with the GITHUB_TOKEN, so they start no
 # GitHub workflow, and the job file is outside .github/workflows, so hosted
@@ -315,13 +316,15 @@ jobs:
               base = slope * xs[0] + icpt
               grow = slope * (xs[-1] - xs[0]) / base if base > 0 else float("inf")
               out.update(start=ys[0], end=ys[-1], min=min(ys), max=max(ys), slope_per_min=round(slope * 60, 4),
-                         fitted_start=round(base, 2), fitted_growth=round(grow, 4), ok=grow < 0.20)
+                         slope_per_hour=round(slope * 3600, 2), fitted_start=round(base, 2),
+                         fitted_growth=round(grow, 4), ok=grow < 0.20)
               return out
 
           rss, gor = growth("rss_kb"), growth("goroutines")
           heap, fds = growth("heap_in_use_bytes"), growth("proc_fds")
           verdicts["rss_growth_under_20pct"] = rss["ok"]
           verdicts["goroutine_growth_under_20pct"] = gor["ok"]
+          verdicts["open_fd_growth_under_20pct"] = fds["ok"]
 
           pids = sorted({s["pid"] for s in samples if s.get("pid", 0) > 0})
           verdicts["daemon_never_restarted"] = len(pids) == 1
@@ -388,9 +391,9 @@ jobs:
                 f"{minutes} branches, one a minute; a sample every 30 s; the fit starts at 10 minutes.", "",
                 "| verdict | ok |", "| --- | --- |"]
           md += [f"| {k} | {'yes' if v else 'NO'} |" for k, v in verdicts.items()]
-          md += ["", "| series | first | at 10 min | end | slope per min | fitted growth |", "| --- | --- | --- | --- | --- | --- |"]
+          md += ["", "| series | first | at 10 min | end | slope per hour | fitted growth |", "| --- | --- | --- | --- | --- | --- |"]
           for name, g in (("RSS KiB", rss), ("goroutines", gor), ("heap bytes", heap), ("open fds", fds)):
-              md.append(f"| {name} | {g.get('first')} | {g.get('start')} | {g.get('end')} | {g.get('slope_per_min')} | {g.get('fitted_growth')} |")
+              md.append(f"| {name} | {g.get('first')} | {g.get('start')} | {g.get('end')} | {g.get('slope_per_hour')} | {g.get('fitted_growth')} |")
           md += ["", f"Leftovers: {left}", f"Check logs: max {state['check_logs_max']}, end {state['check_logs_end']} "
                  f"({state['seed_logs_end']} planted ones left); state dir {state['state_bytes_end']} bytes at the end.", "",
                  "```"] + chart("rss_kb", "RSS MiB", 1024, " MiB") + [""] + chart("goroutines", "goroutines") + \

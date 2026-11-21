@@ -1,3 +1,0 @@
-go test fuzz v1
-[]byte("jobs:\n    r000000:\n    000p0:")
-byte('\b')

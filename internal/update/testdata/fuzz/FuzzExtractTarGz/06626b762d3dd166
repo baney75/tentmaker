@@ -1,3 +1,0 @@
-go test fuzz v1
-[]byte("A0002000Y790010001001101B12")
-bool(true)

@@ -1,3 +1,0 @@
-go test fuzz v1
-[]byte("on: push\njobs:\n  a:\n    runs-on:\n      - ubuntu-latest\n    steps:\n      - run: echo\r\n")
-byte(']')

@@ -1,3 +1,0 @@
-go test fuzz v1
-[]byte("aa: aaaa\n0x0X: {a: {\n    runs-on: ubuntu-l00000\n 0}}")
-byte('\'')

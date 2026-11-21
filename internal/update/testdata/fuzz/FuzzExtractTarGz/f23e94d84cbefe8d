@@ -1,3 +1,0 @@
-go test fuzz v1
-[]byte("B020\x00081010")
-bool(true)

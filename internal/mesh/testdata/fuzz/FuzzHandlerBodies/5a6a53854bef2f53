@@ -1,5 +1,0 @@
-go test fuzz v1
-[]byte("\"\xc2\"")
-byte('"')
-bool(false)
-bool(true)

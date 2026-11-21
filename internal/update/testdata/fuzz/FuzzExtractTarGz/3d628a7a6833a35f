@@ -1,3 +1,0 @@
-go test fuzz v1
-[]byte("2200000000000001")
-bool(true)

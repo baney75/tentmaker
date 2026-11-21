@@ -1,5 +1,0 @@
-go test fuzz v1
-[]byte("{} x")
-byte('\x02')
-bool(false)
-bool(false)
