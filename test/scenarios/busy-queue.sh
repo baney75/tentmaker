@@ -40,12 +40,14 @@ sleep 10
 	done
 ) >"$W/samples.jsonl" &
 SAMPLER=$!
+SCN_BG+=("$SAMPLER")
 
 T0=$(now_s)
 git_push "${refs[@]}"
 log "pushed $N branches at once"
 
-declare -A final
+# =() so the array is set: under set -u an empty, unset one is an error.
+declare -A final=()
 deadline=$((T0 + BOUND + 120))
 while [ "${#final[@]}" -lt "$N" ] && [ "$(now_s)" -lt "$deadline" ]; do
 	for c in "${shas[@]}"; do
