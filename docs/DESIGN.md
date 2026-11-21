@@ -199,7 +199,9 @@ relay on 127.0.0.1:7434. Always blocked: the tailnet (100.64.0.0/10, fd7a:115c:a
   rules beat allow rules, so the blocked ranges leave out 127.0.0.1 and any resolver inside them,
   and those addresses get block rules for every port but the allowed one. Every rule's description
   names the rules version, the runner SID and `allow_lan`; the check compares it, and fails when any
-  firewall profile is off.
+  firewall profile is off. Windows Firewall refuses an IPv6 loopback, unspecified or multicast
+  remote address (and with it the whole rule), so the rules leave out ::1 and any such resolver;
+  port 7433 stays blocked on ::1 by the port rule.
 - macOS: the Softnet rules already cover all of it (Softnet's default drops non-global IPv4 and all
   IPv6); `allow_lan` does nothing there.
 

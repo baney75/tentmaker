@@ -25,12 +25,15 @@ const (
 
 // Blocked ranges. Windows Firewall has no "this host" match, so the host's
 // own addresses are covered by the loopback rule only where Windows routes
-// them through loopback; the mesh port is blocked on every address.
+// them through loopback; the mesh port is blocked on every address. Unlike
+// the Linux rules there is no ::1: Windows Firewall refuses an IPv6
+// loopback, unspecified or multicast remote address, and the whole rule
+// with it (see windowsRefuses).
 var (
 	TailnetV4 = "100.64.0.0/10"
 	TailnetV6 = "fd7a:115c:a1e0::/48"
 	LANv4     = []string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"}
-	HostRange = []string{"0.0.0.0/8", "127.0.0.0/8", "169.254.0.0/16", "::1/128", "fc00::/7", "fe80::/10"}
+	HostRange = []string{"0.0.0.0/8", "127.0.0.0/8", "169.254.0.0/16", "fc00::/7", "fe80::/10"}
 	Loopback  = netip.MustParseAddr("127.0.0.1")
 )
 
@@ -73,9 +76,27 @@ func (p NetPolicy) blocked() []netip.Prefix {
 	return out
 }
 
+// windowsRefuses is an address New-NetFirewallRule will not take as a
+// remote address: "An unspecified, multicast, broadcast, or loopback IPv6
+// address was specified."
+func windowsRefuses(a netip.Addr) bool {
+	return a.Is6() && (a.IsLoopback() || a.IsUnspecified() || a.IsMulticast())
+}
+
+// resolvers is p.Resolvers without the ones a rule can't name.
+func (p NetPolicy) resolvers() []netip.Addr {
+	var out []netip.Addr
+	for _, r := range p.Resolvers {
+		if !windowsRefuses(r) {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
 func (p NetPolicy) holes() []hole {
 	hs := []hole{{addr: Loopback, tcp: []uint16{RelayPort}}}
-	for _, r := range p.Resolvers {
+	for _, r := range p.resolvers() {
 		if !slices.ContainsFunc(p.blocked(), func(b netip.Prefix) bool { return b.Contains(r) }) {
 			continue
 		}
@@ -129,9 +150,9 @@ func FirewallRules(p NetPolicy) []FirewallRule {
 	}
 	rules = append(rules, FirewallRule{Name: "Tentmaker-Allow-Relay", Display: "Tentmaker: CI jobs reach the source archive relay",
 		Action: "Allow", Protocol: "TCP", RemoteAddress: []string{Loopback.String()}, RemotePort: []string{fmt.Sprint(RelayPort)}})
-	if len(p.Resolvers) > 0 {
+	if len(p.resolvers()) > 0 {
 		var rs []string
-		for _, r := range p.Resolvers {
+		for _, r := range p.resolvers() {
 			rs = append(rs, r.String())
 		}
 		for _, proto := range []string{"UDP", "TCP"} {
