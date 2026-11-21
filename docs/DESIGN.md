@@ -193,7 +193,9 @@ physical LAN only, never what the tailnet routes.
   127.0.0.1 and ::1 work (httptest, a test database) and the host's loopback does not. Per job,
   two transient units in `tentmaker.slice` run as the runner user: `tentmaker-netns-<name>`
   (`unshare --user --map-root-user --net`, holding a user namespace the runner owns and a network
-  namespace in it) and `tentmaker-uplink-<name>` (pasta, `Type=forking`, joining the holder's
+  namespace in it; the unit grants it CAP_SYS_ADMIN alone, because where AppArmor restricts
+  unprivileged user namespaces, as Ubuntu does by default, unshare cannot write its uid_map
+  without it) and `tentmaker-uplink-<name>` (pasta, `Type=forking`, joining the holder's
   namespaces by pid). pasta must run as the runner: it opens every outside socket, and the per-uid
   rules below match them; pasta started as root and dropping privileges cannot join a namespace
   owned by the initial user namespace, hence the runner-owned holder. pasta forwards only the

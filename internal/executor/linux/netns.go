@@ -107,17 +107,30 @@ func (e *Executor) netnsTools() error {
 	return nil
 }
 
-// helperArgs is the systemd-run argv for one of a job's namespace units.
-func helperArgs(unit, typ string, uid, gid int, cmd ...string) []string {
-	return append([]string{"--quiet", "--no-ask-password",
+// helperArgs is the systemd-run argv for one of a job's namespace units,
+// with props as extra unit properties.
+func helperArgs(unit, typ string, uid, gid int, props []string, cmd ...string) []string {
+	args := []string{"--quiet", "--no-ask-password",
 		"--unit=" + unit, "--slice=" + Slice,
 		"--uid=" + strconv.Itoa(uid), "--gid=" + strconv.Itoa(gid),
 		"-p", "Type=" + typ,
 		"-p", "NoNewPrivileges=yes",
 		"-p", "TimeoutStartSec=30",
-		"-p", "TimeoutStopSec=10",
-		"--"}, cmd...)
+		"-p", "TimeoutStopSec=10"}
+	for _, p := range props {
+		args = append(args, "-p", p)
+	}
+	return append(append(args, "--"), cmd...)
 }
+
+// holderProps lets the holder make its user namespace where AppArmor
+// restricts unprivileged ones (kernel.apparmor_restrict_unprivileged_userns,
+// on by default since Ubuntu 24.04): there unshare cannot write its uid_map
+// ("Operation not permitted") unless it holds CAP_SYS_ADMIN. The holder
+// keeps the runner's uid, so the runner still owns the namespace and pasta
+// can join it, and once unshare is inside, its capabilities count only
+// there. CAP_SYS_ADMIN is the one capability it gets.
+var holderProps = []string{"AmbientCapabilities=CAP_SYS_ADMIN", "CapabilityBoundingSet=CAP_SYS_ADMIN"}
 
 // startNetns starts a job's namespace and its uplink and returns the path the
 // job unit enters. On error nothing is left running.
@@ -134,7 +147,7 @@ func (e *Executor) startNetns(ctx context.Context, name string, uid, gid int) (_
 			e.stopNetns(context.WithoutCancel(ctx), name)
 		}
 	}()
-	hold := helperArgs(netnsUnit(name), "exec", uid, gid,
+	hold := helperArgs(netnsUnit(name), "exec", uid, gid, holderProps,
 		e.tool("unshare"), "--user", "--map-root-user", "--net", "--", "sleep", "infinity")
 	if _, err := e.h.Run(ctx, Cmd{Path: "systemd-run", Args: hold, Timeout: time.Minute}); err != nil {
 		return "", fmt.Errorf("start %s: %v", netnsUnit(name), err)
@@ -143,7 +156,7 @@ func (e *Executor) startNetns(ctx context.Context, name string, uid, gid int) (_
 	if err != nil {
 		return "", err
 	}
-	up := helperArgs(uplinkUnit(name), "forking", uid, gid, append([]string{e.tool("pasta")}, PastaArgs(pid)...)...)
+	up := helperArgs(uplinkUnit(name), "forking", uid, gid, nil, append([]string{e.tool("pasta")}, PastaArgs(pid)...)...)
 	if _, err := e.h.Run(ctx, Cmd{Path: "systemd-run", Args: up, Timeout: time.Minute}); err != nil {
 		return "", fmt.Errorf("start %s: %v", uplinkUnit(name), err)
 	}
@@ -179,7 +192,21 @@ func (e *Executor) netnsPID(ctx context.Context, name string) (int, error) {
 		}
 		e.o.Sleep(100 * time.Millisecond)
 	}
-	return 0, fmt.Errorf("%s did not make a network namespace in 10s", netnsUnit(name))
+	return 0, fmt.Errorf("%s did not make a network namespace in 10s%s", netnsUnit(name), e.unitLog(ctx, netnsUnit(name)))
+}
+
+// unitLog is the tail of a unit's journal, for an error that says why the
+// unit failed, or "" when there is none.
+func (e *Executor) unitLog(ctx context.Context, unit string) string {
+	res, err := e.h.Run(ctx, Cmd{Path: "journalctl", Args: []string{"--no-pager", "--output=cat", "--lines=5", "--unit=" + unit}, Timeout: 10 * time.Second})
+	out := strings.Join(strings.Fields(res.Stdout), " ")
+	if err != nil || out == "" || strings.HasPrefix(out, "-- No entries --") {
+		return ""
+	}
+	if len(out) > 400 {
+		out = out[len(out)-400:]
+	}
+	return " (its log: " + out + ")"
 }
 
 // stopNetns stops a job's uplink and namespace. Units that aren't loaded make

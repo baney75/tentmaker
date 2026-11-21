@@ -44,13 +44,19 @@ func TestStartJobNetns(t *testing.T) {
 	v.installed(t)
 	must(t, v.e.Start(context.Background(), spec("job-ns", "")))
 
-	common := func(unit, typ string) []string {
-		return []string{"--quiet", "--no-ask-password", "--unit=" + unit, "--slice=tentmaker.slice",
+	common := func(unit, typ string, props ...string) []string {
+		args := []string{"--quiet", "--no-ask-password", "--unit=" + unit, "--slice=tentmaker.slice",
 			"--uid=1234", "--gid=1235", "-p", "Type=" + typ, "-p", "NoNewPrivileges=yes",
-			"-p", "TimeoutStartSec=30", "-p", "TimeoutStopSec=10", "--"}
+			"-p", "TimeoutStartSec=30", "-p", "TimeoutStopSec=10"}
+		for _, p := range props {
+			args = append(args, "-p", p)
+		}
+		return append(args, "--")
 	}
 	hold := findUnit(t, v.f, netnsUnit("job-ns"))
-	want := append(common("tentmaker-netns-job-ns.service", "exec"), v.o.Paths.Unshare, "--user", "--map-root-user", "--net", "--", "sleep", "infinity")
+	// Only CAP_SYS_ADMIN, which AppArmor's userns restriction asks of
+	// unshare; pasta gets no capability.
+	want := append(common("tentmaker-netns-job-ns.service", "exec", "AmbientCapabilities=CAP_SYS_ADMIN", "CapabilityBoundingSet=CAP_SYS_ADMIN"), v.o.Paths.Unshare, "--user", "--map-root-user", "--net", "--", "sleep", "infinity")
 	if strings.Join(hold.Args, " ") != strings.Join(want, " ") {
 		t.Errorf("holder\n got %q\nwant %q", hold.Args, want)
 	}
@@ -115,6 +121,18 @@ func TestStartRefusesWithoutNetns(t *testing.T) {
 			v.f.netnsPID = 99
 			must(t, os.MkdirAll(filepath.Join(v.o.Paths.Proc, "99", "ns"), 0o755))
 			must(t, os.Symlink("net:[4026531840]", filepath.Join(v.o.Paths.Proc, "99", "ns", "net")))
+		}},
+		// The holder died at once: the error says why, from its journal.
+		{"holder-dies", "Operation not permitted", func(v *env) {
+			v.f.netnsPID = 99
+			must(t, os.MkdirAll(filepath.Join(v.o.Paths.Proc, "99", "ns"), 0o755))
+			must(t, os.Symlink("net:[4026531840]", filepath.Join(v.o.Paths.Proc, "99", "ns", "net")))
+			v.f.respond = func(c Cmd) (Result, error) {
+				if c.Path == "journalctl" && slices.Contains(c.Args, "--unit="+netnsUnit("job-no-holder-dies")) {
+					return Result{Stdout: "unshare: write failed /proc/self/uid_map: Operation not permitted\n"}, nil
+				}
+				return Result{}, nil
+			}
 		}},
 		{"no-dns", "no DNS server for CI jobs", func(v *env) {
 			must(t, os.WriteFile(v.o.Paths.ResolvedConf, []byte("nameserver 127.0.0.1\n"), 0o644))
