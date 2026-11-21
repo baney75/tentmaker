@@ -168,9 +168,10 @@ jobs:
         run: |
           ctx=tentmaker/smoke
           start=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-          printf %s "$GITHUB_TOKEN" | sudo tentmaker connect github --token-stdin --json | jq -e '.ok == true'
+          printf %s "$GITHUB_TOKEN" | sudo tentmaker connect github --token-stdin --json | tee "$RUNNER_TEMP/connect.json"
+          jq -e '.ok == true' "$RUNNER_TEMP/connect.json" >/dev/null || { echo "::error::connect failed"; exit 1; }
           sudo tentmaker repo add "$REPO" --mode checks --allow-public --workflow .github/workflows/tentmaker-smoke.yml --branch "$TM_BRANCH" --json | tee "$RUNNER_TEMP/repo.json"
-          jq -e '.ok == true' "$RUNNER_TEMP/repo.json" >/dev/null
+          jq -e '.ok == true' "$RUNNER_TEMP/repo.json" >/dev/null || { echo "::error::repo add failed"; exit 1; }
           echo "waiting for $ctx on $TM_SHA (branch $TM_BRANCH)"
           deadline=$((SECONDS + 360))
           while :; do
@@ -255,23 +256,25 @@ jobs:
           fi
           scripts/build.sh "$TM_VERSION"
 
-      - name: serve dist/ as a fake release
+      # The runner ends a step's processes with the step, so the release
+      # server and the install share one.
+      - name: serve dist/ as a fake release and install with the one-liner
         run: |
           $srv = Join-Path $env:RUNNER_TEMP 'srv'
           New-Item -ItemType Directory -Force -Path "$srv\latest\download" | Out-Null
           Copy-Item dist\* "$srv\latest\download\"
           Copy-Item scripts\install.ps1 "$srv\install.ps1"
-          Start-Process -FilePath python -ArgumentList @('-m', 'http.server', '--bind', '127.0.0.1', '--directory', $srv, $env:TM_PORT) -WindowStyle Hidden `
+          $server = Start-Process -PassThru -FilePath python -ArgumentList @('-m', 'http.server', '--bind', '127.0.0.1', '--directory', $srv, $env:TM_PORT) -WindowStyle Hidden `
             -RedirectStandardOutput "$env:RUNNER_TEMP\http.out" -RedirectStandardError "$env:RUNNER_TEMP\http.err"
-          for ($i = 0; $i -lt 50; $i++) {
-            try { Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 "http://127.0.0.1:$env:TM_PORT/latest/download/SHA256SUMS" | Out-Null; exit 0 } catch { Start-Sleep -Milliseconds 200 }
+          $up = $false
+          for ($i = 0; $i -lt 50 -and -not $up; $i++) {
+            try { Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 "http://127.0.0.1:$env:TM_PORT/latest/download/SHA256SUMS" | Out-Null; $up = $true } catch { Start-Sleep -Milliseconds 200 }
           }
-          Write-Output "::error::the release server did not start"; Get-Content "$env:RUNNER_TEMP\http.err"; exit 1
+          if (-not $up) { Write-Output "::error::the release server did not start"; Get-Content "$env:RUNNER_TEMP\http.err"; exit 1 }
 
-      - name: install with the one-liner
-        run: |
           $env:TENTMAKER_DOWNLOAD_BASE = "http://127.0.0.1:$env:TM_PORT"
           irm -TimeoutSec 60 "http://127.0.0.1:$env:TM_PORT/install.ps1" | iex
+          Stop-Process -Id $server.Id -ErrorAction SilentlyContinue
           # A new terminal sees the machine PATH; later steps get it here.
           Add-Content -Path $env:GITHUB_PATH -Value (Join-Path $env:ProgramFiles 'Tentmaker')
           $got = ((& "$env:ProgramFiles\Tentmaker\tentmaker.exe" version --json) -join "`n" | ConvertFrom-Json).version
