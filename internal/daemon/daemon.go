@@ -854,11 +854,18 @@ func (d *Daemon) autoUpdate(ctx context.Context, cfg config.Config) error {
 	if d.runningJobs() > 0 {
 		return errors.New("a job started during the download; trying again later")
 	}
-	if err := d.o.Updater.Apply(dctx, bin, exe, rel.Version); err != nil {
-		return err
-	}
+	// The marker goes down before the swap: without it a new binary that
+	// fails to start is never rolled back, so no marker means no update
+	// (review r1 partB sol-F4). A marker left by a swap that never happened
+	// names another version, and the next start clears it as stale.
 	if err := d.guard.markPending(d.o.Version, rel.Version, d.o.Now()); err != nil {
-		d.log.Warn("pending-update marker not written; a bad update won't roll back on its own", "error", err)
+		return fmt.Errorf("not updating to %s: the pending-update marker that lets a bad update roll back was not written: %w", rel.Version, err)
+	}
+	if err := d.o.Updater.Apply(dctx, bin, exe, rel.Version); err != nil {
+		if cerr := d.guard.clearPending(); cerr != nil {
+			d.log.Warn("pending-update marker not cleared after a failed apply", "error", cerr)
+		}
+		return err
 	}
 	d.log.Info("update applied; exiting so the service manager starts the new binary", "version", rel.Version)
 	d.exitOnce.Do(func() {

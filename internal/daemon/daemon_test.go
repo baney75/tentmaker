@@ -427,6 +427,31 @@ func TestDaemonAutoUpdateRestarts(t *testing.T) {
 	}
 }
 
+// An update whose pending-update marker can't be written is not applied:
+// without the marker a bad binary would never roll back (review r1 partB
+// sol-F4).
+func TestDaemonAutoUpdateNeedsItsMarker(t *testing.T) {
+	r := newRig(t, func(c *config.Config) { c.Update.Auto = true; c.Mesh.Enabled = false })
+	// A non-empty directory where the marker goes: every write fails.
+	if err := os.MkdirAll(filepath.Join(r.paths.State, "update-pending.json", "x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	r.up.newer.Store(true)
+	r.start()
+	time.Sleep(time.Second)
+	if n := r.up.applied.Load(); n != 0 {
+		t.Fatalf("applied %d times with no rollback marker", n)
+	}
+	select {
+	case err := <-r.done:
+		t.Fatalf("the daemon exited (%v) for an update it could not guard", err)
+	default:
+	}
+	if err := r.stop(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func writeMarker(t *testing.T, r *rig, age time.Duration, to string) string {
 	t.Helper()
 	b, _ := json.Marshal(map[string]any{"from": "1.2.2", "to": to, "at": time.Now().Add(-age)})
