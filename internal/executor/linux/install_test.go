@@ -118,9 +118,8 @@ func TestInstall(t *testing.T) {
 	if read(filepath.Join(v.dir, "systemd", "user@1234.service.d", "50-tentmaker.conf")) != userManagerDropIn {
 		t.Error("manager drop-in")
 	}
-	if envd := read(filepath.Join(root, ".config", "environment.d", "10-tentmaker.conf")); !strings.Contains(envd, "XDG_CONFIG_HOME="+root+"/.config") ||
-		!strings.Contains(envd, "XDG_RUNTIME_DIR="+v.e.runtimeDir(testUID)+"\n") {
-		t.Errorf("environment.d: %q", envd)
+	if !strings.Contains(read(filepath.Join(root, ".config", "environment.d", "10-tentmaker.conf")), "XDG_CONFIG_HOME="+root+"/.config") {
+		t.Error("environment.d")
 	}
 	if !strings.Contains(read(filepath.Join(root, ".config", "containers", "containers.conf")), `cgroup_manager = "cgroupfs"`) {
 		t.Error("containers.conf does not pick the cgroupfs manager")

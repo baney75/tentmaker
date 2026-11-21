@@ -360,11 +360,8 @@ func Install(ctx context.Context, o Options) error {
 		return err
 	}
 	// Rootless podman refuses a ~/.config it doesn't own unless
-	// XDG_CONFIG_HOME names it; this sets it for the runner's manager. Its
-	// runtime dir is pinned too: a host's PAM environment (/etc/environment)
-	// can name another user's, and podman.service then fails.
-	envd := "# Written by tentmaker setup.\nXDG_CONFIG_HOME=" + filepath.Join(e.root, ".config") + "\n" +
-		"XDG_RUNTIME_DIR=" + e.runtimeDir(uid) + "\n"
+	// XDG_CONFIG_HOME names it; this sets it for the runner's manager.
+	envd := "# Written by tentmaker setup.\nXDG_CONFIG_HOME=" + filepath.Join(e.root, ".config") + "\n"
 	if err := writeRoot(h, filepath.Join(e.root, ".config", "environment.d", "10-tentmaker.conf"), []byte(envd), 0o644); err != nil {
 		return err
 	}

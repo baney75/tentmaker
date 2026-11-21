@@ -189,6 +189,11 @@ jobs:
       - name: setup
         id: setup
         run: |
+          # This image's /etc/environment names the runner user's XDG dirs
+          # (/run/user/1001, /home/runner/.config); PAM hands them to every
+          # user manager, tentmaker-runner's too, and its podman.service then
+          # fails. A normal host sets neither there.
+          sudo sed -i '/^XDG_RUNTIME_DIR=/d; /^XDG_CONFIG_HOME=/d' /etc/environment
           rc=0
           sudo tentmaker setup --yes --json --no-mesh --no-gh --memory 2GiB --boost-memory 4GiB >"$RUNNER_TEMP/setup.json" || rc=$?
           cat "$RUNNER_TEMP/setup.json"
