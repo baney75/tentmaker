@@ -180,6 +180,29 @@ setup`), idempotent and safe to rerun.
   CPU rate control and `KILL_ON_JOB_CLOSE`. Platforms: `windows/<arch>`. Linux jobs on Windows
   (WSL2) are roadmap, not v1.
 
+**Network isolation.** Linux and Windows jobs share the host's network stack, so Install fences
+the runner user off and every `Start` checks the fence first; no rules means no job (fail closed).
+Jobs may reach the internet, the DNS servers the host is configured with, and the source archive
+relay on 127.0.0.1:7434. Always blocked: the tailnet (100.64.0.0/10, fd7a:115c:a1e0::/48), link-local
+(169.254/16, fe80::/10), unique local (fc00::/7), loopback and this host's own addresses, and port
+7433 on any address. RFC 1918 (10/8, 172.16/12, 192.168/16) is blocked unless `[guards] allow_lan`.
+
+- Linux (`netrules.go`): nftables table `inet tentmaker`, an output hook that sends every packet
+  with `meta skuid tentmaker-runner` to a `runner` chain (accept relay and DNS, then reject).
+  `oifname "lo"` covers the host's own addresses. With no `nft`, the same rules as an iptables and
+  ip6tables `TENTMAKER` chain with an `--uid-owner` jump. Rootless podman's pasta and slirp4netns
+  run as the runner user, so container traffic matches too. The rules file lives in
+  `<lib>/net.nft` (or `net-iptables.sh`); `tentmaker-net.service` (oneshot, before
+  `network-pre.target` and `tentmaker.service`) loads it at boot.
+- Windows (`netrules.go`): Windows Firewall outbound rules in group "Tentmaker" with `LocalUser`
+  `D:(A;;CC;;;<runner SID>)`, made with the NetSecurity cmdlets through `API.PowerShell`. Block
+  rules beat allow rules, so the blocked ranges leave out 127.0.0.1 and any resolver inside them,
+  and those addresses get block rules for every port but the allowed one. Every rule's description
+  names the rules version, the runner SID and `allow_lan`; the check compares it, and fails when any
+  firewall profile is off.
+- macOS: the Softnet rules already cover all of it (Softnet's default drops non-global IPv4 and all
+  IPv6); `allow_lan` does nothing there.
+
 The runner's labels: `self-hosted`, `tentmaker`, `<os>` (`linux`, `macOS`, `Windows`), `<arch>`
 (`X64`, `ARM64`), `tm-<device>`, plus `config.Labels`. Workflows use
 `runs-on: [self-hosted, tentmaker, linux]`.
@@ -407,6 +430,7 @@ section is rewritten.
 - `SetPoolLimit` is a no-op on macOS and Windows.
 - Linux and Windows keep a copy of the tentmaker binary for check jobs. Setup writes it, and each check `Start` compares it with `Binary(platform)` (size, then sha256; equal pairs are remembered by size and mtime) and replaces it atomically when they differ, so an update never leaves check jobs on the old binary. Linux writes it root-owned 0755; Windows renames the old exe aside first (a running check may hold it) and deletes it once free. (internal/executor/guestbin)
 - The Windows runner password uses machine-scope DPAPI, protected by the file ACL (SYSTEM and Administrators).
+- Network rules are written at setup. A changed `allow_lan` takes effect only after `sudo tentmaker setup` runs again; until then the loaded rules don't match the config, and Linux (missing LAN rules) or Windows (description mismatch) refuses jobs. Rules stricter than the config pass.
 
 **mesh**
 

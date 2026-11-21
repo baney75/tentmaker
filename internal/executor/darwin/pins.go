@@ -34,10 +34,12 @@ const (
 )
 
 // Softnet rules from fleet-ci. Besides Softnet's default (globally routable
-// IPv4 only), block the tailnet, link-local and every connection to the
-// vmnet bridge gateway, which is this Mac. DHCP hands the gateway out as the
-// VM's resolver, so only its port 53 comes back. A rule with a port beats
-// one without.
+// IPv4 only, so RFC 1918, unique local and every IPv6 address are already
+// out), block the tailnet, link-local and every connection to the vmnet
+// bridge gateway, which is this Mac (the mesh port included). DHCP hands
+// the gateway out as the VM's resolver, so only its port 53 comes back. A
+// rule with a port beats one without. [guards] allow_lan has no effect
+// here: a macOS guest never reaches the LAN.
 const (
 	SoftnetBlock = "100.64.0.0/10,169.254.0.0/16,out @host"
 	SoftnetAllow = "out proto udp @host port 53,out proto tcp @host port 53"

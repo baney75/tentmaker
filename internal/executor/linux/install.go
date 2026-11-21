@@ -70,6 +70,9 @@ func (e *Executor) Preflight(ctx context.Context) []core.Problem {
 		if _, err := os.Stat(filepath.Join(e.runtimeDir(uid), "podman", "podman.sock")); err != nil {
 			add("podman socket", "the rootless podman socket of "+User+" is not up", setup)
 		}
+		for _, p := range e.netProblems(ctx, uid) {
+			add("network", p, setup)
+		}
 	}
 	for _, f := range []string{filepath.Join(e.template(), "run.sh"), e.jobScript(), filepath.Join(e.shimDir(), "docker"), e.guestBinary(), e.baselinePath(), filepath.Join(e.p.Systemd, Slice)} {
 		if _, err := os.Stat(f); err != nil {
@@ -363,6 +366,9 @@ func Install(ctx context.Context, o Options) error {
 	if err := run(Cmd{Path: "systemctl", Args: []string{"daemon-reload"}}); err != nil {
 		return err
 	}
+	if err := e.installNet(ctx, uid); err != nil {
+		return err
+	}
 	if e.onWSL() {
 		if err := run(Cmd{Path: "systemctl", Args: []string{"enable", "--now", "tentmaker-rshared.service"}}); err != nil {
 			return err
@@ -510,6 +516,9 @@ func Uninstall(ctx context.Context, o Options, purge bool) error {
 		os.Remove(dropDir) // only if empty
 	}
 	note(rmIfExists(filepath.Join(e.p.Systemd, Slice)))
+	for _, err := range e.uninstallNet(ctx) {
+		note(err)
+	}
 	note(os.RemoveAll(e.p.Lib))
 	if entries, err := os.ReadDir(e.jobsDir()); err == nil {
 		for _, ent := range entries {

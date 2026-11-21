@@ -28,11 +28,11 @@ func forHost(goos, goarch string, cfg config.Config, binary func(core.Platform) 
 	var e core.Executor
 	switch goos {
 	case "linux":
-		e = linux.New(linux.Options{StateDir: cfg.StateDir, CacheDir: cfg.CacheDir, Log: log, Binary: binary, Arch: ghArch(goarch)})
+		e = linux.New(linux.Options{StateDir: cfg.StateDir, CacheDir: cfg.CacheDir, Log: log, Binary: binary, Arch: ghArch(goarch), AllowLAN: cfg.Guards.AllowLAN})
 	case "darwin":
 		e = darwin.New(darwin.Options{StateDir: cfg.StateDir, CacheDir: cfg.CacheDir, Log: log, Binary: binary, HostArch: goarch})
 	case "windows":
-		e = windows.New(windows.Options{StateDir: cfg.StateDir, CacheDir: cfg.CacheDir, Log: log, Binary: binary, Arch: ghArch(goarch)})
+		e = windows.New(windows.Options{StateDir: cfg.StateDir, CacheDir: cfg.CacheDir, Log: log, Binary: binary, Arch: ghArch(goarch), AllowLAN: cfg.Guards.AllowLAN})
 	default:
 		return nil, []core.Problem{{
 			Check: "executor",

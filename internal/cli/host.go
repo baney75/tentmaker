@@ -114,11 +114,11 @@ type InstallOptions struct {
 func installExecutors(ctx context.Context, goos string, cfg config.Config, binary func(core.Platform) (string, error), o InstallOptions) error {
 	switch goos {
 	case "linux":
-		return linux.Install(ctx, linux.Options{StateDir: cfg.StateDir, CacheDir: cfg.CacheDir, Binary: binary})
+		return linux.Install(ctx, linux.Options{StateDir: cfg.StateDir, CacheDir: cfg.CacheDir, Binary: binary, AllowLAN: cfg.Guards.AllowLAN})
 	case "darwin":
 		return darwin.Install(ctx, darwin.Options{StateDir: cfg.StateDir, CacheDir: cfg.CacheDir, Binary: binary, MacOSGuests: o.MacOSGuests})
 	case "windows":
-		return windows.Install(ctx, windows.Options{StateDir: cfg.StateDir, CacheDir: cfg.CacheDir, Binary: binary})
+		return windows.Install(ctx, windows.Options{StateDir: cfg.StateDir, CacheDir: cfg.CacheDir, Binary: binary, AllowLAN: cfg.Guards.AllowLAN})
 	}
 	return fmt.Errorf("Tentmaker has no sandbox for %s", goos)
 }

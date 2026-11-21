@@ -105,6 +105,9 @@ type API interface {
 	KillUserProcesses(sid string) (int, error)
 	DeleteUserTasks(name, sid string) (int, error)
 	Fetch(ctx context.Context, url, dst string) error
+	// PowerShell runs a script in Windows PowerShell and returns its
+	// output. Scripts hold no secrets.
+	PowerShell(ctx context.Context, script string) (string, error)
 }
 
 func httpFetch(ctx context.Context, url, dst string) error {

@@ -132,6 +132,10 @@ type Guards struct {
 	MinFreeMemory Size `toml:"min_free_memory" json:"min_free_memory"`
 	// MaxLoadPerCPU pauses CI while load average / CPUs exceeds it (0 = off).
 	MaxLoadPerCPU float64 `toml:"max_load_per_cpu" json:"max_load_per_cpu"`
+	// AllowLAN lets CI jobs reach private (RFC 1918) addresses. The tailnet,
+	// link-local, this host and the mesh port stay blocked either way. Linux
+	// and Windows only; rerun setup after changing it.
+	AllowLAN bool `toml:"allow_lan" json:"allow_lan"`
 }
 
 // Repo is one repository whose jobs this device serves.

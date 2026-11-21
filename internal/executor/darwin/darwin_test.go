@@ -949,3 +949,17 @@ func TestVMSize(t *testing.T) {
 		t.Fatal("linux asset")
 	}
 }
+
+// The guest's network matches the Linux and Windows rules: no tailnet, no
+// link-local, nothing on this Mac but DNS. Softnet's default already drops
+// RFC 1918 and IPv6.
+func TestSoftnetBlocksTheTailnetAndTheHost(t *testing.T) {
+	for _, r := range []string{"100.64.0.0/10", "169.254.0.0/16", "out @host"} {
+		if !strings.Contains(","+SoftnetBlock+",", ","+r+",") {
+			t.Errorf("SoftnetBlock %q lacks %s", SoftnetBlock, r)
+		}
+	}
+	if SoftnetAllow != "out proto udp @host port 53,out proto tcp @host port 53" {
+		t.Errorf("SoftnetAllow opens more than DNS on the host: %q", SoftnetAllow)
+	}
+}

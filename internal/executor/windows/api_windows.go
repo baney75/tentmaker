@@ -5,6 +5,7 @@ package windows
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -818,3 +819,40 @@ func (*OSAPI) DeleteUserTasks(name, sid string) (int, error) {
 
 // Fetch implements API.
 func (*OSAPI) Fetch(ctx context.Context, url, dst string) error { return httpFetch(ctx, url, dst) }
+
+// PowerShell implements API: Windows PowerShell (it has the NetSecurity
+// module) with the script as -EncodedCommand, two minutes at most. Errors
+// come back as plain text on stderr, not CLIXML.
+func (*OSAPI) PowerShell(ctx context.Context, script string) (string, error) {
+	sys, err := win.GetSystemDirectory()
+	if err != nil {
+		return "", err
+	}
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+	full := "$ProgressPreference = 'SilentlyContinue'\n$ErrorActionPreference = 'Stop'\ntry {\n" + script +
+		"\n} catch {\n[Console]::Error.WriteLine($_.ToString())\nexit 1\n}\n"
+	u := utf16.Encode([]rune(full))
+	b := make([]byte, 2*len(u))
+	for i, c := range u {
+		b[2*i], b[2*i+1] = byte(c), byte(c>>8)
+	}
+	cmd := exec.CommandContext(ctx, filepath.Join(sys, "WindowsPowerShell", "v1.0", "powershell.exe"),
+		"-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", base64.StdEncoding.EncodeToString(b))
+	cmd.WaitDelay = 10 * time.Second
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Run(); err != nil {
+		var msg []string
+		for _, l := range strings.Split(stderr.String(), "\n") {
+			if l = strings.TrimSpace(l); l != "" && !strings.HasPrefix(l, "#< CLIXML") && !strings.HasPrefix(l, "<Objs") {
+				msg = append(msg, l)
+			}
+		}
+		if ctx.Err() != nil {
+			err = ctx.Err()
+		}
+		return stdout.String(), fmt.Errorf("powershell: %v: %s", err, trunc(strings.Join(msg, " "), 1000))
+	}
+	return stdout.String(), nil
+}

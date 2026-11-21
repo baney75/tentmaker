@@ -55,7 +55,9 @@ type Options struct {
 	Getenv func(string) string
 	API    API
 	Pin    *Pin // overrides the pinned actions/runner (tests)
-	Sleep  func(time.Duration)
+	// AllowLAN lets jobs reach RFC 1918 addresses ([guards] allow_lan).
+	AllowLAN bool
+	Sleep    func(time.Duration)
 }
 
 // Executor is the windows-job executor.
@@ -264,6 +266,10 @@ func (e *Executor) Start(ctx context.Context, spec core.ExecSpec) error {
 	sid, err := e.api.UserSID(User)
 	if err != nil {
 		return fmt.Errorf("look up %s (run install): %w", User, err)
+	}
+	// Fail closed: no firewall rules for this user, no job.
+	if err := e.checkNet(ctx, sid); err != nil {
+		return fmt.Errorf("the network rules for CI jobs are not in force: %v; run tentmaker setup as an administrator", err)
 	}
 	pw, err := e.password()
 	if err != nil {

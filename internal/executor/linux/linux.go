@@ -60,6 +60,10 @@ type Paths struct {
 	RunUser           string // /run/user
 	PodmanSocketUnit  string // /usr/lib/systemd/user/podman.socket
 	DockerCLI         string // /usr/bin/docker, the real docker CLI behind the shim
+	ResolvConf        string // /etc/resolv.conf: the DNS servers jobs may query
+	// Nft, Iptables and Ip6tables are the firewall tools; empty means look
+	// them up in SystemPath.
+	Nft, Iptables, Ip6tables string
 }
 
 func (p Paths) withDefaults() Paths {
@@ -81,6 +85,7 @@ func (p Paths) withDefaults() Paths {
 	set(&p.RunUser, "/run/user")
 	set(&p.PodmanSocketUnit, "/usr/lib/systemd/user/podman.socket")
 	set(&p.DockerCLI, "/usr/bin/docker")
+	set(&p.ResolvConf, "/etc/resolv.conf")
 	return p
 }
 
@@ -98,8 +103,12 @@ type Options struct {
 	// KeepImages keeps podman images across Reset. The default wipes them,
 	// since the executor can't tell whether an untrusted job retagged one.
 	KeepImages bool
-	Host       Host
-	Paths      Paths
+	// AllowLAN lets jobs reach the private IPv4 ranges (RFC 1918), from
+	// guards.allow_lan. The tailnet, link-local, this host and the mesh port
+	// stay blocked.
+	AllowLAN bool
+	Host     Host
+	Paths    Paths
 	// Pin overrides the pinned actions/runner (tests).
 	Pin   *Pin
 	Sleep func(time.Duration)
@@ -261,6 +270,10 @@ func (e *Executor) Start(ctx context.Context, spec core.ExecSpec) (err error) {
 	uid, gid, err := e.ids()
 	if err != nil {
 		return err
+	}
+	// Fail closed: no job runs unless its traffic is confined.
+	if err := e.checkNet(ctx, uid); err != nil {
+		return fmt.Errorf("%v; run sudo tentmaker setup", err)
 	}
 	dir := e.jobDir(spec.Name)
 	if _, err := os.Lstat(dir); err == nil {

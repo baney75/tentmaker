@@ -30,17 +30,101 @@ type fakeHost struct {
 	chowns  map[string][2]int
 	fetches []string
 	fetch   func(url, dst string) error
+	// The firewall the fake keeps: the loaded nft script, the loaded
+	// iptables script, and the units systemctl enabled.
+	nft     string
+	ipt     string
+	enabled map[string]bool
 }
 
 func (f *fakeHost) Run(ctx context.Context, c Cmd) (Result, error) {
 	f.mu.Lock()
 	f.cmds = append(f.cmds, c)
 	respond := f.respond
+	res, handled, err := f.firewallLocked(c)
 	f.mu.Unlock()
+	if handled {
+		return res, err
+	}
 	if respond != nil {
 		return respond(c)
 	}
 	return Result{Code: 0}, nil
+}
+
+// firewallLocked plays nft, iptables, ip6tables and systemctl enable for
+// the network rules.
+func (f *fakeHost) firewallLocked(c Cmd) (Result, bool, error) {
+	a := strings.Join(c.Args, " ")
+	fail := func(msg string) (Result, bool, error) { return Result{Code: 1, Stderr: msg}, true, errors.New(msg) }
+	switch base := filepath.Base(c.Path); {
+	case base == "nft" && len(c.Args) == 2 && c.Args[0] == "-f":
+		b, err := os.ReadFile(c.Args[1])
+		if err != nil {
+			return fail(err.Error())
+		}
+		f.nft = string(b)
+		return Result{}, true, nil
+	case base == "nft" && a == "list table inet tentmaker":
+		if f.nft == "" {
+			return fail("Error: No such file or directory")
+		}
+		return Result{Stdout: f.nft}, true, nil
+	case base == "nft" && a == "list tables":
+		if f.nft == "" {
+			return Result{Stdout: "table inet filter\n"}, true, nil
+		}
+		return Result{Stdout: "table inet filter\ntable inet tentmaker\n"}, true, nil
+	case base == "nft" && a == "delete table inet tentmaker":
+		f.nft = ""
+		return Result{}, true, nil
+	case c.Path == "/bin/sh" && len(c.Args) == 1 && strings.HasSuffix(c.Args[0], "net-iptables.sh"):
+		b, err := os.ReadFile(c.Args[0])
+		if err != nil {
+			return fail(err.Error())
+		}
+		f.ipt = string(b)
+		return Result{}, true, nil
+	case base == "iptables" || base == "ip6tables":
+		if f.ipt == "" {
+			if strings.Contains(a, "-S OUTPUT") {
+				return Result{Stdout: "-P OUTPUT ACCEPT\n"}, true, nil
+			}
+			return fail("iptables: No chain/target/match by that name.")
+		}
+		switch {
+		case strings.Contains(a, "-S OUTPUT"):
+			return Result{Stdout: "-P OUTPUT ACCEPT\n-A OUTPUT -m owner --uid-owner 1234 -j TENTMAKER\n"}, true, nil
+		case strings.Contains(a, "-S TENTMAKER"):
+			var out []string
+			for _, l := range strings.Split(f.ipt, "\n") {
+				if i := strings.Index(l, "-A TENTMAKER "); i >= 0 && strings.Contains(l, "/"+base+"' ") {
+					out = append(out, l[i:])
+				}
+			}
+			return Result{Stdout: strings.Join(out, "\n") + "\n"}, true, nil
+		case strings.Contains(a, "-X TENTMAKER"):
+			if base == "ip6tables" {
+				f.ipt = ""
+			}
+		}
+		return Result{}, true, nil
+	case c.Path == "systemctl" && len(c.Args) == 2 && c.Args[0] == "enable":
+		if f.enabled == nil {
+			f.enabled = map[string]bool{}
+		}
+		f.enabled[c.Args[1]] = true
+		return Result{}, true, nil
+	case c.Path == "systemctl" && len(c.Args) == 2 && c.Args[0] == "disable":
+		delete(f.enabled, c.Args[1])
+		return Result{}, true, nil
+	case c.Path == "systemctl" && len(c.Args) == 2 && c.Args[0] == "is-enabled":
+		if f.enabled[c.Args[1]] {
+			return Result{Stdout: "enabled\n"}, true, nil
+		}
+		return fail("disabled")
+	}
+	return Result{}, false, nil
 }
 
 func (f *fakeHost) LookupUser(name string) (int, int, error) {
@@ -134,7 +218,16 @@ func newEnv(t *testing.T) *env {
 		RunUser:           filepath.Join(dir, "run-user"),
 		PodmanSocketUnit:  "/usr/lib/systemd/user/podman.socket",
 		DockerCLI:         filepath.Join(dir, "docker"),
+		ResolvConf:        filepath.Join(dir, "resolv.conf"),
+		Nft:               filepath.Join(dir, "sbin", "nft"),
+		Iptables:          filepath.Join(dir, "sbin", "iptables"),
+		Ip6tables:         filepath.Join(dir, "sbin", "ip6tables"),
 	}
+	must(t, os.MkdirAll(filepath.Join(dir, "sbin"), 0o755))
+	for _, tool := range []string{p.Nft, p.Iptables, p.Ip6tables} {
+		must(t, os.WriteFile(tool, []byte("#!/bin/sh\n"), 0o755))
+	}
+	must(t, os.WriteFile(p.ResolvConf, []byte("# managed\nnameserver 127.0.0.53\noptions edns0\n"), 0o644))
 	o := Options{
 		StateDir: filepath.Join(dir, "state"),
 		CacheDir: filepath.Join(dir, "cache"),
@@ -166,6 +259,13 @@ func (v *env) installed(t *testing.T) {
 	must(t, os.Symlink(tpl, filepath.Join(v.dir, "opt", "runner")))
 	must(t, os.MkdirAll(v.e.jobsDir(), 0o750))
 	must(t, os.MkdirAll(v.e.secretDir(), 0o700))
+	// The network rules, written and loaded.
+	rules := NftRules(v.e.policy(testUID))
+	must(t, os.MkdirAll(v.o.Paths.Lib, 0o755))
+	must(t, os.WriteFile(v.e.nftRules(), []byte(rules), 0o644))
+	v.f.mu.Lock()
+	v.f.nft = rules
+	v.f.mu.Unlock()
 }
 
 func must(t *testing.T, err error) {

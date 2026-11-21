@@ -61,6 +61,9 @@ func (e *Executor) Preflight(ctx context.Context) []core.Problem {
 			}
 		}
 	}
+	if err := e.checkNet(ctx, sid); err != nil {
+		add("windows-network", err.Error(), "turn Windows Firewall on for every profile, then "+install)
+	}
 	if pw, err := e.password(); err != nil {
 		add("windows-password", err.Error(), install)
 	} else {
@@ -135,6 +138,9 @@ func Install(ctx context.Context, o Options) error {
 	}
 	if err := e.api.SetDACL(e.libDir(), libACL(sid)); err != nil {
 		return fmt.Errorf("protect %s: %w", e.libDir(), err)
+	}
+	if err := e.installNet(ctx, sid); err != nil {
+		return err
 	}
 	if err := config.WriteAtomic(e.script(), []byte(jobRunnerPS1), 0o644); err != nil {
 		return err
@@ -335,6 +341,9 @@ func Uninstall(ctx context.Context, o Options, purge bool) error {
 		if err := e.removeAll(d); err != nil {
 			errs = append(errs, err)
 		}
+	}
+	if err := e.uninstallNet(ctx); err != nil {
+		errs = append(errs, err)
 	}
 	if !purge {
 		return errors.Join(errs...)

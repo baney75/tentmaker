@@ -87,11 +87,66 @@ type fakeAPI struct {
 	killed   int
 	tasks    int
 	free     uint64
+	// Windows Firewall: rule name -> "Action Description", profile -> on.
+	fw       map[string]string
+	profiles map[string]string
+	dns      []string
+	scripts  []string
 }
 
 func newFakeAPI() *fakeAPI {
 	return &fakeAPI{admin: true, users: map[string]string{}, rights: map[string][]string{},
-		hidden: map[string]bool{}, dacls: map[string][]ACE{}, free: 100 << 30}
+		hidden: map[string]bool{}, dacls: map[string][]ACE{}, free: 100 << 30,
+		fw: map[string]string{}, profiles: map[string]string{"Domain": "True", "Private": "True", "Public": "True"},
+		dns: []string{"168.63.129.16", "fe80::1%4", "192.168.1.1"}}
+}
+
+// PowerShell plays the firewall scripts netrules.go runs.
+func (f *fakeAPI) PowerShell(ctx context.Context, script string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.scripts = append(f.scripts, script)
+	first, _, _ := strings.Cut(script, "\n")
+	f.calls = append(f.calls, "PowerShell "+first)
+	switch first {
+	case "# tentmaker: DNS servers":
+		return strings.Join(f.dns, "\r\n") + "\r\n", nil
+	case "# tentmaker: install network rules":
+		clear(f.fw)
+		desc := ""
+		for _, l := range strings.Split(script, "\n") {
+			if v, ok := strings.CutPrefix(l, "$d = '"); ok {
+				desc = strings.ReplaceAll(strings.TrimSuffix(v, "'"), "''", "'")
+			}
+			if v, ok := strings.CutPrefix(l, "New-NetFirewallRule -Name '"); ok {
+				name, _, _ := strings.Cut(v, "'")
+				_, act, _ := strings.Cut(l, "-Action ")
+				act, _, _ = strings.Cut(act, " ")
+				f.fw[name] = act + " " + desc
+			}
+		}
+		return "", nil
+	case "# tentmaker: remove network rules":
+		clear(f.fw)
+		return "", nil
+	case "# tentmaker: check network rules":
+		var b strings.Builder
+		for _, p := range []string{"Domain", "Private", "Public"} {
+			if v, ok := f.profiles[p]; ok {
+				fmt.Fprintf(&b, "profile %s %s NotConfigured\r\n", p, v)
+			}
+		}
+		names := make([]string, 0, len(f.fw))
+		for n := range f.fw {
+			names = append(names, n)
+		}
+		slices.Sort(names)
+		for _, n := range names {
+			fmt.Fprintf(&b, "rule %s True Outbound %s\r\n", n, f.fw[n])
+		}
+		return b.String(), nil
+	}
+	return "", errors.New("fake PowerShell: unknown script " + first)
 }
 
 func (f *fakeAPI) rec(s string) {
