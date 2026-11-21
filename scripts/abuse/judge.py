@@ -38,6 +38,9 @@ LINUX = ["lan-global-v6", "lan-global-v6-new", "subnet-route-v4", "host-lan-v4",
          "podman-decoy-tailnet-v4", "podman-decoy-lan-v4", "podman-mesh-port-host-ip", "podman-loopback-other-port",
          "podman-hostnet-root", "podman-hostnet-subuid", "podman-hostnet-image-user", "podman-tailscaled-socket",
          "podman-unshare-tailscaled", "podman-unshare-user-unit"]
+# Windows only: host UDP services on loopback (Linux jobs have a loopback of
+# their own, in their network namespace).
+WINDOWS = ["loopback-udp", "loopback-v6-udp"]
 # From abuse-lan with allow_lan = true: the tailnet and this host stay shut.
 LAN = ["lan-decoy-tailnet-v4", "lan-mesh-port-host-ip", "lan-host-own-v4", "lan-host-own-v6", "lan-host-ip-other-port"]
 LAN_LINUX = ["lan-subnet-route-v4", "lan-mesh-port-lan", "lan-host-private-v4", "lan-host-lan-v4", "lan-host-global-v6"]
@@ -100,7 +103,9 @@ def main():
             problems.append("tentmaker/%s is %s: %s" % (job[k], st.get("state", "missing"), st.get("description", "")))
 
     main_log = logs[""]
-    for c in ("internet", "dns", "relay") + (("podman", "own-loopback-v4", "own-loopback-v6", "job-ipv6", "podman-unshare") if a.os == "linux" else ()):
+    own = ("own-loopback-v4", "own-loopback-v6")
+    for c in ("internet", "dns", "relay") + (own + ("podman", "job-ipv6", "podman-unshare") if a.os == "linux" else
+                                              own + ("own-loopback-udp-v4", "own-loopback-udp-v6")):
         if "CONTROL %s OK" % c not in main_log:
             problems.append("control %s failed: the job could not reach what it needs, so blocked attacks prove nothing" % c)
 
@@ -148,7 +153,7 @@ def main():
     got.update(harness)
 
     want = [n.replace("PRIV", "admin" if a.os == "windows" else "sudo") for n in MAIN]
-    want += (LINUX + LAN_LINUX if a.os == "linux" else []) + LAN + ["fork-bomb", "memory-limit"] + HARNESS
+    want += (LINUX + LAN_LINUX if a.os == "linux" else WINDOWS) + LAN + ["fork-bomb", "memory-limit"] + HARNESS
     entries, warnings = [], []
     for n in want:
         if n not in got:

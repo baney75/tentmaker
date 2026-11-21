@@ -191,20 +191,38 @@ func TestWFPFilters(t *testing.T) {
 		if f.SID != testSID {
 			t.Errorf("filter %s is not for the runner user", f.Description())
 		}
-		for _, a := range f.RemoteAddrs {
+		for _, a := range f.DstAddrs {
 			if a.Is6() != f.V6 || a.Zone() != "" {
 				t.Errorf("filter %s names %s", f.Description(), a)
 			}
 		}
+		// Nothing at the connect layers touches loopback traffic: the
+		// job's connections to its own listeners must pass there, since the
+		// connect side can't tell who listens (review r2 partS
+		// second-S2-F6). Only multicast and broadcast are cut at connect.
+		if !f.Accept && !f.AnyHost {
+			t.Errorf("a loopback filter at the connect layer: %s", f.Description())
+		}
+		if f.ToRunner && (!f.Accept || !f.Permit) {
+			t.Errorf("a listener condition on anything but an accept permit: %s", f.Description())
+		}
 		if f.Permit {
 			permits++
-			// Every permit is narrow (a protocol, a port and addresses)
-			// and weighed above the blocks.
-			if f.Protocol == 0 || f.RemotePort == 0 || len(f.RemoteAddrs) == 0 || f.Weight <= 1 {
-				t.Errorf("permit too wide: %s", f.Description())
+			if !f.Accept || f.Weight <= 1 || f.AnyHost {
+				t.Errorf("permit not at accept, or weighed at or below the blocks: %s", f.Description())
 			}
-			if f.RemotePort != 53 && (f.RemotePort != RelayPort || f.Protocol != 6 || f.V6 || !slices.Equal(f.RemoteAddrs, []netip.Addr{Loopback})) {
-				t.Errorf("permit for something but DNS and the relay: %s", f.Description())
+			switch {
+			case f.ToRunner:
+				// The job's own listeners: any port, protocol and address.
+				if f.Protocol != 0 || f.DstPort != 0 || len(f.DstAddrs) != 0 || len(f.DstPrefixes) != 0 {
+					t.Errorf("own-listener permit narrower than all the job's listeners: %s", f.Description())
+				}
+			case f.DstPort == 53:
+				if f.Protocol == 0 || len(f.DstAddrs) == 0 {
+					t.Errorf("DNS permit too wide: %s", f.Description())
+				}
+			case f.DstPort != RelayPort || f.Protocol != 6 || f.V6 || !slices.Equal(f.DstAddrs, []netip.Addr{Loopback}):
+				t.Errorf("permit for something but the job's listeners, DNS and the relay: %s", f.Description())
 			}
 			continue
 		}
@@ -215,35 +233,116 @@ func TestWFPFilters(t *testing.T) {
 			if f.V6 {
 				want = MulticastV6
 			}
-			if f.Protocol != 0 || f.RemotePort != 0 || len(f.RemoteAddrs) != 0 || !slices.Equal(f.RemotePrefixes, want) {
+			if f.Accept || f.Protocol != 0 || f.DstPort != 0 || len(f.DstAddrs) != 0 || !slices.Equal(f.DstPrefixes, want) {
 				t.Errorf("multicast block: %s", f.Description())
 			}
 			continue
 		}
-		// The loopback blocks take all of this host's traffic for the
-		// user, both families, no matter the address or port.
-		if f.Protocol != 0 || f.RemotePort != 0 || len(f.RemoteAddrs) != 0 || len(f.RemotePrefixes) != 0 {
+		// The host blocks take all of this host's traffic from the user,
+		// both families, no matter the address or port.
+		if f.Protocol != 0 || f.DstPort != 0 || len(f.DstAddrs) != 0 || len(f.DstPrefixes) != 0 {
 			t.Errorf("block narrower than all loopback: %s", f.Description())
 		}
 	}
 	for _, want := range []string{
-		"tentmaker wfp-v1 user " + testSID + ": block v4 any host weight 1 to 224.0.0.0/4 255.255.255.255/32",
-		"tentmaker wfp-v1 user " + testSID + ": block v6 any host weight 1 to ff00::/8",
+		"tentmaker wfp-v1 user " + testSID + ": permit accept v4 loopback weight 15 listener the same user",
+		"tentmaker wfp-v1 user " + testSID + ": permit accept v6 loopback weight 15 listener the same user",
+		"tentmaker wfp-v1 user " + testSID + ": permit accept v4 loopback weight 14 proto 6 port 7435 to 127.0.0.1",
+		"tentmaker wfp-v1 user " + testSID + ": permit accept v4 loopback weight 13 proto 17 port 53 to 168.63.129.16 192.0.2.53",
+		"tentmaker wfp-v1 user " + testSID + ": permit accept v6 loopback weight 13 proto 6 port 53 to ::1",
+		"tentmaker wfp-v1 user " + testSID + ": block connect v4 any host weight 1 to 224.0.0.0/4 255.255.255.255/32",
+		"tentmaker wfp-v1 user " + testSID + ": block connect v6 any host weight 1 to ff00::/8",
+		"tentmaker wfp-v1 user " + testSID + ": block accept v4 loopback weight 1",
+		"tentmaker wfp-v1 user " + testSID + ": block accept v6 loopback weight 1",
 	} {
-		if !slices.ContainsFunc(fs, func(f WFPFilter) bool { return f.Description() == want && !f.Permit }) {
+		if !slices.ContainsFunc(fs, func(f WFPFilter) bool { return f.Description() == want }) {
 			t.Errorf("no %q", want)
 		}
 	}
-	if blocks != 4 || permits != 5 {
+	if blocks != 4 || permits != 7 {
 		t.Errorf("%d blocks and %d permits:\n%v", blocks, permits, fs)
 	}
-	want := "tentmaker wfp-v1 user " + testSID + ": permit v4 loopback weight 14 proto 17 port 53 to 168.63.129.16 192.0.2.53"
-	if !slices.ContainsFunc(fs, func(f WFPFilter) bool { return f.Description() == want }) {
-		t.Errorf("no %q", want)
-	}
-	// No DNS servers: the relay and the blocks only.
-	if fs := WFPFilters(testSID, nil); len(fs) != 5 {
+	// No DNS servers: the job's listeners, the relay and the blocks only.
+	if fs := WFPFilters(testSID, nil); len(fs) != 7 {
 		t.Errorf("filters without DNS servers: %v", fs)
+	}
+}
+
+// wfpConn is one connection (or first datagram) as WFP classifies it.
+type wfpConn struct {
+	accept   bool // the listening side's classification; else the connecting side's
+	v6       bool
+	loopback bool
+	user     string // connect: the socket's user; accept: the remote (connecting) user
+	listener string // accept: the listening socket's user
+	proto    uint8
+	port     uint16 // the listening end's port
+	addr     netip.Addr
+}
+
+// wfpDecide plays WFP's arbitration in Tentmaker's sublayer: the matching
+// filter with the highest weight decides. It returns "permit", "block" or
+// "" (no filter matched: the sublayer has no say).
+func wfpDecide(fs []WFPFilter, c wfpConn) string {
+	best, act := -1, ""
+	for _, f := range fs {
+		ok := f.Accept == c.accept && f.V6 == c.v6 && f.SID == c.user && (f.AnyHost || c.loopback) &&
+			(!f.ToRunner || c.listener == f.SID) && (f.Protocol == 0 || f.Protocol == c.proto) &&
+			(f.DstPort == 0 || f.DstPort == c.port)
+		if ok && (len(f.DstAddrs) > 0 || len(f.DstPrefixes) > 0) {
+			ok = slices.Contains(f.DstAddrs, c.addr) || slices.ContainsFunc(f.DstPrefixes, func(p netip.Prefix) bool { return p.Contains(c.addr) })
+		}
+		if ok && int(f.Weight) > best {
+			best, act = int(f.Weight), "block"
+			if f.Permit {
+				act = "permit"
+			}
+		}
+	}
+	return act
+}
+
+// A job reaches its own listeners on 127.0.0.1, ::1 and the host's own
+// addresses (httptest, a test database, a Gradle daemon), the relay and
+// the DNS servers, and nothing else on this host (review r2 partS
+// second-S2-F6).
+func TestWFPFiltersKeepJobsOffHostServices(t *testing.T) {
+	const admin = "S-1-5-18"
+	dns := netip.MustParseAddr("192.0.2.53")
+	fs := WFPFilters(testSID, []netip.Addr{dns, netip.MustParseAddr("::1")})
+	v4, v6, own := netip.MustParseAddr("127.0.0.1"), netip.MustParseAddr("::1"), netip.MustParseAddr("192.0.2.77")
+	for _, c := range []struct {
+		name string
+		c    wfpConn
+		want string
+	}{
+		{"job connects on loopback", wfpConn{v6: false, loopback: true, user: testSID, proto: 6, port: 8766, addr: v4}, ""},
+		{"job connects on ::1", wfpConn{v6: true, loopback: true, user: testSID, proto: 6, port: 8766, addr: v6}, ""},
+		{"job to its own 127.0.0.1 listener", wfpConn{accept: true, loopback: true, user: testSID, listener: testSID, proto: 6, port: 41234, addr: v4}, "permit"},
+		{"job to its own ::1 listener", wfpConn{accept: true, v6: true, loopback: true, user: testSID, listener: testSID, proto: 6, port: 41234, addr: v6}, "permit"},
+		{"job to its own UDP socket", wfpConn{accept: true, loopback: true, user: testSID, listener: testSID, proto: 17, port: 41235, addr: v4}, "permit"},
+		{"job to its own listener on a host address", wfpConn{accept: true, loopback: true, user: testSID, listener: testSID, proto: 6, port: 8080, addr: own}, "permit"},
+		{"job to a host service on 127.0.0.1", wfpConn{accept: true, loopback: true, user: testSID, listener: admin, proto: 6, port: 8766, addr: v4}, "block"},
+		{"job to a host service on ::1", wfpConn{accept: true, v6: true, loopback: true, user: testSID, listener: admin, proto: 6, port: 8766, addr: v6}, "block"},
+		{"job to the mesh port", wfpConn{accept: true, loopback: true, user: testSID, listener: admin, proto: 6, port: 7433, addr: v4}, "block"},
+		{"job to the control API", wfpConn{accept: true, loopback: true, user: testSID, listener: admin, proto: 6, port: 7434, addr: v4}, "block"},
+		{"job to a host UDP service", wfpConn{accept: true, loopback: true, user: testSID, listener: admin, proto: 17, port: 8768, addr: v4}, "block"},
+		{"job to a host service on a host address", wfpConn{accept: true, loopback: true, user: testSID, listener: admin, proto: 6, port: 8767, addr: own}, "block"},
+		{"job to the relay", wfpConn{accept: true, loopback: true, user: testSID, listener: admin, proto: 6, port: RelayPort, addr: v4}, "permit"},
+		{"job to the relay port over UDP", wfpConn{accept: true, loopback: true, user: testSID, listener: admin, proto: 17, port: RelayPort, addr: v4}, "block"},
+		{"job to the relay port on ::1", wfpConn{accept: true, v6: true, loopback: true, user: testSID, listener: admin, proto: 6, port: RelayPort, addr: v6}, "block"},
+		{"job to the DNS server", wfpConn{accept: true, loopback: true, user: testSID, listener: admin, proto: 17, port: 53, addr: dns}, "permit"},
+		{"job to DNS on ::1", wfpConn{accept: true, v6: true, loopback: true, user: testSID, listener: admin, proto: 6, port: 53, addr: v6}, "permit"},
+		{"job to port 53 elsewhere on this host", wfpConn{accept: true, loopback: true, user: testSID, listener: admin, proto: 17, port: 53, addr: v4}, "block"},
+		{"host process to a host service", wfpConn{accept: true, loopback: true, user: admin, listener: admin, proto: 6, port: 8766, addr: v4}, ""},
+		{"job to multicast", wfpConn{user: testSID, proto: 17, port: 7777, addr: netip.MustParseAddr("239.77.77.77")}, "block"},
+		{"job to broadcast", wfpConn{user: testSID, proto: 17, port: 67, addr: netip.MustParseAddr("255.255.255.255")}, "block"},
+		{"job to IPv6 multicast", wfpConn{v6: true, user: testSID, proto: 17, port: 5353, addr: netip.MustParseAddr("ff02::fb")}, "block"},
+		{"job to the internet", wfpConn{user: testSID, proto: 6, port: 443, addr: netip.MustParseAddr("140.82.112.3")}, ""},
+	} {
+		if got := wfpDecide(fs, c.c); got != c.want {
+			t.Errorf("%s: %q, want %q", c.name, got, c.want)
+		}
 	}
 }
 
@@ -252,7 +351,7 @@ func TestCheckWFP(t *testing.T) {
 	good := func() []WFPState {
 		var out []WFPState
 		for _, f := range want {
-			out = append(out, WFPState{Key: f.Key, Description: f.Description(), V6: f.V6, Permit: f.Permit, Block: !f.Permit, Persistent: true, Hard: !f.Permit, Sublayer: true})
+			out = append(out, WFPState{Key: f.Key, Description: f.Description(), Accept: f.Accept, V6: f.V6, Permit: f.Permit, Block: !f.Permit, Persistent: true, Hard: !f.Permit, Sublayer: true})
 		}
 		return out
 	}
@@ -272,12 +371,14 @@ func TestCheckWFP(t *testing.T) {
 		{"not persistent", func(hs []WFPState) []WFPState { hs[0].Persistent = false; return hs }, true, "is not"},
 		{"permit for block", func(hs []WFPState) []WFPState { hs[len(hs)-1].Block, hs[len(hs)-1].Permit = false, true; return hs }, true, "is not"},
 		{"other sublayer", func(hs []WFPState) []WFPState { hs[0].Sublayer = false; return hs }, true, "is not"},
+		{"connect layer for accept", func(hs []WFPState) []WFPState { hs[0].Accept = false; return hs }, true, "is not"},
 		{"new DNS server", func(hs []WFPState) []WFPState {
-			hs[1].Description = strings.Replace(hs[1].Description, "192.0.2.53", "192.0.2.54", 1)
+			i := slices.IndexFunc(hs, func(h WFPState) bool { return strings.Contains(h.Description, "192.0.2.53") })
+			hs[i].Description = strings.Replace(hs[i].Description, "192.0.2.53", "192.0.2.54", 1)
 			return hs
 		}, true, "is not"},
 		{"extra", func(hs []WFPState) []WFPState {
-			return append(hs, WFPState{Key: wfpFilterKey(9), Description: hs[0].Description})
+			return append(hs, WFPState{Key: wfpFilterKey(wfpSlots - 1), Description: hs[0].Description})
 		}, true, "extra"},
 		{"another user", func(hs []WFPState) []WFPState {
 			hs[0].Description = strings.Replace(hs[0].Description, testSID, "S-1-5-21-9-9-9-1001", 1)
@@ -369,7 +470,7 @@ func TestNoFirewallRulesNoJob(t *testing.T) {
 		{"WFP filters removed", func(v *tenv) { clear(v.api.wfp) }, "WFP filters that keep CI jobs off this host are missing"},
 		// Stale filters, and WFP refuses the new ones: fail closed.
 		{"WFP refuses", func(v *tenv) {
-			delete(v.api.wfp, wfpFilterKey(5))
+			delete(v.api.wfp, wfpFilterKey(9))
 			v.api.wfpErr = errors.New("FwpmTransactionCommit0: timeout")
 		}, "add the WFP filters"},
 	} {
@@ -449,14 +550,14 @@ func TestStartRewritesStaleNetRules(t *testing.T) {
 	if !slices.ContainsFunc(steps, func(s string) bool { return strings.HasPrefix(s, "+Tentmaker-Block-Host1") }) {
 		t.Errorf("no hole rule for the new LAN DNS server: %v", steps)
 	}
-	if st, ok := v.api.wfp[wfpFilterKey(1)]; !ok || !strings.Contains(st.Description, "10.9.9.9") || strings.Contains(st.Description, "192.168.1.1") {
+	if st, ok := v.api.wfp[wfpFilterKey(3)]; !ok || !strings.Contains(st.Description, "10.9.9.9") || strings.Contains(st.Description, "192.168.1.1") {
 		t.Errorf("WFP DNS filter after Start: %+v", st)
 	}
 	must(t, v.e.checkNet(ctx, testSID))
 
 	for i, breakIt := range []func(){
 		func() { delete(v.api.fw, want[0]) },
-		func() { delete(v.api.wfp, wfpFilterKey(6)) },
+		func() { delete(v.api.wfp, wfpFilterKey(10)) },
 	} {
 		breakIt()
 		must(t, v.e.Start(ctx, spec(fmt.Sprintf("job-back%d", i), core.KindCheck)))

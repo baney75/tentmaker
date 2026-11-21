@@ -37,7 +37,8 @@ function UdpOk([string]$Addr, [int]$Port) {
         $u.Client.ReceiveTimeout = 4000
         $q = [byte[]](0x7a, 0x11, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 6, 103, 105, 116, 104, 117, 98, 3, 99, 111, 109, 0, 0, 1, 0, 1)
         [void]$u.Send($q, $q.Length, [System.Net.IPEndPoint]::new($ip, $Port))
-        $ep = [System.Net.IPEndPoint]::new([System.Net.IPAddress]::Any, 0)
+        $any = if ($ip.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetworkV6) { [System.Net.IPAddress]::IPv6Any } else { [System.Net.IPAddress]::Any }
+        $ep = [System.Net.IPEndPoint]::new($any, 0)
         $r = $u.Receive([ref]$ep)
         $u.Close()
         return $r.Length -gt 0
@@ -45,6 +46,52 @@ function UdpOk([string]$Addr, [int]$Port) {
 }
 function UdpReach([string]$Name, [string]$Addr, [int]$Port) {
     if (UdpOk $Addr $Port) { Say $Name SUCCEEDED "udp ${Addr}:$Port answered" } else { Say $Name BLOCKED }
+}
+# OwnTcp and OwnUdp: the job's own server on a loopback address answers the
+# job, as a test's server (httptest, a test database, a Gradle daemon) does
+# on GitHub's runners. Each listens on a free port, connects, and checks
+# bytes come back.
+function OwnTcp([string]$Addr) {
+    $l = $null; $c = $null; $a = $null
+    try {
+        $ip = [System.Net.IPAddress]::Parse($Addr)
+        $l = [System.Net.Sockets.TcpListener]::new($ip, 0)
+        $l.Start()
+        $c = [System.Net.Sockets.TcpClient]::new($ip.AddressFamily)
+        if (-not ($c.ConnectAsync($ip, $l.LocalEndpoint.Port).Wait(5000) -and $c.Connected)) { return 'connect timed out' }
+        $t = $l.AcceptTcpClientAsync()
+        if (-not $t.Wait(5000)) { return 'accept timed out' }
+        $a = $t.Result
+        $a.GetStream().Write([byte[]](116, 109, 10), 0, 3)
+        $s = $c.GetStream()
+        $s.ReadTimeout = 5000
+        $buf = [byte[]]::new(3)
+        $n = $s.Read($buf, 0, 3)
+        if ($n -ne 3) { return "read $n bytes" }
+        return ''
+    } catch { return $_.Exception.Message } finally {
+        foreach ($x in $a, $c) { if ($x) { $x.Close() } }
+        if ($l) { $l.Stop() }
+    }
+}
+function OwnUdp([string]$Addr) {
+    $srv = $null; $cl = $null
+    try {
+        $ip = [System.Net.IPAddress]::Parse($Addr)
+        $srv = [System.Net.Sockets.UdpClient]::new([System.Net.IPEndPoint]::new($ip, 0))
+        $srv.Client.ReceiveTimeout = 5000
+        $cl = [System.Net.Sockets.UdpClient]::new($ip.AddressFamily)
+        [void]$cl.Send([byte[]](116, 109, 10), 3, [System.Net.IPEndPoint]::new($ip, $srv.Client.LocalEndPoint.Port))
+        $ep = [System.Net.IPEndPoint]::new($ip, 0)
+        $r = $srv.Receive([ref]$ep)
+        if ($r.Length -ne 3) { return "got $($r.Length) bytes" }
+        return ''
+    } catch { return $_.Exception.Message } finally {
+        foreach ($x in $srv, $cl) { if ($x) { $x.Close() } }
+    }
+}
+function OwnLoopback([string]$Name, [string]$Why) {
+    if ($Why) { Write-Output "CONTROL $Name FAILED $Why" } else { Write-Output "CONTROL $Name OK" }
 }
 function HostIP {
     try {
@@ -159,6 +206,12 @@ Write-Output "tentmaker abuse: job dir $jobDir, user $([Security.Principal.Windo
 # Controls: a sandbox that blocks everything would pass every attack.
 if (HttpOk 'https://api.github.com/zen') { Write-Output 'CONTROL internet OK' } else { Write-Output 'CONTROL internet FAILED' }
 try { [System.Net.Dns]::GetHostAddresses('github.com') | Out-Null; Write-Output 'CONTROL dns OK' } catch { Write-Output 'CONTROL dns FAILED' }
+# The job's own loopback works, TCP and UDP, 127.0.0.1 and ::1. The host's
+# loopback services stay closed (loopback-other-port and the rest below).
+OwnLoopback own-loopback-v4 (OwnTcp '127.0.0.1')
+OwnLoopback own-loopback-v6 (OwnTcp '::1')
+OwnLoopback own-loopback-udp-v4 (OwnUdp '127.0.0.1')
+OwnLoopback own-loopback-udp-v6 (OwnUdp '::1')
 
 # Forge tokens and the control token.
 $got = ''
@@ -228,6 +281,9 @@ Reach loopback-v6-other-port 'http://[::1]:8766/'
 # A host service bound to every address ([::] and 0.0.0.0), by loopback.
 Reach loopback-wildcard 'http://127.0.0.1:8767/'
 Reach loopback-v6-wildcard 'http://[::1]:8767/'
+# A host UDP service on loopback (a DNS cache, a metrics agent).
+UdpReach loopback-udp '127.0.0.1' 8768
+UdpReach loopback-v6-udp '::1' 8768
 # tailscaled's local API on its named pipe: Windows lets only
 # administrators and the signed-in owner use it.
 try {
