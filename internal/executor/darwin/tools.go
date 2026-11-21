@@ -29,6 +29,7 @@ type Cmd struct {
 	Args      []string
 	Env       []string
 	Stdin     []byte
+	StdinFile string        // Run only: stdin is this file (Stdin must be nil)
 	Timeout   time.Duration // 0: DefaultTimeout; for Spawn, the process's whole lifetime
 	MaxOutput int
 }
@@ -76,6 +77,13 @@ func (OSTools) Run(ctx context.Context, c Cmd) (Result, error) {
 	cmd.Dir = "/"
 	if c.Stdin != nil {
 		cmd.Stdin = bytes.NewReader(c.Stdin)
+	} else if c.StdinFile != "" {
+		f, err := os.Open(c.StdinFile)
+		if err != nil {
+			return res, err
+		}
+		defer f.Close()
+		cmd.Stdin = f
 	}
 	limit := c.MaxOutput
 	if limit <= 0 {

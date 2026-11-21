@@ -260,7 +260,8 @@ func New(o Options) *Client                            // implements core.Status
   else (other `uses:`, `${{ }}` expressions outside env literals that can be resolved from `github.sha`,
   `github.ref_name`, `runner.os`, `matrix` with a single combination, `services`, `container`,
   job-level `if`) makes Plan skip the job with a plain reason. A skipped job gets no status.
-- **RunBundle** downloads the archive (sha256 not needed: the URL is the forge's own, over TLS)
+- **RunBundle** downloads the archive from the bundle's `ArchiveURL` (the worker's loopback relay,
+  or a `file://` absolute path when the darwin executor copied it into the VM; no other scheme)
   into a fresh dir, strips the top-level folder, runs each step with `bash --noprofile --norc -eo
   pipefail` (or the step's shell) in its working directory with env `CI=true`, `GITHUB_SHA`,
   `GITHUB_WORKSPACE`, `RUNNER_TEMP`, `RUNNER_OS`, `TENTMAKER=1`, finds tools for `Tool` steps on PATH
@@ -276,8 +277,23 @@ func New(o Options) *Client                            // implements core.Status
   sha, check, state, device and runner, to `<state>/checks/<owner>_<repo>-<sha12>-<job>.log` (mode
   0600, newest 200 kept), since the worker deletes the job dir when the job ends. A worker that goes silent for 2 minutes gets its
   pending statuses set to `error` ("device went offline") so they can be retried by a re-run.
-  The bundle carries an archive URL that may contain a short-lived token; it is a secret like a
-  JIT config.
+- **Source archive relay.** Forge tokens never leave the broker. The bundle the broker sends has an
+  `ArchiveRef` (32 random bytes, hex) and no URL or header. The broker keeps, in memory only, ref
+  -> (runner, granted device, forge, repo, sha) while that check is active and drops it when the
+  check ends. `Broker.FetchArchive(ctx, ref, device, w)` (core.ArchiveSource) serves it only to
+  the granted device, at most 3 times, by calling `StatusForge.Archive` itself and streaming the
+  download (redirects followed, the header sent only to the archive's own host, 10 min, 2 GiB).
+  A remote broker is reached over the mesh (`GET /v1/archive/<ref>`). The worker, for each check
+  offer, mints a relay id (32 random bytes, hex) bound to (source, ref, runner), expiring with
+  the job and dropped when the job ends or the worker restarts, and rewrites the bundle's
+  `ArchiveURL` to `http://127.0.0.1:7434/v1/relay/<id>` (the control API's address). The control
+  API serves `GET /v1/relay/<id>` on loopback without a token; an unknown or expired id is 404.
+  Linux and Windows jobs run on the host and fetch that URL directly. A Tart VM can't reach the
+  host, so the darwin executor downloads it on the host, pipes it in with `tart exec -i <vm> sh -c
+  'cat > /tmp/tentmaker-src.tar.gz'`, and rewrites `ArchiveURL` to
+  `file:///tmp/tentmaker-src.tar.gz`. A worker refuses a bundle that carries a header or no ref
+  (an older broker that sends the forge's URL), since the job would see its credentials. The
+  bundle is still a secret like a JIT config: the relay URL works for the job's life.
 
 ## Mesh (internal/mesh)
 
@@ -307,7 +323,10 @@ Peer API (HTTP on the tailnet address, `mesh.port`, default 7433). Every request
 address goes through `WhoIs`; only the same tailnet user (or `members`) is served, and only
 devices whose `/v1/hello` pool name matches. Endpoints: `GET /v1/hello` (device, pool, version,
 broker yes/no), `GET /v1/status`, `POST /v1/work` (core.WorkRequest -> core.WorkResponse),
-`POST /v1/claim`, `POST /v1/release`. Bodies are JSON, capped at 1 MiB, 10 s timeouts. Peers
+`POST /v1/claim`, `POST /v1/release`, `GET /v1/archive/<ref>` (a check's source archive, streamed
+from the broker to the device named in the `Tentmaker-Device` header; the broker checks that it
+granted the check to that device; 404 otherwise). Bodies are JSON, capped at 1 MiB, 10 s
+timeouts, except the archive stream (10 min, 2 GiB). Peers
 are rediscovered every 30 s; a peer failing 3 calls in a row is skipped for a minute.
 
 ## Updates and channels (internal/update, scripts/)
@@ -403,6 +422,7 @@ section is rewritten.
 - `StatusForge.PendingCommits(ctx, repo, branches...)` also returns the heads of `branches` (config `[[repos]] branches`, `repo add --branch`); a branch that doesn't exist is skipped. Branch heads, like the default branch, need no `authors` match: only people with push access move them.
 - The broker keeps each finished check's log tail under `<state>/checks` (newest 200). Before this, a failed `tentmaker/<job>` status pointed at nothing: the worker deletes the job dir and the tail was dropped after posting the status.
 - `CheckBundle.Ref` carries the branch.
+- `CheckBundle.ArchiveRef` replaces the forge URL and header the broker used to send (review finding: a check job could read the forge token from its bundle). `Header` stays in the struct only so a worker can recognize and refuse an older broker's bundle.
 - An empty `Platform.Arch` means any arch.
 - `ListDir` returns sorted entry names, and `ErrNotFound` for a missing folder.
 - GitLab `after_script` runs as a final continue-on-error step, not as an always-run step.

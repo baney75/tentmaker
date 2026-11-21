@@ -26,10 +26,14 @@ type WorkerOptions struct {
 	Executors []core.Executor
 	Budget    core.Budgeter
 	// Sources lists the brokers to ask, local broker first, then mesh brokers.
-	Sources  func() []core.WorkSource
-	StateDir string
-	Log      *slog.Logger
-	Now      func() time.Time
+	Sources func() []core.WorkSource
+	// RelayAddr is the control API's host:port, which serves the archive
+	// relay to check jobs (GET /v1/relay/<id>). Nil means DefaultRelayAddr;
+	// an empty answer means no relay, so check offers are declined.
+	RelayAddr func() string
+	StateDir  string
+	Log       *slog.Logger
+	Now       func() time.Time
 }
 
 // Worker is the device side of dispatch: it asks brokers for work and runs
@@ -58,6 +62,17 @@ type Worker struct {
 	warned       map[string]bool
 	errs         errorLog
 	lastSaved    []byte
+	lastTick     time.Time
+	relays       map[string]*relayEntry // relay id -> archive; memory only
+}
+
+// relayEntry lets one running check job fetch its source archive from the
+// broker that granted it. The random id is the only capability.
+type relayEntry struct {
+	source  core.ArchiveSource
+	ref     string
+	runner  string
+	expires time.Time
 }
 
 type execInfo struct {
@@ -134,6 +149,10 @@ func NewWorker(o WorkerOptions) *Worker {
 		limits:  core.Resources{MemoryBytes: int64(o.Config.Job.Memory), CPUs: o.Config.Job.CPUs},
 		sources: map[string]*sourceHealth{},
 		warned:  map[string]bool{},
+		relays:  map[string]*relayEntry{},
+	}
+	if w.o.RelayAddr == nil {
+		w.o.RelayAddr = func() string { return DefaultRelayAddr }
 	}
 	for _, ex := range o.Executors {
 		w.execs = append(w.execs, &execInfo{ex: ex, name: ex.Name()})
@@ -180,7 +199,13 @@ func (w *Worker) Tick(ctx context.Context) error {
 	w.maybeReset(ctx, now)
 	w.exchange(ctx, now, d, true)
 	w.pruneUnacked(now)
-	return w.save()
+	if err := w.save(); err != nil {
+		return err
+	}
+	w.mu.Lock()
+	w.lastTick = w.now()
+	w.mu.Unlock()
+	return nil
 }
 
 func (w *Worker) decide(ctx context.Context, now time.Time) core.Decision {
@@ -364,6 +389,7 @@ func (w *Worker) finish(ctx context.Context, e *execInfo, j *jobRec, why string)
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	w.dropRelaysLocked(j.Name)
 	for i, x := range w.st.Jobs {
 		if x == j {
 			w.st.Jobs = append(w.st.Jobs[:i], w.st.Jobs[i+1:]...)
@@ -663,7 +689,7 @@ func (w *Worker) exchange(ctx context.Context, now time.Time, d core.Decision, a
 				w.decline(name, off, "no room for it")
 				continue
 			}
-			if w.start(ctx, name, off) {
+			if w.start(ctx, s, off) {
 				started++
 			}
 		}
@@ -722,7 +748,8 @@ func (w *Worker) decline(source string, off core.WorkOffer, why string) {
 
 // start runs one offer. state.json is written before the runner exists, so
 // a crash can't lose track of it.
-func (w *Worker) start(ctx context.Context, source string, off core.WorkOffer) bool {
+func (w *Worker) start(ctx context.Context, src core.WorkSource, off core.WorkOffer) bool {
+	source := src.Name()
 	name := off.Grant.RunnerName
 	if !core.NamePattern.MatchString(name) {
 		w.log.Warn("offer with a bad runner name refused", "source", source)
@@ -755,6 +782,14 @@ func (w *Worker) start(ctx context.Context, source string, off core.WorkOffer) b
 	if isCheckOffer(off) {
 		kind = core.KindCheck
 	}
+	if kind == core.KindCheck {
+		relayed, err := w.relayBundle(src, name, secret, now)
+		if err != nil {
+			w.decline(source, off, err.Error())
+			return false
+		}
+		secret = relayed
+	}
 	g := off.Grant
 	g.Secret = secret
 	tw := int(math.Floor(w.o.Config.Job.CPUs))
@@ -784,6 +819,7 @@ func (w *Worker) start(ctx context.Context, source string, off core.WorkOffer) b
 				break
 			}
 		}
+		w.dropRelaysLocked(name)
 		w.mu.Unlock()
 		w.stopAndClean(ctx, e, name)
 		w.mu.Lock()
@@ -965,6 +1001,8 @@ type WorkerStatus struct {
 	Sources        []SourceStatus   `json:"sources"`
 	PendingReports int              `json:"pending_reports"`
 	LastErrors     []ErrorEntry     `json:"last_errors"`
+	// LastTick is when a tick last finished and saved its state.
+	LastTick time.Time `json:"last_tick,omitempty"`
 }
 
 // SlotStatus is how many jobs may run, do run, and could start now.
@@ -1018,7 +1056,7 @@ func (w *Worker) Status() WorkerStatus {
 	s := WorkerStatus{Device: w.device, Labels: append([]string(nil), w.labels...), Decision: w.decision,
 		Paused: w.st.Paused, PauseReason: w.st.PauseReason, ShuttingDown: w.shutting, Dirty: w.st.Dirty,
 		LastReset: w.lastReset, LastErrors: w.errs.list(), Running: []RunningJob{}, Executors: []ExecutorStatus{},
-		Sources: []SourceStatus{}}
+		Sources: []SourceStatus{}, LastTick: w.lastTick}
 	s.Slots = SlotStatus{Total: w.decision.Slots, Used: len(w.st.Jobs), Free: w.freeLocked(w.decision, now)}
 	for _, j := range w.st.Jobs {
 		s.Running = append(s.Running, RunningJob{Name: j.Name, Source: j.Source, Kind: j.Kind, Repo: j.Repo, Job: j.Job,

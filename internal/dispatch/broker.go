@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -30,7 +31,10 @@ type BrokerOptions struct {
 	// the skipped list). Checks-mode repos need it.
 	Planner func(workflowPath string, src []byte, forge string) ([]core.CheckJob, error)
 	// Claimer coordinates claims with other brokers (nil = none).
-	Claimer  core.Claimer
+	Claimer core.Claimer
+	// HTTP fetches source archives for the relay. Nil: a client with dial,
+	// TLS and header timeouts; ArchiveTimeout bounds each fetch.
+	HTTP     *http.Client
 	StateDir string
 	Log      *slog.Logger
 	Now      func() time.Time
@@ -55,7 +59,8 @@ type Broker struct {
 	devices   map[string]*deviceRec
 	posts     []*statusPost
 	plans     map[string][]core.CheckJob
-	noted     map[string]string // job or commit key -> refusal already logged
+	archives  map[string]*archiveRec // archive ref -> active check; memory only
+	noted     map[string]string      // job or commit key -> refusal already logged
 	errs      errorLog
 	closed    bool
 	lastSaved []byte
@@ -171,16 +176,17 @@ func NewBroker(o BrokerOptions) *Broker {
 		name = "local"
 	}
 	b := &Broker{
-		o:       o,
-		log:     o.Log.With("component", "broker"),
-		now:     o.Now,
-		name:    name,
-		idleTTL: o.Config.Job.IdleTTL.D(),
-		infos:   map[string]*infoCache{},
-		grants:  map[string]*grantRec{},
-		devices: map[string]*deviceRec{},
-		plans:   map[string][]core.CheckJob{},
-		noted:   map[string]string{},
+		o:        o,
+		log:      o.Log.With("component", "broker"),
+		now:      o.Now,
+		name:     name,
+		idleTTL:  o.Config.Job.IdleTTL.D(),
+		infos:    map[string]*infoCache{},
+		grants:   map[string]*grantRec{},
+		devices:  map[string]*deviceRec{},
+		plans:    map[string][]core.CheckJob{},
+		archives: map[string]*archiveRec{},
+		noted:    map[string]string{},
 	}
 	if b.idleTTL <= 0 {
 		b.idleTTL = 90 * time.Second
@@ -329,6 +335,7 @@ func (b *Broker) Work(ctx context.Context, req core.WorkRequest) (core.WorkRespo
 	if req.Free > 0 && blocked == "" {
 		picks = b.pickLocked(req, now)
 	}
+	b.pruneArchivesLocked()
 	b.mu.Unlock()
 
 	b.saveCheckLogs(logs)
@@ -598,19 +605,21 @@ func (b *Broker) realizeCheck(ctx context.Context, req core.WorkRequest, rec *gr
 		drop("", nil)
 		return core.WorkOffer{}, false
 	}
-	fctx, cancel := context.WithTimeout(ctx, forgeTimeout)
-	url, header, err := sf.Archive(fctx, rec.Repo, rec.SHA)
-	cancel()
+	// The bundle names the archive by an opaque ref the granted device
+	// redeems through FetchArchive; no forge URL or token leaves the broker.
+	b.mu.Lock()
+	ref, err := b.addArchiveLocked(rec)
+	b.mu.Unlock()
 	if err != nil {
-		drop("archive", err)
+		drop("archive ref", err)
 		return core.WorkOffer{}, false
 	}
-	secret, err := json.Marshal(core.CheckBundle{Repo: rec.Repo, SHA: rec.SHA, Ref: rec.Ref, ArchiveURL: url, Header: header, Job: cj})
+	secret, err := json.Marshal(core.CheckBundle{Repo: rec.Repo, SHA: rec.SHA, Ref: rec.Ref, ArchiveRef: ref, Job: cj})
 	if err != nil {
 		drop("bundle", err)
 		return core.WorkOffer{}, false
 	}
-	fctx, cancel = context.WithTimeout(ctx, forgeTimeout)
+	fctx, cancel := context.WithTimeout(ctx, forgeTimeout)
 	err = sf.PostStatus(fctx, rec.Repo, rec.SHA, rec.Context, "pending", truncate("running on "+req.Device, 140), "")
 	cancel()
 	if err != nil {
@@ -738,6 +747,9 @@ func (b *Broker) Tick(ctx context.Context) error {
 	b.sweepSilent(ctx, now)
 	b.monitor(ctx, now)
 	b.flushPosts(ctx, now)
+	b.mu.Lock()
+	b.pruneArchivesLocked()
+	b.mu.Unlock()
 	return b.save()
 }
 
@@ -1430,6 +1442,7 @@ func (b *Broker) Shutdown(ctx context.Context) {
 	defer b.tickMu.Unlock()
 	b.mu.Lock()
 	b.closed = true
+	b.archives = map[string]*archiveRec{}
 	var idle []*grantRec
 	for _, rec := range b.grants {
 		if rec.Kind == core.KindRunner && !rec.pending && !rec.Busy && !rec.Ended && !rec.Settled {

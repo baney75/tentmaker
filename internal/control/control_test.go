@@ -3,6 +3,7 @@ package control
 import (
 	"context"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -12,6 +13,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/baney75/tentmaker/internal/core"
 )
 
 type fakeHandler struct {
@@ -25,6 +28,24 @@ func (f *fakeHandler) Status(ctx context.Context) (any, error) {
 	return map[string]string{"device": "box"}, nil
 }
 func (f *fakeHandler) Pool(ctx context.Context) (any, error) { return []string{"box"}, nil }
+
+// Relay serves one known relay id.
+func (f *fakeHandler) Relay(ctx context.Context, id string, w io.Writer) error {
+	switch id {
+	case relayOK:
+		_, err := w.Write([]byte("tarball"))
+		return err
+	case relayBroken:
+		return errors.New("the broker went away")
+	}
+	return core.ErrNotFound
+}
+
+var (
+	relayOK     = strings.Repeat("ab", 32)
+	relayBroken = strings.Repeat("cd", 32)
+)
+
 func (f *fakeHandler) Doctor(ctx context.Context) (any, error) {
 	return nil, errors.New("doctor broke")
 }
@@ -191,5 +212,41 @@ func TestClientNotRunning(t *testing.T) {
 	}
 	if err := c.Post(context.Background(), "/v1/reload", nil); !errors.Is(err, ErrNotRunning) {
 		t.Errorf("post got %v, want ErrNotRunning", err)
+	}
+}
+
+// The relay serves a running job's source on loopback with no token; any
+// id it doesn't know is 404.
+func TestRelay(t *testing.T) {
+	_, c, _ := start(t)
+	get := func(id string) (int, string) {
+		resp, err := http.Get("http://" + c.Addr + "/v1/relay/" + id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, string(b)
+	}
+	if code, body := get(relayOK); code != 200 || body != "tarball" {
+		t.Fatalf("relay: %d %q", code, body)
+	}
+	for _, id := range []string{strings.Repeat("00", 32), "nope", "..%2f..%2fv1%2fstatus"} {
+		if code, _ := get(id); code != http.StatusNotFound {
+			t.Errorf("unknown id %q: %d", id, code)
+		}
+	}
+	if code, _ := get(relayBroken); code != http.StatusBadGateway {
+		t.Errorf("broken relay: %d", code)
+	}
+	req, _ := http.NewRequest("GET", "http://"+c.Addr+"/v1/relay/"+relayOK, nil)
+	req.Host = "evil.example"
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("foreign host: %d", resp.StatusCode)
 	}
 }

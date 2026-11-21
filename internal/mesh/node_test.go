@@ -119,6 +119,27 @@ type fakeBroker struct {
 	mu     sync.Mutex
 	reqs   []core.WorkRequest
 	err    error
+	// archives makes the broker a core.ArchiveSource: ref -> archive.
+	archives map[string]fakeArchive
+}
+
+type fakeArchive struct {
+	device string
+	data   []byte
+	err    error // returned after data is written
+}
+
+func (b *fakeBroker) FetchArchive(ctx context.Context, ref, device string, w io.Writer) error {
+	b.mu.Lock()
+	a, ok := b.archives[ref]
+	b.mu.Unlock()
+	if !ok || a.device != device {
+		return core.ErrNotFound
+	}
+	if _, err := w.Write(a.data); err != nil {
+		return err
+	}
+	return a.err
 }
 
 func (b *fakeBroker) Name() string { return "fake" }

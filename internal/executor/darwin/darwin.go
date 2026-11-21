@@ -11,10 +11,13 @@ package darwin
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"math"
+	"net/netip"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -38,6 +41,7 @@ const MaxVMs = 2
 const (
 	guestBinary = "/tmp/tentmaker"
 	guestOut    = "/tmp/tentmaker-out"
+	guestSource = "/tmp/tentmaker-src.tar.gz"
 )
 
 // ErrBoot is a VM that failed to come up (clone, set, run, the guest agent,
@@ -279,8 +283,12 @@ func (e *Executor) Start(ctx context.Context, spec core.ExecSpec) error {
 		if _, err := e.t.Run(ctx, cp); err != nil {
 			return fail("copy", fmt.Errorf("copy the tentmaker binary into the VM: %v", err))
 		}
+		bundle, err := e.copySource(ctx, vm, spec.Name, spec.Grant.Secret)
+		if err != nil {
+			return fail("source", err)
+		}
 		c = e.tart(life, "exec", "-i", vm, guestBinary, "check-run", "--out", guestOut)
-		c.Stdin = append([]byte(nil), spec.Grant.Secret...)
+		c.Stdin = bundle
 	} else {
 		c = e.tart(life, "exec", "-i", vm, "/bin/bash", "-c", runnerScript(spec.Platform.OS, spec.TestWorkers))
 		c.Stdin = append(append([]byte(nil), spec.Grant.Secret...), '\n')
@@ -295,6 +303,55 @@ func (e *Executor) Start(ctx context.Context, spec core.ExecSpec) error {
 	go e.watch(j)
 	e.log.Info("job started", "executor", Name, "name", spec.Name, "kind", kind, "vm", vm, "platform", spec.Platform.String())
 	return nil
+}
+
+// copySource handles a check bundle whose archive URL is the worker's
+// loopback relay, which the VM can't reach: the host downloads it, pipes it
+// into the guest, and the bundle points at the guest file instead. Any
+// other bundle passes through unchanged.
+func (e *Executor) copySource(ctx context.Context, vm, name string, secret []byte) ([]byte, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(secret, &fields); err != nil {
+		return append([]byte(nil), secret...), nil // check-run reports it
+	}
+	var raw string
+	if err := json.Unmarshal(fields["archive_url"], &raw); err != nil || !loopbackURL(raw) {
+		return append([]byte(nil), secret...), nil
+	}
+	dir := filepath.Join(e.base, "src")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, err
+	}
+	host := filepath.Join(dir, name+".tar.gz")
+	defer os.Remove(host)
+	fctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	defer cancel()
+	if err := e.t.Fetch(fctx, raw, host); err != nil {
+		// The relay URL names a live capability; keep it out of logs.
+		return nil, fmt.Errorf("download the source from the worker's relay: %s", strings.ReplaceAll(err.Error(), raw, "[relay]"))
+	}
+	cp := e.tart(10*time.Minute, "exec", "-i", vm, "sh", "-c", "cat > "+guestSource)
+	cp.StdinFile = host
+	if _, err := e.t.Run(ctx, cp); err != nil {
+		return nil, fmt.Errorf("copy the source into the VM: %v", err)
+	}
+	u, _ := json.Marshal("file://" + guestSource)
+	fields["archive_url"] = u
+	return json.Marshal(fields)
+}
+
+// loopbackURL reports whether raw is an http URL on a loopback address.
+func loopbackURL(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "http" {
+		return false
+	}
+	h := u.Hostname()
+	if h == "localhost" {
+		return true
+	}
+	ip, err := netip.ParseAddr(h)
+	return err == nil && ip.IsLoopback()
 }
 
 func (e *Executor) liveLocked() int {

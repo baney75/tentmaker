@@ -350,3 +350,28 @@ func TestRunMissingWorkingDirectory(t *testing.T) {
 		t.Fatalf("res = %+v\n%s", res, log)
 	}
 }
+
+// The darwin executor copies the source into the VM and points the bundle at
+// it with a file:// URL.
+func TestRunFromFileURL(t *testing.T) {
+	data := tarGz(t, []entry{{name: "repo/hello.txt", body: "from a file\n"}})
+	src := filepath.Join(t.TempDir(), "tentmaker-src.tar.gz")
+	if err := os.WriteFile(src, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	u := "file://" + src
+	step := bash("x", "cat hello.txt")
+	out := filepath.Join(t.TempDir(), "job")
+	b := core.CheckBundle{Repo: "o/r", SHA: testSHA, ArchiveURL: u, Job: core.CheckJob{Name: "t", Steps: []core.CheckStep{step}}}
+	res := RunBundle(context.Background(), b, out, nil)
+	if res.State != "success" || !strings.Contains(res.LogTail, "from a file") {
+		t.Fatalf("res = %+v", res)
+	}
+	// Relative paths and other schemes stay refused.
+	for _, bad := range []string{"file://relative/x.tar.gz", "file:" + "x.tar.gz", "ftp://h/x.tar.gz"} {
+		b.ArchiveURL = bad
+		if res := RunBundle(context.Background(), b, filepath.Join(t.TempDir(), "job"), nil); res.State != "error" {
+			t.Errorf("%s: %+v", bad, res)
+		}
+	}
+}

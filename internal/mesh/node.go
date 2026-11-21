@@ -28,6 +28,11 @@ const (
 	whoisTimeout = 5 * time.Second
 	selfTTL      = 30 * time.Second
 	poolHeader   = "Tentmaker-Pool"
+	deviceHeader = "Tentmaker-Device"
+
+	// archiveTimeout bounds one source archive stream; maxArchive caps it.
+	archiveTimeout       = 10 * time.Minute
+	maxArchive     int64 = 2 << 30
 )
 
 // Options configures a Node.
@@ -38,8 +43,10 @@ type Options struct {
 	Members []string // extra tailnet login names to serve
 
 	Tailscale Tailscale
-	Broker    core.WorkSource // nil if this device has no credentials
-	Status    func() any      // this device's status for pool views
+	// Broker is nil if this device has no credentials. When it also
+	// implements core.ArchiveSource, /v1/archive/<ref> streams from it.
+	Broker core.WorkSource
+	Status func() any // this device's status for pool views
 
 	// Version and Platforms are reported by /v1/hello.
 	Version   string
@@ -56,6 +63,7 @@ type Node struct {
 	members map[string]bool
 	leases  *leases
 	client  *http.Client
+	stream  *http.Client // no overall timeout: archive streams
 
 	// Seams for tests.
 	now           func() time.Time
@@ -117,16 +125,19 @@ func New(o Options) *Node {
 		}
 		return "http://" + netip.AddrPortFrom(ip, uint16(n.o.Port)).String()
 	}
-	n.client = &http.Client{
-		Timeout: ioTimeout,
-		Transport: &http.Transport{
-			Proxy:                 nil, // tailnet traffic never goes through a proxy
-			DialContext:           (&net.Dialer{Timeout: 5 * time.Second}).DialContext,
-			ResponseHeaderTimeout: ioTimeout,
-			MaxIdleConnsPerHost:   4,
-			IdleConnTimeout:       90 * time.Second,
-		},
+	tr := &http.Transport{
+		Proxy:                 nil, // tailnet traffic never goes through a proxy
+		DialContext:           (&net.Dialer{Timeout: 5 * time.Second}).DialContext,
+		ResponseHeaderTimeout: ioTimeout,
+		MaxIdleConnsPerHost:   4,
+		IdleConnTimeout:       90 * time.Second,
 	}
+	n.client = &http.Client{Timeout: ioTimeout, Transport: tr}
+	// The broker fetches the archive from the forge before it answers, so
+	// the first byte may take longer than a JSON call.
+	str := tr.Clone()
+	str.ResponseHeaderTimeout = 2 * time.Minute
+	n.stream = &http.Client{Transport: str}
 	return n
 }
 
@@ -333,6 +344,10 @@ func (n *Node) handler() http.Handler {
 		case "/v1/release":
 			n.route(w, r, http.MethodPost, n.handleRelease)
 		default:
+			if ref, ok := strings.CutPrefix(r.URL.Path, "/v1/archive/"); ok {
+				n.route(w, r, http.MethodGet, func(w http.ResponseWriter, r *http.Request) { n.handleArchive(w, r, ref) })
+				return
+			}
 			writeErr(w, http.StatusNotFound, "no such endpoint")
 		}
 	})
@@ -447,6 +462,73 @@ func (n *Node) handleWork(w http.ResponseWriter, r *http.Request) {
 	}
 	n.log.Info("mesh: work", "device", req.Device, "free", req.Free, "offers", len(resp.Offers), "stop", len(resp.Stop), "results", len(req.Results))
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// handleArchive streams a check's source archive from this device's broker
+// to the device the check was granted to (the Tentmaker-Device header).
+// The broker checks the device and the ref; anything it doesn't have is 404.
+func (n *Node) handleArchive(w http.ResponseWriter, r *http.Request, ref string) {
+	as, ok := n.o.Broker.(core.ArchiveSource)
+	device := r.Header.Get(deviceHeader)
+	if !ok || n.o.Broker == nil || !validRef(ref) || device == "" || len(device) > 128 {
+		writeErr(w, http.StatusNotFound, "no such archive")
+		return
+	}
+	rc := http.NewResponseController(w)
+	_ = rc.SetWriteDeadline(time.Now().Add(archiveTimeout + time.Minute))
+	ctx, cancel := context.WithTimeout(r.Context(), archiveTimeout)
+	defer cancel()
+	lw := &lazyWriter{w: w}
+	err := as.FetchArchive(ctx, ref, device, lw)
+	switch {
+	case err == nil:
+		if !lw.wrote {
+			lw.start()
+		}
+	case lw.wrote:
+		// Mid-stream: cut the connection so the caller sees a broken
+		// stream, never a short archive that looks whole.
+		n.log.Warn("mesh: archive stream broke", "device", device, "err", err)
+		panic(http.ErrAbortHandler)
+	case errors.Is(err, core.ErrNotFound):
+		writeErr(w, http.StatusNotFound, "no such archive")
+	default:
+		n.log.Warn("mesh: archive failed", "device", device, "err", err)
+		writeErr(w, http.StatusBadGateway, "broker: "+err.Error())
+	}
+}
+
+// lazyWriter sends the 200 header on the first byte, so an error before
+// any byte can still answer with an error status.
+type lazyWriter struct {
+	w     http.ResponseWriter
+	wrote bool
+}
+
+func (l *lazyWriter) start() {
+	l.wrote = true
+	l.w.Header().Set("Content-Type", "application/gzip")
+	l.w.Header().Set("Cache-Control", "no-store")
+	l.w.WriteHeader(http.StatusOK)
+}
+
+func (l *lazyWriter) Write(p []byte) (int, error) {
+	if !l.wrote {
+		l.start()
+	}
+	return l.w.Write(p)
+}
+
+func validRef(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	for _, c := range s {
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 type claimRequest struct {

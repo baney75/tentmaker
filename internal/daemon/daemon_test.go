@@ -2,9 +2,12 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net"
+	"net/http"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -175,6 +178,7 @@ func (r *rig) start() {
 		Executable:  func() (string, error) { return "/usr/local/bin/tentmaker", nil },
 		UpdateEvery: 50 * time.Millisecond,
 		ReloadOnHUP: r.hup,
+		ArchiveHTTP: &http.Client{Transport: forgeArchives{r.forge}},
 	})
 	ctx, cancel := context.WithCancel(context.Background())
 	r.cancel = cancel
@@ -404,5 +408,56 @@ func TestDaemonAutoUpdateWaitsForJobs(t *testing.T) {
 	}
 	if err := r.stop(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// forgeArchives serves the fake forge's archive URLs, only with its token.
+type forgeArchives struct{ f *fakeforge.Forge }
+
+func (t forgeArchives) RoundTrip(r *http.Request) (*http.Response, error) {
+	code, body := http.StatusForbidden, "no"
+	if r.URL.Host == "forge.example" && r.Header.Get("Authorization") == "Bearer "+t.f.ArchiveToken() {
+		code, body = http.StatusOK, "tarball of "+r.URL.Path
+	}
+	return &http.Response{StatusCode: code, Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{}, Request: r}, nil
+}
+
+// A check job gets its source from the control API's relay, which streams
+// what the broker fetched with the forge token; the job never sees the token.
+func TestDaemonChecksRelay(t *testing.T) {
+	const sha = "0123456789abcdef0123456789abcdef01234567"
+	r := newRig(t, func(c *config.Config) {
+		c.Mesh.Enabled = false
+		c.Repos = []config.Repo{{Name: "baney75/app", Mode: "checks"}}
+	})
+	r.forge.SetFile("baney75/app", sha, ".github/workflows/ci.yml",
+		[]byte("on: push\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - run: make\n"))
+	r.forge.SetCommits("baney75/app", []core.Commit{{SHA: sha, Ref: "main"}})
+	r.start()
+	defer r.stop()
+	r.eventually("a check to start", func() bool { return len(r.ex.Running()) == 1 })
+	spec, ok := r.ex.Spec(r.ex.Running()[0])
+	if !ok {
+		t.Fatal("no spec")
+	}
+	if strings.Contains(string(spec.Grant.Secret), r.forge.ArchiveToken()) || strings.Contains(string(spec.Grant.Secret), "ghp_secret_test_token") {
+		t.Fatalf("the check bundle carries a forge token")
+	}
+	var b core.CheckBundle
+	if err := json.Unmarshal(spec.Grant.Secret, &b); err != nil {
+		t.Fatal(err)
+	}
+	want := "http://" + r.d.ControlAddress() + "/v1/relay/"
+	if !strings.HasPrefix(b.ArchiveURL, want) || b.Header != "" {
+		t.Fatalf("archive URL %q, want the control API relay %s", b.ArchiveURL, want)
+	}
+	resp, err := http.Get(b.ArchiveURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 200 || string(body) != "tarball of /baney75/app/archive/"+sha+".tar.gz" {
+		t.Fatalf("relay: %d %q", resp.StatusCode, body)
 	}
 }

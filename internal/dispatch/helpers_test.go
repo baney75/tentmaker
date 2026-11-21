@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -159,6 +161,15 @@ func (s *source) Work(ctx context.Context, req core.WorkRequest) (core.WorkRespo
 	return s.inner.Work(ctx, req)
 }
 
+// FetchArchive passes the relay through to the wrapped broker.
+func (s *source) FetchArchive(ctx context.Context, ref, device string, w io.Writer) error {
+	as, ok := s.inner.(core.ArchiveSource)
+	if !ok {
+		return core.ErrNotFound
+	}
+	return as.FetchArchive(ctx, ref, device, w)
+}
+
 func (s *source) setFail(err error) {
 	s.mu.Lock()
 	s.fail = err
@@ -223,11 +234,29 @@ func (r *rig) newBroker(cfg config.Config, dir string, c core.Claimer) *Broker {
 		StatusForges: map[string]core.StatusForge{"github": r.forge},
 		Planner:      r.planner.plan,
 		Claimer:      c,
+		HTTP:         &http.Client{Transport: forgeTransport{r.forge}},
 		StateDir:     dir,
 		Log:          r.log.With("broker", cfg.Device),
 		Now:          r.clk.Now,
 	})
 }
+
+// forgeTransport answers the fake forge's archive URLs: the tarball, only
+// with the fake's token in the URL and the header.
+type forgeTransport struct{ f *fakeforge.Forge }
+
+func (t forgeTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	code, body := http.StatusOK, archiveBytes(req.URL.Path)
+	if req.URL.Host != "forge.example" || req.URL.Query().Get("token") != t.f.ArchiveToken() ||
+		req.Header.Get("Authorization") != "Bearer "+t.f.ArchiveToken() {
+		code, body = http.StatusForbidden, "forbidden"
+	}
+	return &http.Response{StatusCode: code, Status: http.StatusText(code), Header: http.Header{},
+		Body: io.NopCloser(strings.NewReader(body)), ContentLength: int64(len(body)), Request: req}, nil
+}
+
+// archiveBytes is what the fake forge serves as the tarball at path.
+func archiveBytes(path string) string { return "tarball of " + path }
 
 // addWorker adds a worker with one fake executor and a budget of slots.
 func (r *rig) addWorker(name string, slots int, platforms ...core.Platform) *wrig {

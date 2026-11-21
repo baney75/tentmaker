@@ -377,6 +377,64 @@ func TestStartCheckLinuxGuest(t *testing.T) {
 	v.assertNoSecret(t)
 }
 
+// A check job's source comes from the worker's loopback relay, which a VM
+// can't reach: the host downloads it and pipes it into the guest, and the
+// job reads it from a file.
+func TestCheckSourceCopiedIntoGuest(t *testing.T) {
+	v := newTenv(t)
+	ctx := context.Background()
+	relay := "http://127.0.0.1:7434/v1/relay/" + strings.Repeat("ab", 32)
+	tarball := []byte("\x1f\x8b the source")
+	v.f.fetchBody = map[string][]byte{relay: tarball}
+	var copied []byte
+	var copyCmd Cmd
+	v.f.respond = func(c Cmd) (Result, bool, error) {
+		if c.StdinFile != "" {
+			copyCmd = c
+			b, err := os.ReadFile(c.StdinFile)
+			if err != nil {
+				return Result{Code: 1}, true, err
+			}
+			copied = b
+			return Result{}, true, nil
+		}
+		return Result{}, false, nil
+	}
+	bundle := []byte(`{"repo":"o/r","sha":"abc","archive_url":"` + relay + `","ref":"main","job":{"name":"build","steps":[{"run":"make"}]}}`)
+	sp := spec("chk-src", core.KindCheck, "linux")
+	sp.Grant.Secret = bundle
+	must(t, v.e.Start(ctx, sp))
+	if !bytes.Equal(copied, tarball) {
+		t.Fatalf("copied %q into the guest", copied)
+	}
+	if strings.Join(copyCmd.Args, "|") != "exec|-i|tentmaker-chk-src|sh|-c|cat > /tmp/tentmaker-src.tar.gz" || copyCmd.Timeout <= 0 {
+		t.Fatalf("source copy %q (timeout %s)", copyCmd.Args, copyCmd.Timeout)
+	}
+	if _, err := os.Stat(copyCmd.StdinFile); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the host copy of the source was left behind: %v", err)
+	}
+	run := v.f.spawn(1)
+	var got core.CheckBundle
+	if err := json.Unmarshal(run.c.Stdin, &got); err != nil {
+		t.Fatalf("check-run stdin: %v", err)
+	}
+	if got.ArchiveURL != "file:///tmp/tentmaker-src.tar.gz" || strings.Contains(string(run.c.Stdin), "/v1/relay/") {
+		t.Fatalf("the job's archive URL is %q", got.ArchiveURL)
+	}
+	if got.Repo != "o/r" || got.SHA != "abc" || got.Ref != "main" || got.Job.Name != "build" {
+		t.Fatalf("the bundle lost fields: %+v", got)
+	}
+
+	// A relay that answers nothing fails the start at the source stage.
+	v = newTenv(t)
+	sp = spec("chk-nosrc", core.KindCheck, "linux")
+	sp.Grant.Secret = bundle
+	var be *ErrBoot
+	if err := v.e.Start(ctx, sp); !errors.As(err, &be) || be.Stage != "source" || strings.Contains(err.Error(), "/v1/relay/") {
+		t.Fatalf("no source: %v", err)
+	}
+}
+
 func TestCheckVMDiesFirst(t *testing.T) {
 	v := newTenv(t)
 	ctx := context.Background()

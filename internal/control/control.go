@@ -2,6 +2,8 @@
 // HTTP on 127.0.0.1:7434 only. GETs (status, pool, doctor) need nothing;
 // POSTs (pause, resume, reload) need the token from <state>/control.token,
 // which only root (or SYSTEM and Administrators on Windows) can read.
+// GET /v1/relay/<id> streams a running check job's source archive; the id is
+// 32 random bytes the worker minted for that job alone, so it needs no token.
 package control
 
 import (
@@ -23,6 +25,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/baney75/tentmaker/internal/core"
 )
 
 // DefaultAddr is where the daemon listens.
@@ -49,6 +53,15 @@ type Handler interface {
 	Resume(ctx context.Context) error
 	Reload(ctx context.Context) error
 }
+
+// Relayer is a Handler that also streams check jobs' source archives. An
+// unknown or expired id is core.ErrNotFound.
+type Relayer interface {
+	Relay(ctx context.Context, id string, w io.Writer) error
+}
+
+// relayTimeout bounds one relay stream.
+const relayTimeout = 11 * time.Minute
 
 // PauseRequest is the body of POST /v1/pause.
 type PauseRequest struct {
@@ -122,6 +135,7 @@ func NewServer(h Handler, token string, log *slog.Logger) *Server {
 	s.mux.HandleFunc("GET /v1/status", get(h.Status))
 	s.mux.HandleFunc("GET /v1/pool", get(h.Pool))
 	s.mux.HandleFunc("GET /v1/doctor", get(h.Doctor))
+	s.mux.HandleFunc("GET /v1/relay/{id}", s.relay)
 	s.mux.HandleFunc("POST /v1/pause", s.auth(func(w http.ResponseWriter, r *http.Request) {
 		var req PauseRequest
 		if err := json.NewDecoder(io.LimitReader(r.Body, maxBody)).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
@@ -155,6 +169,57 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.mux.ServeHTTP(w, r)
+}
+
+func (s *Server) relay(w http.ResponseWriter, r *http.Request) {
+	rl, ok := s.h.(Relayer)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "no such relay"})
+		return
+	}
+	// The server's write timeout is for JSON answers; an archive takes
+	// longer.
+	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(relayTimeout + time.Minute))
+	ctx, cancel := context.WithTimeout(r.Context(), relayTimeout)
+	defer cancel()
+	lw := &lazyWriter{w: w}
+	err := rl.Relay(ctx, r.PathValue("id"), lw)
+	switch {
+	case err == nil:
+		if !lw.wrote {
+			lw.start()
+		}
+	case lw.wrote:
+		// Cut the connection so the job sees a broken download, never a
+		// short archive that looks whole.
+		s.log.Warn("control: relay stream broke", "err", err)
+		panic(http.ErrAbortHandler)
+	case errors.Is(err, core.ErrNotFound):
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "no such relay"})
+	default:
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "the source archive is unavailable: " + err.Error()})
+	}
+}
+
+// lazyWriter sends the 200 header on the first byte, so an error before
+// any byte can still answer with an error status.
+type lazyWriter struct {
+	w     http.ResponseWriter
+	wrote bool
+}
+
+func (l *lazyWriter) start() {
+	l.wrote = true
+	l.w.Header().Set("Content-Type", "application/gzip")
+	l.w.Header().Set("Cache-Control", "no-store")
+	l.w.WriteHeader(http.StatusOK)
+}
+
+func (l *lazyWriter) Write(p []byte) (int, error) {
+	if !l.wrote {
+		l.start()
+	}
+	return l.w.Write(p)
 }
 
 func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {

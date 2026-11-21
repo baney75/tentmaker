@@ -134,14 +134,22 @@ func (r *runner) run(ctx context.Context) (state, desc string) {
 
 	_ = os.RemoveAll(r.src)
 	archive := filepath.Join(r.out, "source.tar.gz")
-	r.logf("tentmaker: downloading the source\n")
-	if err := download(jctx, newDownloadClient(), r.b.ArchiveURL, r.b.Header, archive); err != nil {
-		_ = os.Remove(archive)
-		r.logf("tentmaker: couldn't download the source: %v\n", err)
-		return "error", "couldn't download the source: " + err.Error()
+	if local, ok, err := localArchive(r.b.ArchiveURL); ok {
+		if err != nil {
+			r.logf("tentmaker: couldn't read the source: %v\n", err)
+			return "error", "couldn't read the source: " + err.Error()
+		}
+		archive = local
+	} else {
+		r.logf("tentmaker: downloading the source\n")
+		if err := download(jctx, newDownloadClient(), r.b.ArchiveURL, r.b.Header, archive); err != nil {
+			_ = os.Remove(archive)
+			r.logf("tentmaker: couldn't download the source: %v\n", err)
+			return "error", "couldn't download the source: " + err.Error()
+		}
+		defer os.Remove(archive)
 	}
 	err := extract(archive, r.src)
-	_ = os.Remove(archive)
 	if err != nil {
 		r.logf("tentmaker: couldn't unpack the source: %v\n", err)
 		return "error", "couldn't unpack the source: " + err.Error()

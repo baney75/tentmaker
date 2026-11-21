@@ -19,8 +19,9 @@ import (
 const failLimit = 3
 
 var (
-	_ core.Claimer    = (*Node)(nil)
-	_ core.WorkSource = (*remoteBroker)(nil)
+	_ core.Claimer       = (*Node)(nil)
+	_ core.WorkSource    = (*remoteBroker)(nil)
+	_ core.ArchiveSource = (*remoteBroker)(nil)
 )
 
 // peerState is one pool device this node has said hello to.
@@ -271,6 +272,49 @@ func (b *remoteBroker) Work(ctx context.Context, req core.WorkRequest) (core.Wor
 		resp.Offers[i].Secret = nil
 	}
 	return resp, nil
+}
+
+// FetchArchive implements core.ArchiveSource: GET /v1/archive/<ref> on the
+// broker device, as device. A 404 is core.ErrNotFound.
+func (b *remoteBroker) FetchArchive(ctx context.Context, ref, device string, w io.Writer) error {
+	if !validRef(ref) {
+		return core.ErrNotFound
+	}
+	ctx, cancel := context.WithTimeout(ctx, archiveTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, b.ref.base+"/v1/archive/"+ref, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set(poolHeader, b.n.o.Pool)
+	req.Header.Set(deviceHeader, device)
+	resp, err := b.n.stream.Do(req)
+	if err != nil {
+		b.n.record(b.ref.id, err, 0)
+		return fmt.Errorf("broker %s: archive: %w", b.ref.hello.Device, err)
+	}
+	defer resp.Body.Close()
+	switch resp.StatusCode {
+	case http.StatusOK:
+	case http.StatusNotFound:
+		return core.ErrNotFound
+	default:
+		var eb errorBody
+		_ = json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&eb)
+		msg := strings.TrimSpace(eb.Error)
+		if len(msg) > 200 {
+			msg = msg[:200]
+		}
+		return fmt.Errorf("broker %s: archive: %d %s", b.ref.hello.Device, resp.StatusCode, msg)
+	}
+	n, err := io.Copy(w, io.LimitReader(resp.Body, maxArchive+1))
+	if err != nil {
+		return fmt.Errorf("broker %s: archive stream broke: %w", b.ref.hello.Device, err)
+	}
+	if n > maxArchive {
+		return fmt.Errorf("broker %s: the archive is larger than 2 GiB", b.ref.hello.Device)
+	}
+	return nil
 }
 
 // claimParty is one lease table a claim goes through: this node's or a

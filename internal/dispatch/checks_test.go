@@ -1,6 +1,7 @@
 package dispatch
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -37,6 +38,16 @@ func bundleOf(t *testing.T, spec core.ExecSpec) core.CheckBundle {
 	return b
 }
 
+// relayID is the relay id in a bundle's loopback archive URL.
+func relayID(t *testing.T, b core.CheckBundle) string {
+	t.Helper()
+	const prefix = "http://" + DefaultRelayAddr + "/v1/relay/"
+	if !strings.HasPrefix(b.ArchiveURL, prefix) {
+		t.Fatalf("archive URL %q is not the loopback relay", b.ArchiveURL)
+	}
+	return strings.TrimPrefix(b.ArchiveURL, prefix)
+}
+
 func TestChecksModeEndToEnd(t *testing.T) {
 	r := newRig(t, checksRepo(repoSite))
 	w := r.addWorker("alpha", 8)
@@ -66,8 +77,18 @@ func TestChecksModeEndToEnd(t *testing.T) {
 			t.Fatalf("spec = %+v", spec)
 		}
 		b := bundleOf(t, spec)
-		if !strings.Contains(b.ArchiveURL, r.forge.ArchiveToken()) || b.Repo != repoSite || b.Job.Workflow != ciWorkflow {
+		if strings.Contains(string(spec.Grant.Secret), r.forge.ArchiveToken()) || b.Header != "" || b.ArchiveRef != "" ||
+			b.Repo != repoSite || b.Job.Workflow != ciWorkflow {
 			t.Fatalf("bundle = %+v", b)
+		}
+		// The job gets its source through the worker's loopback relay,
+		// which the broker serves from the forge.
+		var src bytes.Buffer
+		if err := w.w.Relay(bg, relayID(t, b), &src); err != nil {
+			t.Fatalf("relay: %v", err)
+		}
+		if want := archiveBytes("/" + repoSite + "/archive/" + b.SHA + ".tar.gz"); src.String() != want {
+			t.Fatalf("relay streamed %q, want %q", src.String(), want)
 		}
 		byName[n] = key{b.SHA, b.Job.Name}
 	}

@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -73,6 +75,9 @@ type Options struct {
 	Hostname    func() (string, error)
 	Executable  func() (string, error)
 	Now         func() time.Time
+	// ArchiveHTTP downloads check source archives from forges (nil: a
+	// client with dial and header timeouts; the fetch has its own limit).
+	ArchiveHTTP *http.Client
 
 	UpdateEvery     time.Duration
 	ShutdownTimeout time.Duration
@@ -209,6 +214,15 @@ func (b brokerProxy) Work(ctx context.Context, req core.WorkRequest) (core.WorkR
 		return core.WorkResponse{}, errors.New("this device has no broker")
 	}
 	return br.Work(ctx, req)
+}
+
+// FetchArchive serves a check's source archive to the mesh node.
+func (b brokerProxy) FetchArchive(ctx context.Context, ref, device string, w io.Writer) error {
+	br := b.d.currentBroker()
+	if br == nil {
+		return core.ErrNotFound
+	}
+	return br.FetchArchive(ctx, ref, device, w)
 }
 
 // Daemon is one running device.
@@ -445,6 +459,7 @@ func (d *Daemon) apply(cfg config.Config) {
 					return jobs, err
 				},
 				Claimer:  claimerProxy{d},
+				HTTP:     d.o.ArchiveHTTP,
 				StateDir: cfg.StateDir,
 				Log:      log,
 				Now:      d.o.Now,
@@ -518,6 +533,7 @@ func (d *Daemon) apply(cfg config.Config) {
 			StateDir:  cfg.StateDir,
 			Log:       log,
 			Now:       d.o.Now,
+			RelayAddr: d.ControlAddress,
 		})
 		wc := startComp(d.runCtx, log, "worker", w.Run)
 		d.mu.Lock()
@@ -902,3 +918,19 @@ func (h ctlHandler) Pause(ctx context.Context, reason string, dur time.Duration)
 }
 func (h ctlHandler) Resume(ctx context.Context) error { return h.d.Resume(ctx) }
 func (h ctlHandler) Reload(ctx context.Context) error { return h.d.Reload(ctx) }
+
+// Relay streams a running check job's source archive (control.Relayer).
+func (h ctlHandler) Relay(ctx context.Context, id string, w io.Writer) error {
+	h.d.mu.RLock()
+	wk := h.d.worker
+	h.d.mu.RUnlock()
+	if wk == nil {
+		return core.ErrNotFound
+	}
+	return wk.Relay(ctx, id, w)
+}
+
+var (
+	_ control.Relayer    = ctlHandler{}
+	_ core.ArchiveSource = brokerProxy{}
+)

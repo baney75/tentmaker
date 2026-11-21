@@ -9,6 +9,7 @@ package core
 import (
 	"context"
 	"errors"
+	"io"
 	"regexp"
 	"time"
 )
@@ -207,15 +208,31 @@ type CheckJob struct {
 	Timeout  time.Duration     `json:"timeout"`
 }
 
-// CheckBundle is what check-run receives on stdin. ArchiveURL may carry a
-// short-lived token, so the whole bundle is a secret.
+// CheckBundle is what check-run receives on stdin.
+//
+// A broker never puts a forge URL, a forge token or a download header in a
+// bundle: it sets ArchiveRef, an opaque reference the worker that was
+// granted the check redeems through the broker's ArchiveSource. Before the
+// job starts, the worker swaps ArchiveRef for ArchiveURL, a loopback relay
+// URL whose random id is the only capability (Darwin VMs get a file://
+// URL instead). The bundle is still handled as a secret.
 type CheckBundle struct {
 	Repo       string   `json:"repo"`
 	SHA        string   `json:"sha"`
-	ArchiveURL string   `json:"archive_url"`      // tar.gz of the repo at SHA
-	Header     string   `json:"header,omitempty"` // optional "Authorization: ..." for the download
-	Ref        string   `json:"ref,omitempty"`    // branch name, for github.ref_name
+	ArchiveURL string   `json:"archive_url,omitempty"` // tar.gz of the repo at SHA: http(s) or file://
+	Header     string   `json:"header,omitempty"`      // optional "Name: value" for the download; brokers never set it
+	ArchiveRef string   `json:"archive_ref,omitempty"` // opaque; the worker turns it into ArchiveURL
+	Ref        string   `json:"ref,omitempty"`         // branch name, for github.ref_name
 	Job        CheckJob `json:"job"`
+}
+
+// ArchiveSource streams a check's source archive. A broker implements it
+// (in-process, or over the mesh's GET /v1/archive/<ref>): it serves ref only
+// to the device the check was granted to, while the check is active, and
+// fetches from the forge itself, so the forge token never leaves the
+// broker. An unknown ref, another device or an ended check is ErrNotFound.
+type ArchiveSource interface {
+	FetchArchive(ctx context.Context, ref, device string, w io.Writer) error
 }
 
 // CheckResult is the outcome of one check job.

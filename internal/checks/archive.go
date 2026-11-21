@@ -38,6 +38,32 @@ func newDownloadClient() *http.Client {
 
 // download writes the archive at rawURL to dst. Errors never include the
 // URL or the header, since either may carry a token.
+// localArchive reports whether rawURL is a file:// URL and, if so, its
+// absolute path. The darwin executor copies the source into the VM and
+// points the bundle at it this way.
+func localArchive(rawURL string) (string, bool, error) {
+	if !strings.HasPrefix(strings.ToLower(rawURL), "file:") {
+		return "", false, nil
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Scheme != "file" || (u.Host != "" && u.Host != "localhost") || u.Opaque != "" {
+		return "", true, errors.New("the archive URL is not a file URL with an absolute path")
+	}
+	p := u.Path
+	if runtime.GOOS == "windows" && len(p) > 2 && p[0] == '/' && p[2] == ':' {
+		p = p[1:] // file:///C:/x
+	}
+	p = filepath.FromSlash(p)
+	if !filepath.IsAbs(p) {
+		return "", true, errors.New("the archive URL is not a file URL with an absolute path")
+	}
+	fi, err := os.Stat(p)
+	if err != nil || !fi.Mode().IsRegular() {
+		return "", true, errors.New("the source archive file is missing")
+	}
+	return p, true, nil
+}
+
 func download(ctx context.Context, client *http.Client, rawURL, header, dst string) error {
 	u, err := url.Parse(rawURL)
 	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {

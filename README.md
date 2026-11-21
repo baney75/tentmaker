@@ -210,7 +210,7 @@ Its read tools (`status`, `pool`, `doctor`) work as any user. Tools that change 
 - **macOS:** each job gets its own Tart VM cloned from a digest-pinned image, deleted afterwards. Softnet blocks the VM from your tailnet, link-local addresses and the Mac itself.
 - **Windows:** each job runs as the local standard user `tentmaker-runner` inside a Job Object with hard memory and CPU caps, in a fresh directory only that user can open.
 
-**Tokens stay on broker devices.** A forge token lives only on the devices you gave one to, in the OS secret store. Workers never see it.
+**Tokens stay on broker devices.** A forge token lives only on the devices you gave one to, in the OS secret store. Workers and jobs never see it. In checks mode the broker downloads the source archive from the forge itself and streams it to the worker it granted the check to; the job gets it from a one-job loopback URL on its own device (macOS VMs get a copy of the file), never a forge URL or token.
 
 **The tailnet is the identity.** The peer API listens only on tailnet addresses and serves only devices owned by the same tailnet user, or logins you list in `mesh.members`. Tagged devices are refused unless you list `tagged-devices`.
 
