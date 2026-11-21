@@ -98,7 +98,7 @@ func (a *app) cmdDevices(args []string) (any, error) {
 	ia.Repos = repos
 	host := pos[0]
 	if strings.HasPrefix(host, "-") || strings.ContainsAny(host, badHostChars) {
-		return nil, usage("use the device's tailnet name, like gigapc", "%q is not a host name", host)
+		return nil, usage("use the device's tailnet name, like desktop", "%q is not a host name", host)
 	}
 	a.out("installing Tentmaker on %s over Tailscale SSH...\n", host)
 	v, err := a.installOnDevice(a.ctx, host, ia)

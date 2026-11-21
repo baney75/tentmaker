@@ -1,6 +1,17 @@
-# Tentmaker
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="brand/wordmark-on-dark.svg">
+    <img src="brand/wordmark.svg" alt="Tentmaker" width="440">
+  </picture>
+</p>
 
-[![ci](https://github.com/baney75/tentmaker/actions/workflows/ci.yml/badge.svg)](https://github.com/baney75/tentmaker/actions/workflows/ci.yml)
+<p align="center"><strong>Your machines have a day job. Tentmaker gives them a second one.</strong></p>
+
+<p align="center">
+  <a href="https://github.com/baney75/tentmaker/actions/workflows/ci.yml"><img src="https://github.com/baney75/tentmaker/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
+  <a href="https://github.com/baney75/tentmaker/actions/workflows/e2e.yml"><img src="https://github.com/baney75/tentmaker/actions/workflows/e2e.yml/badge.svg" alt="End-to-end test status"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-A63D2A" alt="MIT license"></a>
+</p>
 
 Tentmaker runs your CI jobs on your own Linux, macOS and Windows machines, in throwaway sandboxes, using only the memory and CPU you give it.
 
