@@ -258,14 +258,16 @@ func New(o Options) *Client                            // implements core.Status
   checkout), cache actions (skipped), and setup actions mapped to `Tool` (setup-go, setup-node,
   setup-python, setup-java, mlugg/setup-zig, hustcer/setup-nu, dtolnay/rust-toolchain). Anything
   else (other `uses:`, `${{ }}` expressions outside env literals that can be resolved from `github.sha`,
-  `github.ref_name`, `runner.os`, `matrix` with a single combination, `services`, `container`,
-  job-level `if`) makes Plan skip the job with a plain reason. A skipped job gets no status.
+  `github.ref_name`, `runner.os` and `matrix`, `services`, `container`, job-level `if`) makes Plan
+  skip the job with a plain reason. A skipped job gets no status; the daemon logs the reason.
+  A matrix job becomes one check job per combination, as on GitHub.
 - **RunBundle** downloads the archive from the bundle's `ArchiveURL` (the worker's loopback relay,
   or a `file://` absolute path when the darwin executor copied it into the VM; no other scheme)
   into a fresh dir, strips the top-level folder, runs each step with `bash --noprofile --norc -eo
   pipefail` (or the step's shell) in its working directory with env `CI=true`, `GITHUB_SHA`,
   `GITHUB_WORKSPACE`, `RUNNER_TEMP`, `RUNNER_OS`, `TENTMAKER=1`, finds tools for `Tool` steps on PATH
-  or under `<state>/tools/<tool>-<version>/` (it does not download toolchains in v1; a missing tool
+  or under `<state>/tools/<tool>-<version>/` (the executor passes that folder as `TENTMAKER_TOOLS`;
+  it does not download toolchains in v1; a missing tool
   fails the job with the fix), stops at the first failing step unless continue-on-error, enforces
   the job timeout, writes `result.json` and `log.txt`.
 - **Broker in checks mode** polls `PendingCommits` per checks-mode repo (same-repo PR heads whose
@@ -435,6 +437,19 @@ section is rewritten.
 - An empty `Platform.Arch` means any arch.
 - `ListDir` returns sorted entry names, and `ErrNotFound` for a missing folder.
 - GitLab `after_script` runs as a final continue-on-error step, not as an always-run step.
+- A matrix job plans one check job per combination (at most 256), each with its own status
+  `tentmaker/<name>`. The name is the job's `name:` resolved for that combination, or
+  `<id> (<values>)`; a `name:` that doesn't use the matrix gets ` (<values>)` added so every
+  combination has its own context. A combination that can't run is skipped on its own. Before,
+  a matrix with more than one combination skipped the whole job, so a repo's usual
+  `test (${{ matrix.os }})` job never ran.
+- The daemon logs every job Plan skips ("check job skipped", workflow, job, why), since a skipped
+  job gets no status and otherwise left no trace.
+- The tools folder is `<state>/tools` (Linux `/var/lib/tentmaker/tools`, Windows
+  `%ProgramData%\Tentmaker\state\tools`). Setup creates it, root-owned and readable by the CI
+  user (Windows: Administrators write, the CI user reads), and the Linux and Windows executors
+  pass it to check jobs as `TENTMAKER_TOOLS`. Before, check-run fell back to a folder inside the
+  jobs directory that nothing created and that a reset would wipe.
 
 **release**
 
@@ -442,3 +457,9 @@ section is rewritten.
 - The dev release title is the exact dev version; `internal/update` reads it from there.
 - `update.New(Options)` builds an `Updater`; package-level `Check`, `Download`, `Apply` and `Rollback` wrap a default one.
 - install.sh test hooks: `TENTMAKER_DOWNLOAD_BASE` replaces the release URL (a URL or a local directory), `TENTMAKER_SUDO` replaces the sudo command.
+- Update test hooks, read by `tentmaker update` and the daemon (set them in the service's
+  environment): `TENTMAKER_UPDATE_API` replaces `https://api.github.com` as the release API
+  (`update.FromEnv`; assets are still verified against the release's `SHA256SUMS`), and
+  `TENTMAKER_UPDATE_EVERY` (a Go duration, at least 10 s) replaces the 6 h auto-update interval.
+  A build with `-tags tentmaker_badstart` has a daemon that exits right after the update guard,
+  for the upgrade scenario's rollback test. test/scenarios uses all three.

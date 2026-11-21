@@ -145,7 +145,7 @@ func DefaultEnv() *Env {
 			return verifyToken(ctx, nil, kind, base, tok)
 		},
 		Control:       &control.Client{Addr: control.DefaultAddr},
-		Updater:       update.Default,
+		Updater:       update.FromEnv(os.Getenv),
 		Tailscale:     mesh.NewTailscaleCLI(),
 		RemoteInstall: mesh.RemoteInstall,
 		Hostname:      os.Hostname,
