@@ -339,3 +339,72 @@ Then `sudo tentmaker setup` (wizard), or for agents:
 - No test touches the real host: OS calls go through small interfaces with fakes. Tests that
   need root, podman, tart or a real tailnet are behind the `live` build tag.
 - Fakes: `forge/fake`, `executor/fake`, a fake `Tailscale`, a fake power source.
+
+## Decisions made while building (v0.1)
+
+Recorded as built. Where a line and an earlier section disagree, this section wins until the earlier
+section is rewritten.
+
+**budget**
+
+- `(*Engine).WithLocation(loc)` sets the time zone schedule windows are read in.
+- `Decision.Profile` is always `everyday`, `boost` or `off`; a schedule window's name goes in `Reasons`.
+- A schedule window set to `everyday` runs even on battery when `on_battery = "off"`; only a `boost` window falls back to `on_battery`.
+- A schedule `boost` window skips `boost_needs_idle`.
+- A boost profile with zero memory reports `everyday`.
+- Linux power: an online USB or USB-C supply counts as AC; peripheral batteries (mouse, keyboard) are ignored; multiple batteries are combined by energy; with no Mains entry, the battery status decides.
+- macOS power: `pmset` "UPS Power" counts as battery.
+- Headless Linux idle is an error, so a device with `boost_needs_idle` and no desktop session never boosts.
+- Free disk is measured at the nearest existing parent of the path.
+
+**forges**
+
+- Gitea `Grant` returns `ErrUnsupported` (Gitea has only reusable registration tokens); Gitea repos use `mode = "checks"`.
+- The Forgejo grant secret is the forgejo-runner `.runner` file as JSON.
+- `forgejo.Options.Flavor` is `forgejo`, `gitea` or empty for auto (ask the server once).
+- Forgejo can't say which job a runner holds, so its runners report `JobID` 0.
+- `migrate`'s added concurrency group starts with `${{ github.workflow }}`.
+- Grants expire after 1 h (`github.GrantTTL`).
+- v0.1 runs Forgejo, Gitea and GitLab repos in checks mode only.
+
+**executors**
+
+- `ForHost` takes a `binary func(core.Platform) (string, error)` that returns the tentmaker binary for a sandbox's platform.
+- VM images are package constants; `Options.Images` overrides them.
+- Linux `Reset` wipes podman images unless `KeepImages`.
+- No cache promotion between jobs in v1.
+- The JIT config reaches the runner as `ACTIONS_RUNNER_INPUT_JITCONFIG`, set inside the sandbox by the job script from its stdin hand-off (the runner reads and clears it); never in the daemon's environment or argv.
+- `SetPoolLimit` is a no-op on macOS and Windows.
+- The Windows runner password uses machine-scope DPAPI, protected by the file ACL (SYSTEM and Administrators).
+
+**mesh**
+
+- `Options` has `Version` and `Platforms` for `/v1/hello` and pool views.
+- Served callers are the same tailnet user OR a login in `members`.
+- Tagged devices are served only when `members` contains `tagged-devices`.
+- Every endpoint but `/v1/hello` needs a matching `Tentmaker-Pool` header.
+- `Claim` walks devices in name order, so exactly one racing broker wins.
+- `RemoteInstall` saves install.sh to a temp file and runs it with `sudo -n`.
+- `Run` restarts its listener when the tailnet IPs change.
+
+**dispatch**
+
+- Check offers are marked with `Job.Event = "check"`.
+- A quarantine lifts on the first request after delivery that asks for work with none of that broker's runners running.
+- Boot backoff is per executor.
+- A public repo with `allow_public` also needs fork policy `approve_all` or `off`.
+- `Broker.Tick` runs one pass (poll due repos, watch runners, handle silent workers, post statuses, save state); `Broker.Shutdown` stops granting and deletes runners that haven't taken a job.
+
+**checks**
+
+- `CheckBundle.Ref` carries the branch.
+- An empty `Platform.Arch` means any arch.
+- `ListDir` returns sorted entry names, and `ErrNotFound` for a missing folder.
+- GitLab `after_script` runs as a final continue-on-error step, not as an always-run step.
+
+**release**
+
+- `tentmaker version --json` prints version, os, arch and channel.
+- The dev release title is the exact dev version; `internal/update` reads it from there.
+- `update.New(Options)` builds an `Updater`; package-level `Check`, `Download`, `Apply` and `Rollback` wrap a default one.
+- install.sh test hooks: `TENTMAKER_DOWNLOAD_BASE` replaces the release URL (a URL or a local directory), `TENTMAKER_SUDO` replaces the sudo command.
