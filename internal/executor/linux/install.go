@@ -39,6 +39,12 @@ func (e *Executor) Preflight(ctx context.Context) []core.Problem {
 	if _, err := e.h.Run(ctx, Cmd{Path: "podman", Args: []string{"--version"}, Timeout: 30 * time.Second}); err != nil {
 		add("podman", "podman is not installed or does not run", "install podman (rootless) from your distribution")
 	}
+	if err := e.netnsTools(); err != nil {
+		add("network namespace", err.Error(), "install passt (pasta) and util-linux from your distribution")
+	}
+	if len(e.jobResolvers()) == 0 {
+		add("network namespace", "no DNS server CI jobs can reach: "+e.p.ResolvConf+" names only loopback and "+e.p.ResolvedConf+" is missing", "point resolv.conf at a real DNS server, or run systemd-resolved")
+	}
 	if st, err := os.Stat(e.p.DockerCLI); err != nil || st.Mode()&0o111 == 0 {
 		add("docker CLI", e.p.DockerCLI+" is missing", "install the docker CLI only (docker-ce-cli or your distribution's docker client); the daemon is never used")
 	}
@@ -359,12 +365,18 @@ func Install(ctx context.Context, o Options) error {
 	if err := writeRoot(h, filepath.Join(e.root, ".config", "environment.d", "10-tentmaker.conf"), []byte(envd), 0o644); err != nil {
 		return err
 	}
+	if err := writeRoot(h, e.podmanConf(), []byte(podmanConfText), 0o644); err != nil {
+		return err
+	}
 	link := filepath.Join(e.root, ".config", "systemd", "user", "sockets.target.wants", "podman.socket")
 	if err := replaceSymlink(e.p.PodmanSocketUnit, link); err != nil {
 		return err
 	}
 
 	if err := run(Cmd{Path: "systemctl", Args: []string{"daemon-reload"}}); err != nil {
+		return err
+	}
+	if err := e.netnsTools(); err != nil {
 		return err
 	}
 	if err := e.installNet(ctx, uid); err != nil {
@@ -506,6 +518,7 @@ func Uninstall(ctx context.Context, o Options, purge bool) error {
 	}
 	// A pattern only matches loaded units, so this is a no-op when none run.
 	h.Run(ctx, Cmd{Path: "systemctl", Args: []string{"stop", UnitPrefix + "*.service"}, Timeout: 2 * time.Minute})
+	e.stopPodns(ctx)
 	if _, err := os.Stat(filepath.Join(e.p.Systemd, "tentmaker-rshared.service")); err == nil {
 		h.Run(ctx, Cmd{Path: "systemctl", Args: []string{"disable", "--now", "tentmaker-rshared.service"}})
 		note(rmIfExists(filepath.Join(e.p.Systemd, "tentmaker-rshared.service")))

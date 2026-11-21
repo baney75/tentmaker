@@ -31,6 +31,7 @@ type fakeProc struct {
 	mu         sync.Mutex
 	code       int
 	terminated int
+	memHit     bool
 }
 
 func newFakeProc() *fakeProc { return &fakeProc{done: make(chan struct{}), code: -1} }
@@ -50,6 +51,21 @@ func (p *fakeProc) exit(code int) {
 		p.mu.Unlock()
 		close(p.done)
 	})
+}
+
+func (p *fakeProc) MemoryLimitHit() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.memHit
+}
+
+// outOfMemory ends the job as the job object's memory limit does: an
+// allocation fails and the program exits on its own.
+func (p *fakeProc) outOfMemory(code int) {
+	p.mu.Lock()
+	p.memHit = true
+	p.mu.Unlock()
+	p.exit(code)
 }
 
 func (p *fakeProc) Terminate() error {
@@ -94,14 +110,20 @@ type fakeAPI struct {
 	fw       map[string]string
 	profiles map[string]string
 	dns      []string
-	scripts  []string
+	// WFP: Tentmaker's filters by key; wfpErr fails SetWFP.
+	wfp    map[GUID]WFPState
+	wfpErr error
+	// installSteps records, per install script, each rule added ("+name")
+	// and removed ("-name") in order.
+	installSteps [][]string
+	scripts      []string
 }
 
 func newFakeAPI() *fakeAPI {
 	return &fakeAPI{admin: true, users: map[string]string{}, rights: map[string][]string{},
 		hidden: map[string]bool{}, dacls: map[string][]ACE{}, owners: map[string]string{}, free: 100 << 30,
 		fw: map[string]string{}, profiles: map[string]string{"Domain": "True", "Private": "True", "Public": "True"},
-		dns: []string{"168.63.129.16", "fe80::1%4", "192.168.1.1"}}
+		dns: []string{"168.63.129.16", "fe80::1%4", "192.168.1.1"}, wfp: map[GUID]WFPState{}}
 }
 
 // PowerShell plays the firewall scripts netrules.go runs.
@@ -115,19 +137,38 @@ func (f *fakeAPI) PowerShell(ctx context.Context, script string) (string, error)
 	case "# tentmaker: DNS servers":
 		return strings.Join(f.dns, "\r\n") + "\r\n", nil
 	case "# tentmaker: install network rules":
-		clear(f.fw)
 		desc := ""
+		var want []string
+		var steps []string
 		for _, l := range strings.Split(script, "\n") {
 			if v, ok := strings.CutPrefix(l, "$d = '"); ok {
 				desc = strings.ReplaceAll(strings.TrimSuffix(v, "'"), "''", "'")
 			}
-			if v, ok := strings.CutPrefix(l, "New-NetFirewallRule -Name '"); ok {
+			if v, ok := strings.CutPrefix(l, "$want = "); ok {
+				want = fakeList(v)
+			}
+			if v, ok := strings.CutPrefix(l, "if (-not (Get-NetFirewallRule -Name '"); ok {
 				name, _, _ := strings.Cut(v, "'")
 				_, act, _ := strings.Cut(l, "-Action ")
 				act, _, _ = strings.Cut(act, " ")
-				f.fw[name] = act + " " + desc
+				if _, there := f.fw[name]; !there {
+					f.fw[name] = act + " " + desc
+					steps = append(steps, "+"+name)
+				}
+			}
+			if strings.HasPrefix(l, "Get-NetFirewallRule -Group 'Tentmaker'") && strings.Contains(l, "Remove-NetFirewallRule") {
+				if !strings.Contains(l, "Where-Object { $want -notcontains $_.Name }") {
+					return "", errors.New("fake PowerShell: an install script removes the whole group")
+				}
+				for n := range f.fw {
+					if !slices.Contains(want, n) {
+						delete(f.fw, n)
+						steps = append(steps, "-"+n)
+					}
+				}
 			}
 		}
+		f.installSteps = append(f.installSteps, steps)
 		return "", nil
 	case "# tentmaker: remove network rules":
 		clear(f.fw)
@@ -147,9 +188,58 @@ func (f *fakeAPI) PowerShell(ctx context.Context, script string) (string, error)
 		for _, n := range names {
 			fmt.Fprintf(&b, "rule %s True Outbound %s\r\n", n, f.fw[n])
 		}
+		for _, a := range f.dns {
+			fmt.Fprintf(&b, "dns %s\r\n", a)
+		}
 		return b.String(), nil
 	}
 	return "", errors.New("fake PowerShell: unknown script " + first)
+}
+
+// fakeList reads a PowerShell @('a', 'b') list.
+func fakeList(v string) []string {
+	v = strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(v), "@("), ")")
+	var out []string
+	for _, a := range strings.Split(v, ", ") {
+		out = append(out, strings.ReplaceAll(strings.Trim(a, "'"), "''", "'"))
+	}
+	return out
+}
+
+// SetWFP plays WFP: the filters replace Tentmaker's, all or nothing.
+func (f *fakeAPI) SetWFP(fs []WFPFilter) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, "SetWFP")
+	if f.wfpErr != nil {
+		return f.wfpErr
+	}
+	clear(f.wfp)
+	for _, x := range fs {
+		f.wfp[x.Key] = WFPState{Key: x.Key, Description: x.Description(), V6: x.V6, Permit: x.Permit, Block: !x.Permit,
+			Persistent: true, Hard: !x.Permit, Sublayer: true}
+	}
+	return nil
+}
+
+func (f *fakeAPI) WFPInstalled() ([]WFPState, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []WFPState
+	for _, k := range WFPKeys() {
+		if st, ok := f.wfp[k]; ok {
+			out = append(out, st)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeAPI) RemoveWFP() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, "RemoveWFP")
+	clear(f.wfp)
+	return nil
 }
 
 func (f *fakeAPI) rec(s string) {
@@ -395,6 +485,7 @@ func newEnv(t *testing.T) *tenv {
 		"DAEMON_ONLY":  "not-for-jobs",
 	}
 	o := Options{
+		BaseDir:    dir,
 		StateDir:   filepath.Join(dir, "state"),
 		CacheDir:   filepath.Join(dir, "cache"),
 		Log:        slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
@@ -507,6 +598,17 @@ func TestInstall(t *testing.T) {
 		if !slices.Equal(a.dacls[d], adminACL()) {
 			t.Fatalf("%s ACL = %v, want SYSTEM and Administrators only", d, a.dacls[d])
 		}
+	}
+	// Tentmaker's own folder and the state folder stop inheriting
+	// ProgramData's ACL, which lets any user add files: a job could plant
+	// a log or a state file the daemon reads. Users may only read them.
+	for _, d := range []string{v.dir, v.o.StateDir} {
+		if !slices.Equal(a.dacls[d], baseACL()) || slices.ContainsFunc(baseACL(), func(e ACE) bool { return e.SID == SIDUsers && e.Mask != AccessReadAndExecute }) {
+			t.Fatalf("%s ACL = %v, want Users read only", d, a.dacls[d])
+		}
+	}
+	if i, j := slices.Index(a.calls, "SetDACL "+v.dir), slices.Index(a.calls, "CreateUser "+User); i < 0 || i > j {
+		t.Fatalf("Tentmaker's folder was protected after the runner user existed: %v", a.calls)
 	}
 	if !slices.Equal(a.dacls[v.e.libDir()], libACL(testSID)) {
 		t.Fatalf("lib ACL = %v", a.dacls[v.e.libDir()])
@@ -932,6 +1034,48 @@ func TestCheckResult(t *testing.T) {
 	must(t, os.WriteFile(filepath.Join(out, "result.json"), []byte(`{"state":"passed"}`), 0o600))
 	if r, _ := v.e.CheckResult(ctx, "check-r-1"); r.State != "error" {
 		t.Fatalf("bad state accepted: %+v", r)
+	}
+}
+
+// TestCheckResultOutOfMemory: a job object's memory limit makes an
+// allocation fail, so check-run writes an ordinary step failure. The
+// status must say the job ran out of memory, as on Linux.
+func TestCheckResultOutOfMemory(t *testing.T) {
+	v := newEnv(t)
+	v.install()
+	ctx := context.Background()
+	must(t, v.e.Start(ctx, spec("check-oom-1", core.KindCheck)))
+	out := filepath.Join(v.e.jobDir("check-oom-1"), "out")
+	must(t, os.MkdirAll(out, 0o700))
+	must(t, os.WriteFile(filepath.Join(out, "result.json"), []byte(`{"state":"failure","description":"failed at step build, 2s"}`), 0o600))
+	v.api.proc(0).outOfMemory(1)
+	waitState(t, v.e, "check-oom-1", core.ExecExited)
+	r, err := v.e.CheckResult(ctx, "check-oom-1")
+	must(t, err)
+	if r.State != "failure" || r.Description != "ran out of memory (the job's limit is 4.0 GiB); failed at step build, 2s" {
+		t.Fatalf("result: %+v", r)
+	}
+
+	// A job that never hit the limit keeps check-run's own words.
+	must(t, v.e.Start(ctx, spec("check-ok-1", core.KindCheck)))
+	out = filepath.Join(v.e.jobDir("check-ok-1"), "out")
+	must(t, os.MkdirAll(out, 0o700))
+	must(t, os.WriteFile(filepath.Join(out, "result.json"), []byte(`{"state":"failure","description":"failed at step build, 2s"}`), 0o600))
+	v.api.proc(1).exit(1)
+	waitState(t, v.e, "check-ok-1", core.ExecExited)
+	if r, _ := v.e.CheckResult(ctx, "check-ok-1"); r.Description != "failed at step build, 2s" {
+		t.Fatalf("result: %+v", r)
+	}
+
+	// A job refused memory once that still passed keeps its pass.
+	must(t, v.e.Start(ctx, spec("check-pass-1", core.KindCheck)))
+	out = filepath.Join(v.e.jobDir("check-pass-1"), "out")
+	must(t, os.MkdirAll(out, 0o700))
+	must(t, os.WriteFile(filepath.Join(out, "result.json"), []byte(`{"state":"success","description":"ok"}`), 0o600))
+	v.api.proc(2).outOfMemory(0)
+	waitState(t, v.e, "check-pass-1", core.ExecExited)
+	if r, _ := v.e.CheckResult(ctx, "check-pass-1"); r.State != "success" || r.Description != "ok" {
+		t.Fatalf("result: %+v", r)
 	}
 }
 

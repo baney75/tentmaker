@@ -78,7 +78,10 @@ type ProcSpec struct {
 type Process interface {
 	Done() <-chan struct{} // closed once the main process exited and the job object was emptied
 	ExitCode() int         // valid once Done is closed
-	Terminate() error      // kills every process in the job object
+	// MemoryLimitHit says the job object refused memory past its limit.
+	// Valid once Done is closed.
+	MemoryLimitHit() bool
+	Terminate() error // kills every process in the job object
 }
 
 // API is everything the executor does to Windows. Tests swap in a fake.
@@ -113,6 +116,13 @@ type API interface {
 	// PowerShell runs a script in Windows PowerShell and returns its
 	// output. Scripts hold no secrets.
 	PowerShell(ctx context.Context, script string) (string, error)
+
+	// SetWFP makes fs Tentmaker's only WFP filters (wfp.go), with its
+	// provider and sublayer, in one transaction. WFPInstalled reads back
+	// the ones in place; RemoveWFP removes them all.
+	SetWFP(fs []WFPFilter) error
+	WFPInstalled() ([]WFPState, error)
+	RemoveWFP() error
 }
 
 func httpFetch(ctx context.Context, url, dst string) error {

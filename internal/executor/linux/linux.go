@@ -61,9 +61,14 @@ type Paths struct {
 	PodmanSocketUnit  string // /usr/lib/systemd/user/podman.socket
 	DockerCLI         string // /usr/bin/docker, the real docker CLI behind the shim
 	ResolvConf        string // /etc/resolv.conf: the DNS servers jobs may query
-	// Nft, Iptables and Ip6tables are the firewall tools; empty means look
-	// them up in SystemPath.
-	Nft, Iptables, Ip6tables string
+	IfInet6           string // /proc/net/if_inet6: finds the Tailscale interfaces
+	IPv6Route         string // /proc/net/ipv6_route: the on-link IPv6 prefixes (the LAN)
+	ResolvedConf      string // /run/systemd/resolve/resolv.conf: upstream DNS behind the 127.0.0.53 stub
+	Proc              string // /proc
+	// Nft, Iptables and Ip6tables are the firewall tools, Pasta and Unshare
+	// make a job's network namespace; empty means look them up in
+	// SystemPath.
+	Nft, Iptables, Ip6tables, Pasta, Unshare string
 }
 
 func (p Paths) withDefaults() Paths {
@@ -86,6 +91,10 @@ func (p Paths) withDefaults() Paths {
 	set(&p.PodmanSocketUnit, "/usr/lib/systemd/user/podman.socket")
 	set(&p.DockerCLI, "/usr/bin/docker")
 	set(&p.ResolvConf, "/etc/resolv.conf")
+	set(&p.IfInet6, "/proc/net/if_inet6")
+	set(&p.IPv6Route, "/proc/net/ipv6_route")
+	set(&p.ResolvedConf, "/run/systemd/resolve/resolv.conf")
+	set(&p.Proc, "/proc")
 	return p
 }
 
@@ -276,7 +285,7 @@ func (e *Executor) Start(ctx context.Context, spec core.ExecSpec) (err error) {
 		return err
 	}
 	// Fail closed: no job runs unless its traffic is confined.
-	if err := e.checkNet(ctx, uid); err != nil {
+	if err := e.ensureNet(ctx, uid); err != nil {
 		return fmt.Errorf("%v; run sudo tentmaker setup", err)
 	}
 	dir := e.jobDir(spec.Name)
@@ -287,6 +296,11 @@ func (e *Executor) Start(ctx context.Context, spec core.ExecSpec) (err error) {
 		os.RemoveAll(dir)
 		return err
 	}
+	netns, err := e.startNetns(ctx, spec.Name, uid, gid)
+	if err != nil {
+		os.RemoveAll(dir)
+		return fmt.Errorf("%v; no job runs without a network namespace of its own", err)
+	}
 	// The secret waits in a root-only 0600 file. systemd opens it as the
 	// unit's stdin before it drops to the runner user; it is gone as soon as
 	// systemd-run returns (Type=exec: the process has started by then).
@@ -295,12 +309,14 @@ func (e *Executor) Start(ctx context.Context, spec core.ExecSpec) (err error) {
 	}
 	sp := e.secretPath(spec.Name)
 	if err := config.WriteAtomic(sp, spec.Grant.Secret, 0o600); err != nil {
+		e.stopNetns(context.WithoutCancel(ctx), spec.Name)
 		os.RemoveAll(dir)
 		return fmt.Errorf("write the job's stdin file: %v", err)
 	}
 	defer os.Remove(sp)
-	if _, err := e.h.Run(ctx, Cmd{Path: "systemd-run", Args: e.unitArgs(spec, kind, uid, gid, sp), Timeout: time.Minute}); err != nil {
+	if _, err := e.h.Run(ctx, Cmd{Path: "systemd-run", Args: e.unitArgs(spec, kind, uid, gid, sp, netns), Timeout: time.Minute}); err != nil {
 		e.h.Run(context.WithoutCancel(ctx), Cmd{Path: "systemctl", Args: []string{"stop", unitName(spec.Name)}, Timeout: time.Minute})
+		e.stopNetns(context.WithoutCancel(ctx), spec.Name)
 		os.RemoveAll(dir)
 		return fmt.Errorf("start unit %s: %s", unitName(spec.Name), redact(err.Error(), spec.Grant.Secret))
 	}
@@ -356,6 +372,8 @@ func (e *Executor) jobEnv(spec core.ExecSpec, uid int) []string {
 		"RUNNER_TOOL_CACHE=" + filepath.Join(dir, "toolcache"),
 		"AGENT_TOOLSDIRECTORY=" + filepath.Join(dir, "toolcache"),
 		"DOCKER_HOST=unix://" + filepath.Join(e.runtimeDir(uid), "podman", "podman.sock"),
+		// The job's XDG_CONFIG_HOME is its own; this adds the runner's.
+		"CONTAINERS_CONF_OVERRIDE=" + e.podmanConf(),
 		"PATH=" + e.shimDir() + ":/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
 		"LANG=C.UTF-8",
 	}
@@ -369,9 +387,8 @@ func (e *Executor) jobEnv(spec core.ExecSpec, uid int) []string {
 }
 
 // unitArgs is the systemd-run argv for one job. It holds no secret.
-func (e *Executor) unitArgs(spec core.ExecSpec, kind string, uid, gid int, stdinFile string) []string {
+func (e *Executor) unitArgs(spec core.ExecSpec, kind string, uid, gid int, stdinFile, netns string) []string {
 	dir := e.jobDir(spec.Name)
-	rt := e.runtimeDir(uid)
 	args := []string{
 		// No --collect: a failed unit stays loaded until Clean, so
 		// CheckResult can read why it ended (Result=oom-kill).
@@ -393,14 +410,19 @@ func (e *Executor) unitArgs(spec core.ExecSpec, kind string, uid, gid int, stdin
 		"-p", "TimeoutStopSec=30",
 		"-p", "NoNewPrivileges=yes",
 		"-p", "PrivateTmp=yes",
-		// The user bus and manager sockets sit at fixed paths this uid owns; a
-		// job on them could point podman.service at a config it wrote.
-		"-p", "InaccessiblePaths=-" + filepath.Join(rt, "bus"),
-		"-p", "InaccessiblePaths=-" + filepath.Join(rt, "systemd"),
-		"-p", "StandardInput=file:" + stdinFile,
+		// Its own network namespace and loopback (netns.go), and DNS servers
+		// it can reach from there.
+		"-p", "NetworkNamespacePath=" + netns,
+	}
+	// The same mounts as podman's namespaces (podns.go).
+	for _, p := range e.jobMounts(uid, dir) {
+		args = append(args, "-p", p)
+	}
+	args = append(args,
+		"-p", "StandardInput=file:"+stdinFile,
 		"-p", "StandardOutput=journal",
 		"-p", "StandardError=journal",
-	}
+	)
 	for _, kv := range e.jobEnv(spec, uid) {
 		args = append(args, "--setenv="+kv)
 	}
@@ -588,6 +610,7 @@ func (e *Executor) Stop(ctx context.Context, name string) error {
 	if st == core.ExecRunning {
 		return fmt.Errorf("unit %s still runs after stop", unitName(name))
 	}
+	e.stopNetns(ctx, name)
 	e.log.Info("job stopped", "executor", Name, "name", name)
 	return nil
 }
@@ -607,6 +630,7 @@ func (e *Executor) Clean(ctx context.Context, name string) error {
 	os.Remove(e.secretPath(name))
 	// A failed unit stays loaded (no --collect) until this.
 	e.h.Run(ctx, Cmd{Path: "systemctl", Args: []string{"reset-failed", unitName(name)}, Timeout: 30 * time.Second})
+	e.stopNetns(ctx, name)
 	return e.removeJobDir(ctx, e.jobDir(name))
 }
 
@@ -679,7 +703,7 @@ func (e *Executor) jobUnits(ctx context.Context) (map[string]string, error) {
 // networks (and images unless KeepImages) and every job directory, then fail
 // if a user unit is loaded that wasn't there at install.
 func (e *Executor) Reset(ctx context.Context) error {
-	uid, _, err := e.ids()
+	uid, gid, err := e.ids()
 	if err != nil {
 		return err
 	}
@@ -692,6 +716,16 @@ func (e *Executor) Reset(ctx context.Context) error {
 			return fmt.Errorf("reset refused: job %s is %s", n, st)
 		}
 	}
+	// No job runs, so no job namespace should either.
+	nsUnits, err := e.netnsUnits(ctx)
+	if err != nil {
+		return err
+	}
+	for _, u := range nsUnits {
+		e.h.Run(ctx, Cmd{Path: "systemctl", Args: []string{"stop", u}, Timeout: 30 * time.Second})
+		e.h.Run(ctx, Cmd{Path: "systemctl", Args: []string{"reset-failed", u}, Timeout: 30 * time.Second})
+	}
+	e.stopPodns(ctx)
 	u := strconv.Itoa(uid)
 	steps := []Cmd{
 		{Path: "systemctl", Args: []string{"stop", "user@" + u + ".service", "user-runtime-dir@" + u + ".service"}, Timeout: 2 * time.Minute},
@@ -701,6 +735,10 @@ func (e *Executor) Reset(ctx context.Context) error {
 		if _, err := e.h.Run(ctx, c); err != nil {
 			return fmt.Errorf("reset: %v", err)
 		}
+	}
+	// Before any podman command, or one would make podman's namespaces.
+	if err := e.startPodns(ctx, uid, gid); err != nil {
+		return fmt.Errorf("reset: %v", err)
 	}
 	wipe := [][]string{
 		{"podman", "pod", "rm", "-af"},
@@ -715,6 +753,9 @@ func (e *Executor) Reset(ctx context.Context) error {
 		e.h.Run(ctx, e.asRunner(uid, 10*time.Minute, args...)) // checked below
 	}
 	var problems []string
+	if p := e.podnsProblem(ctx, uid); p != "" {
+		problems = append(problems, p)
+	}
 	if res, err := e.h.Run(ctx, e.asRunner(uid, time.Minute, "podman", "ps", "-aq")); err != nil || strings.TrimSpace(res.Stdout) != "" {
 		problems = append(problems, "containers left after reset")
 	}

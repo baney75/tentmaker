@@ -10,6 +10,8 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -35,7 +37,18 @@ type fakeHost struct {
 	nft     string
 	ipt     string
 	enabled map[string]bool
+	nftFail bool // nft -f fails (a broken nft, a bad rules file)
+	// netnsPID is what systemctl reports as a namespace holder's MainPID;
+	// 0 means the default, testNetnsPID.
+	netnsPID int
 }
+
+// testNetnsPID is the fake namespace holder; newEnv gives it a network
+// namespace other than the host's.
+const testNetnsPID = 4242
+
+// testPausePID is podman's fake pause process.
+const testPausePID = 4343
 
 func (f *fakeHost) Run(ctx context.Context, c Cmd) (Result, error) {
 	f.mu.Lock()
@@ -59,6 +72,9 @@ func (f *fakeHost) firewallLocked(c Cmd) (Result, bool, error) {
 	fail := func(msg string) (Result, bool, error) { return Result{Code: 1, Stderr: msg}, true, errors.New(msg) }
 	switch base := filepath.Base(c.Path); {
 	case base == "nft" && len(c.Args) == 2 && c.Args[0] == "-f":
+		if f.nftFail {
+			return fail("Error: Could not process rule")
+		}
 		b, err := os.ReadFile(c.Args[1])
 		if err != nil {
 			return fail(err.Error())
@@ -94,7 +110,16 @@ func (f *fakeHost) firewallLocked(c Cmd) (Result, bool, error) {
 		}
 		switch {
 		case strings.Contains(a, "-S OUTPUT"):
-			return Result{Stdout: "-P OUTPUT ACCEPT\n-A OUTPUT -m owner --uid-owner 1234 -j TENTMAKER\n"}, true, nil
+			// One jump per owner the script's loop names.
+			out := "-P OUTPUT ACCEPT\n"
+			for _, l := range strings.Split(f.ipt, "\n") {
+				if o, ok := strings.CutPrefix(strings.TrimSpace(l), "for o in "); ok {
+					for _, u := range strings.Fields(strings.TrimSuffix(o, "; do")) {
+						out += "-A OUTPUT -m owner --uid-owner " + u + " -j TENTMAKER\n"
+					}
+				}
+			}
+			return Result{Stdout: out}, true, nil
 		case strings.Contains(a, "-S TENTMAKER"):
 			var out []string
 			for _, l := range strings.Split(f.ipt, "\n") {
@@ -109,6 +134,12 @@ func (f *fakeHost) firewallLocked(c Cmd) (Result, bool, error) {
 			}
 		}
 		return Result{}, true, nil
+	case c.Path == "systemctl" && len(c.Args) == 4 && a == "show --property=MainPID --value "+c.Args[3] && strings.HasPrefix(c.Args[3], NetnsPrefix):
+		pid := f.netnsPID
+		if pid == 0 {
+			pid = testNetnsPID
+		}
+		return Result{Stdout: strconv.Itoa(pid) + "\n"}, true, nil
 	case c.Path == "systemctl" && len(c.Args) == 2 && c.Args[0] == "enable":
 		if f.enabled == nil {
 			f.enabled = map[string]bool{}
@@ -219,15 +250,35 @@ func newEnv(t *testing.T) *env {
 		PodmanSocketUnit:  "/usr/lib/systemd/user/podman.socket",
 		DockerCLI:         filepath.Join(dir, "docker"),
 		ResolvConf:        filepath.Join(dir, "resolv.conf"),
+		IfInet6:           filepath.Join(dir, "proc", "if_inet6"),
+		IPv6Route:         filepath.Join(dir, "proc", "ipv6_route"),
 		Nft:               filepath.Join(dir, "sbin", "nft"),
 		Iptables:          filepath.Join(dir, "sbin", "iptables"),
 		Ip6tables:         filepath.Join(dir, "sbin", "ip6tables"),
+		Pasta:             filepath.Join(dir, "sbin", "pasta"),
+		Unshare:           filepath.Join(dir, "sbin", "unshare"),
+		ResolvedConf:      filepath.Join(dir, "resolved.conf"),
+		Proc:              filepath.Join(dir, "proc"),
 	}
 	must(t, os.MkdirAll(filepath.Join(dir, "sbin"), 0o755))
-	for _, tool := range []string{p.Nft, p.Iptables, p.Ip6tables} {
+	for _, tool := range []string{p.Nft, p.Iptables, p.Ip6tables, p.Pasta, p.Unshare} {
 		must(t, os.WriteFile(tool, []byte("#!/bin/sh\n"), 0o755))
 	}
 	must(t, os.WriteFile(p.ResolvConf, []byte("# managed\nnameserver 127.0.0.53\noptions edns0\n"), 0o644))
+	must(t, os.WriteFile(p.ResolvedConf, []byte("nameserver 192.0.2.53\nnameserver 127.0.0.1\n"), 0o644))
+	// The host's network namespace and the fake holder's.
+	for pid, ns := range map[string]string{"self": "net:[4026531840]", strconv.Itoa(testNetnsPID): "net:[4026532999]"} {
+		must(t, os.MkdirAll(filepath.Join(p.Proc, pid, "ns"), 0o755))
+		must(t, os.Symlink(ns, filepath.Join(p.Proc, pid, "ns", "net")))
+	}
+	// The host's user namespace and podman's pause process, which
+	// tentmaker-podns.service holds.
+	for pid, ns := range map[string]string{"self": "user:[4026531837]", strconv.Itoa(testPausePID): "user:[4026533001]"} {
+		must(t, os.MkdirAll(filepath.Join(p.Proc, pid, "ns"), 0o755))
+		must(t, os.Symlink(ns, filepath.Join(p.Proc, pid, "ns", "user")))
+	}
+	must(t, os.MkdirAll(filepath.Join(p.RunUser, strconv.Itoa(testUID), "libpod", "tmp"), 0o700))
+	must(t, os.WriteFile(filepath.Join(p.RunUser, strconv.Itoa(testUID), "libpod", "tmp", "pause.pid"), []byte(strconv.Itoa(testPausePID)), 0o600))
 	o := Options{
 		StateDir: filepath.Join(dir, "state"),
 		CacheDir: filepath.Join(dir, "cache"),
@@ -300,6 +351,20 @@ func findCmd(t *testing.T, f *fakeHost, path string) Cmd {
 	return Cmd{}
 }
 
+// findUnit returns the systemd-run that started unit.
+func findUnit(t *testing.T, f *fakeHost, unit string) Cmd {
+	t.Helper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, c := range f.cmds {
+		if c.Path == "systemd-run" && slices.Contains(c.Args, "--unit="+unit) {
+			return c
+		}
+	}
+	t.Fatalf("no systemd-run for %s; ran %v", unit, f.cmds)
+	return Cmd{}
+}
+
 func TestStartRunner(t *testing.T) {
 	v := newEnv(t)
 	v.installed(t)
@@ -329,7 +394,7 @@ func TestStartRunner(t *testing.T) {
 	if ents, _ := os.ReadDir(v.e.secretDir()); len(ents) != 0 {
 		t.Fatalf("stdin file left behind: %v", ents)
 	}
-	c := findCmd(t, v.f, "systemd-run")
+	c := findUnit(t, v.f, unitName("job-abc"))
 	jd := v.e.jobDir("job-abc")
 	rt := filepath.Join(v.dir, "run-user", "1234")
 	want := []string{
@@ -338,7 +403,11 @@ func TestStartRunner(t *testing.T) {
 		"-p", "Type=exec", "-p", "MemoryMax=2147483648", "-p", "MemorySwapMax=0", "-p", "OOMPolicy=stop", "-p", "CPUQuota=150%",
 		"-p", "TasksMax=4096", "-p", "Nice=10", "-p", "IOSchedulingClass=idle", "-p", "RuntimeMaxSec=5400",
 		"-p", "TimeoutStopSec=30", "-p", "NoNewPrivileges=yes", "-p", "PrivateTmp=yes",
+		"-p", "NetworkNamespacePath=" + filepath.Join(v.dir, "proc", "4242", "ns", "net"),
+		"-p", "BindReadOnlyPaths=" + filepath.Join(v.dir, "state", "linux-private", "resolv.conf") + ":/etc/resolv.conf",
 		"-p", "InaccessiblePaths=-" + rt + "/bus", "-p", "InaccessiblePaths=-" + rt + "/systemd",
+		"-p", "InaccessiblePaths=-/run/tailscale", "-p", "InaccessiblePaths=-/var/run/tailscale", "-p", "InaccessiblePaths=-/var/lib/tailscale",
+		"-p", "InaccessiblePaths=-" + filepath.Join(v.dir, "home"), "-p", "InaccessiblePaths=-/root",
 		"-p", "StandardInput=file:" + v.e.secretPath("job-abc"),
 		"-p", "StandardOutput=journal", "-p", "StandardError=journal",
 	}
@@ -351,7 +420,7 @@ func TestStartRunner(t *testing.T) {
 		t.Fatalf("exec: %q want %q", tailArgs, wantTail)
 	}
 	args := strings.Join(c.Args, " ")
-	for _, s := range []string{"--setenv=HOME=" + jd + "/home", "--setenv=DOCKER_HOST=unix://" + rt + "/podman/podman.sock", "--setenv=TENTMAKER_JOBS=4", "--setenv=RUNNER_TOOL_CACHE=" + jd + "/toolcache"} {
+	for _, s := range []string{"--setenv=HOME=" + jd + "/home", "--setenv=DOCKER_HOST=unix://" + rt + "/podman/podman.sock", "--setenv=CONTAINERS_CONF_OVERRIDE=" + v.e.root + "/.config/containers/containers.conf", "--setenv=TENTMAKER_JOBS=4", "--setenv=RUNNER_TOOL_CACHE=" + jd + "/toolcache"} {
 		if !strings.Contains(args, s) {
 			t.Errorf("missing %s", s)
 		}
@@ -391,7 +460,7 @@ func TestStartCheck(t *testing.T) {
 	if err := v.e.Start(context.Background(), spec("chk-001", core.KindCheck)); err != nil {
 		t.Fatal(err)
 	}
-	c := findCmd(t, v.f, "systemd-run")
+	c := findUnit(t, v.f, unitName("chk-001"))
 	jd := v.e.jobDir("chk-001")
 	tail := c.Args[len(c.Args)-6:]
 	want := []string{"--working-directory=" + jd + "/work", "--", v.e.guestBinary(), "check-run", "--out", jd + "/out"}
@@ -759,7 +828,7 @@ func TestCheckResultOutOfMemory(t *testing.T) {
 	v := newEnv(t)
 	v.installed(t)
 	ctx := context.Background()
-	if strings.Contains(strings.Join(v.e.unitArgs(spec("job-x", "runner"), core.KindCheck, 1234, 1234, "/in"), " "), "--collect") {
+	if strings.Contains(strings.Join(v.e.unitArgs(spec("job-x", "runner"), core.KindCheck, 1234, 1234, "/in", "/proc/1/ns/net"), " "), "--collect") {
 		t.Fatal("--collect unloads a failed unit before CheckResult reads its Result")
 	}
 	v.f.respond = func(c Cmd) (Result, error) {

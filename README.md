@@ -212,11 +212,11 @@ Its read tools (`status`, `pool`, `doctor`) work as any user. Tools that change 
 
 **Sandboxes per OS:**
 
-- **Linux:** each job runs as the unprivileged user `tentmaker-runner` (no sudo, no docker group, `NoNewPrivileges`) in a transient systemd unit with hard memory, CPU and process limits, a fresh runner copy and its own home. Container steps use rootless podman.
+- **Linux:** each job runs as the unprivileged user `tentmaker-runner` (no sudo, no docker group, `NoNewPrivileges`) in a transient systemd unit with hard memory, CPU and process limits, a fresh runner copy, its own home and a network namespace of its own: servers a job starts on 127.0.0.1 work, the host's loopback services stay out of reach. Container steps use rootless podman.
 - **macOS:** each job gets its own Tart VM cloned from a digest-pinned image, deleted afterwards. Softnet blocks the VM from your tailnet, your LAN, link-local addresses and the Mac itself.
 - **Windows:** each job runs as the local standard user `tentmaker-runner` inside a Job Object with hard memory and CPU caps, in a fresh directory only that user can open.
 
-**Jobs can't reach your network.** On Linux, setup loads nftables rules (iptables when nft is missing) for the `tentmaker-runner` user, and `tentmaker-net.service` loads them again at boot before Tentmaker starts. On Windows, setup adds Windows Firewall outbound rules for that user (group "Tentmaker"). Jobs reach the internet, DNS and the one-job source URL on 127.0.0.1:7435, and nothing else: no tailnet (100.64.0.0/10, fd7a:115c:a1e0::/48), no LAN (10/8, 172.16/12, 192.168/16), no link-local or cloud metadata, no other service on this device, and no mesh port 7433 anywhere. Container steps go through the same rules. `[guards] allow_lan = true` opens the LAN only; rerun `sudo tentmaker setup` after changing it. When the rules are missing or out of date, the device takes no jobs and `tentmaker doctor` says why. The fence is not the only wall: the control API names each caller by its account and refuses the runner user on every OS (Windows Firewall doesn't filter loopback), and the peer API refuses any request from the device itself.
+**Jobs can't reach your network.** On Linux, setup loads nftables rules (iptables when nft is missing) for the `tentmaker-runner` user, and `tentmaker-net.service` loads them again at boot before Tentmaker starts. On Windows, setup adds Windows Firewall outbound rules for that user (group "Tentmaker") for other hosts, and Windows Filtering Platform filters for traffic to this device, which Windows Firewall does not filter. Jobs reach the internet, DNS and the one-job source URL on 127.0.0.1:7435, and nothing else: no tailnet (100.64.0.0/10, fd7a:115c:a1e0::/48), no LAN (10/8, 172.16/12, 192.168/16), no link-local or cloud metadata, no other service on this device, and no mesh port 7433 anywhere. Container steps go through the same rules. `[guards] allow_lan = true` opens the LAN only; rerun `sudo tentmaker setup` after changing it. When the rules are missing or out of date, the device takes no jobs and `tentmaker doctor` says why. The fence is not the only wall: the control API names each caller by its account and refuses the runner user on every OS, and the peer API refuses any request from the device itself.
 
 **Tokens stay on broker devices.** A forge token lives only on the devices you gave one to, in the OS secret store. Workers and jobs never see it. In checks mode the broker downloads the source archive from the forge itself and streams it to the worker it granted the check to; the job gets it from a one-job loopback URL on its own device (macOS VMs get a copy of the file), never a forge URL or token.
 
@@ -225,7 +225,7 @@ Its read tools (`status`, `pool`, `doctor`) work as any user. Tools that change 
 **What is not protected:**
 
 - A Linux or Windows job shares your kernel. A kernel or Windows privilege bug can let it out. Only macOS jobs run in a VM.
-- The network rules stop a job from connecting out to your tailnet, LAN and this device. They don't stop a job from using the internet, and they don't protect a LAN service from a job when you set `allow_lan`.
+- The network rules stop a job from connecting out to your tailnet, LAN and this device. They don't stop a job from using the internet, and they don't protect a LAN service from a job when you set `allow_lan`. A LAN that numbers its devices with public IPv4 addresses looks like the internet to them. The rules follow a new IPv6 prefix, Tailscale interface or address at the next job's start, not in the middle of a running job.
 - Linux and Windows jobs all run as the same user. While two jobs run at once on one device, one can read the other's files and processes.
 - Anyone who can push to a repo you serve can run code on your machines. On a public repo, so can code you merge from outside contributors, and workflows they can trigger on the repo itself, such as one that runs on issue comments. Fork pull requests still never run.
 - A compromised forge account or token can queue jobs on your devices.
@@ -278,7 +278,7 @@ On Windows, run `tentmaker uninstall` in an Administrator PowerShell. If the bin
 
 ## Requirements
 
-- Linux with systemd and cgroup v2, podman for container steps; amd64 or arm64.
+- Linux with systemd and cgroup v2, pasta (the `passt` package) for each job's own network namespace, podman for container steps; amd64 or arm64.
 - macOS on Apple silicon. The Softnet network filter needs macOS 26 or newer.
 - Windows on amd64 or arm64.
 - Tailscale on every device that joins a pool. A single device can run with `--no-mesh`.

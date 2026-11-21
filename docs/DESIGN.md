@@ -178,33 +178,116 @@ setup`), idempotent and safe to rerun.
   macOS guests). Boot failures back off 1, 2, 4 min up to 1 h.
 - **windows-job**: local standard user `tentmaker-runner` (random password kept with DPAPI,
   machine scope, file ACL SYSTEM and Administrators only); per job a fresh runner copy under
-  `%ProgramData%\Tentmaker\jobs\<name>` ACLed to that user; the runner starts with
+  `%ProgramData%\Tentmaker\jobs\<name>` ACLed to that user. Setup gives `%ProgramData%\Tentmaker`
+  and the state folder a DACL of their own (SYSTEM and Administrators full, Users read): under
+  ProgramData's inherited one any user, a job too, could add files to the state, checks and logs
+  folders. The runner starts with
   `CreateProcessAsUser`/`LogonUser` inside a Job Object with `JOB_OBJECT_LIMIT_JOB_MEMORY`,
   CPU rate control and `KILL_ON_JOB_CLOSE`. Platforms: `windows/<arch>`. Linux jobs on Windows
   (WSL2) are roadmap, not v1.
 
-**Network isolation.** Linux and Windows jobs share the host's network stack, so Install fences
-the runner user off and every `Start` checks the fence first; no rules means no job (fail closed).
-Jobs may reach the internet, the DNS servers the host is configured with, and the source archive
-relay on 127.0.0.1:7435. Always blocked: the tailnet (100.64.0.0/10, fd7a:115c:a1e0::/48), link-local
-(169.254/16, fe80::/10), unique local (fc00::/7), loopback and this host's own addresses (on Linux; Windows Firewall doesn't filter loopback, so the control and peer APIs name their callers, see below), and port
-7433 on any address. RFC 1918 (10/8, 172.16/12, 192.168/16) is blocked unless `[guards] allow_lan`.
+**Network isolation.** Install fences the runner user off and every `Start` checks the fence
+first; no rules means no job (fail closed). A Linux job also gets a network namespace of its own
+(below); a Windows job shares the host's network stack. Jobs may reach the internet, the DNS
+servers the host is configured with, and the source archive relay on 127.0.0.1:7435. Always blocked: the tailnet (100.64.0.0/10, fd7a:115c:a1e0::/48), link-local
+(169.254/16, fe80::/10), unique local (fc00::/7), loopback and this host's own addresses, and port
+7433 on any address. RFC 1918 (10/8, 172.16/12, 192.168/16) and, on Linux, the host's on-link
+global IPv6 prefixes are the LAN, blocked unless `[guards] allow_lan`; `allow_lan` means the
+physical LAN only, never what the tailnet routes.
 
+- Linux job namespace (`netns.go`): each job runs in a network namespace of its own, so its own
+  127.0.0.1 and ::1 work (httptest, a test database) and the host's loopback does not. Per job,
+  two transient units in `tentmaker.slice` run as the runner user: `tentmaker-netns-<name>`
+  (`unshare --user --map-root-user --net`, holding a user namespace the runner owns and a network
+  namespace in it; the unit grants it CAP_SYS_ADMIN alone, because where AppArmor restricts
+  unprivileged user namespaces, as Ubuntu does by default, unshare cannot write its uid_map
+  without it) and `tentmaker-uplink-<name>` (pasta, `Type=forking`, joining the holder's
+  namespaces by pid). pasta must run as the runner: it opens every outside socket, and the per-uid
+  rules below match them; pasta started as root and dropping privileges cannot join a namespace
+  owned by the initial user namespace, hence the runner-owned holder. pasta forwards only the
+  relay (`-T 7435`: the job's own 127.0.0.1:7435 reaches the host's), maps no other host loopback
+  (`--no-map-gw`) and publishes no job port (`-t none -u none`). pasta copies the host's addresses
+  and routes, so a host with no IPv6 default route gives its jobs no IPv6 at all. `Start` waits until the holder's
+  process has left the host's namespace (`/proc/<pid>/ns/net` differs from the daemon's), starts
+  pasta, then the job unit with `NetworkNamespacePath=/proc/<pid>/ns/net` and
+  `BindReadOnlyPaths=<private>/resolv.conf:/etc/resolv.conf`, which names the host's resolvers or,
+  behind the 127.0.0.53 stub, `/run/systemd/resolve/resolv.conf`'s upstream servers (also added
+  to the DNS holes). Any step that fails stops both units and refuses the job; setup and
+  `Preflight` fail without pasta or unshare, or with no DNS server a job can reach. `Stop`,
+  `Clean` and `Reset` stop the units. The namespace is isolation; the rules below are the policy.
+  A job owns its namespace's user namespace, so it can reconfigure its own namespace; everything
+  still leaves through pasta as the runner.
+- Linux podman namespace (`podns.go`): rootless podman runs every command, a job's included, in
+  the user and mount namespaces of its pause process, not the caller's. `Reset` starts
+  `tentmaker-podns.service` (the runner, `podman unshare sleep infinity`, the job unit's mounts:
+  its resolv.conf and every `InaccessiblePaths`; no `NoNewPrivileges`, which newuidmap needs)
+  before any podman command, after restarting the user manager, and waits until
+  `$XDG_RUNTIME_DIR/libpod/tmp/pause.pid` names a process outside the host's user namespace. So the
+  pause process is born with a job's view: no user bus or manager socket (a process started
+  through them would run outside the job's unit and network namespace), no tailscaled socket, and
+  DNS servers the job's namespace can reach. `Reset` then checks that view through `podman
+  unshare` and fails on any difference. Without the bus the systemd cgroup manager cannot work
+  (crun would ask the system bus, which refuses), so setup writes the runner's
+  `~/.config/containers/containers.conf` (root-owned) with `cgroup_manager = "cgroupfs"`, and jobs
+  load it through `CONTAINERS_CONF_OVERRIDE`. A job's containers then stay in the job's cgroup.
 - Linux (`netrules.go`): nftables table `inet tentmaker`, an output hook that sends every packet
-  with `meta skuid tentmaker-runner` to a `runner` chain (accept relay and DNS, then reject).
-  `oifname "lo"` covers the host's own addresses. With no `nft`, the same rules as an iptables and
-  ip6tables `TENTMAKER` chain with an `--uid-owner` jump. Rootless podman's pasta and slirp4netns
-  run as the runner user, so container traffic matches too. The rules file lives in
-  `<lib>/net.nft` (or `net-iptables.sh`); `tentmaker-net.service` (oneshot, before
-  `network-pre.target` and `tentmaker.service`) loads it at boot.
-- Windows (`netrules.go`): Windows Firewall outbound rules in group "Tentmaker" with `LocalUser`
-  `D:(A;;CC;;;<runner SID>)`, made with the NetSecurity cmdlets through `API.PowerShell`. Block
-  rules beat allow rules, so the blocked ranges leave out 127.0.0.1 and any resolver inside them,
-  and those addresses get block rules for every port but the allowed one. Every rule's description
-  names the rules version, the runner SID and `allow_lan`; the check compares it, and fails when any
-  firewall profile is off. Windows Firewall refuses an IPv6 loopback, unspecified or multicast
-  remote address (and with it the whole rule), so the rules leave out ::1 and any such resolver;
-  port 7433 stays blocked on ::1 by the port rule.
+  with `meta skuid { <runner uid>, <its subuid ranges> }` to a `runner` chain (accept relay and DNS,
+  then reject). The subordinate uids matter: a rootless container on the host network that runs as
+  a non-root user opens its sockets as one of them (through the podman service, which runs in the
+  host's namespace). `oifname "lo"` covers the host's own addresses. Always rejected besides the ranges above: RFC 1918, CGNAT and ULA out a Tailscale
+  interface (other devices' subnet routes; public destinations stay open for an exit node), IPv4
+  multicast and broadcast (224/4, 255.255.255.255) and ff00::/8. Tailscale interfaces are
+  `tailscale0` plus any interface holding a tailnet IPv6 address (`/proc/net/if_inet6`); the
+  on-link prefixes are `/proc/net/ipv6_route` routes in 2000::/3 with no gateway, outside loopback
+  and Tailscale, leaving out the host's own and anycast addresses (`RTF_LOCAL`, `RTF_ANYCAST`; the
+  kernel lists them on the interface that holds them) and any prefix inside another (nft merges
+  it, so the listing would never show it). With no `nft`, the same rules as an iptables and ip6tables `TENTMAKER` chain with
+  one `--uid-owner` jump per uid range. Rootless podman's pasta and slirp4netns run as the runner
+  user, so container traffic matches too. The rules file lives in `<lib>/net.nft` (or
+  `net-iptables.sh`); `tentmaker-net.service` (oneshot, before `network-pre.target` and
+  `tentmaker.service`) loads it at boot. `checkNet` compares the loaded rules element by element
+  (nft lists sets sorted and single addresses without a length). A missing table, chain or jump
+  for the runner's uid refuses the job. Loaded rules that lack a piece (a new subuid range,
+  Tailscale interface or on-link prefix, or a rule an older version did not write) are stale, and
+  so are rules whose DNS servers are not exactly the host's current ones (a new DHCP resolver):
+  `Start` rewrites the file and the job resolv.conf from the host's current facts, reloads the
+  rules and checks again.
+- Linux job units also get `InaccessiblePaths=-` for tailscaled's `/run/tailscale`,
+  `/var/run/tailscale` and `/var/lib/tailscale` (its LocalAPI socket is mode 0666, and firewall
+  rules don't see Unix sockets), and for `/home` and `/root` unless the job dir is under them.
+  Not `ProtectHome=yes`: it also hides `/run/user`, the job's runtime dir and podman socket. The
+  runner's `user@<uid>.service` drop-in hides the same tailscaled paths from the podman service and
+  its containers and orders the manager `After=tailscaled.service`.
+- Windows (`netrules.go`, `wfp.go`): two layers, both scoped to the runner SID.
+  - Windows Firewall outbound rules in group "Tentmaker" with `LocalUser` `D:(A;;CC;;;<runner
+    SID>)`, made with the NetSecurity cmdlets through `API.PowerShell`, for traffic to other hosts.
+    Block rules beat allow rules, so the blocked ranges leave out 127.0.0.1 and any resolver inside
+    them, and those addresses get block rules for every port but the allowed one. Windows Firewall
+    refuses an IPv6 loopback, unspecified or multicast remote address (and with it the whole
+    rule), so the rules leave out ::1 and any such resolver. Every rule's description names the
+    rules version, the runner SID and `allow_lan`, and every rule's name ends in a hash of its
+    content and that description. Setup adds each wanted rule that isn't there by name and only
+    then removes the group's other rules, so a rerun never unblocks anything in between.
+  - Windows Firewall does not filter traffic to the host itself: a live run reached decoys on
+    127.0.0.1, ::1 and the host's own addresses through loaded, enabled block rules. So Tentmaker
+    adds persistent WFP filters (`API.SetWFP`, fwpuclnt.dll through `x/sys/windows`, no cgo) in its
+    own provider and a sublayer of weight 0xffff, at `FWPM_LAYER_ALE_AUTH_CONNECT_V4` and `_V6`.
+    Every filter matches `FWPM_CONDITION_ALE_USER_ID` (the same SDDL) and the
+    `FWP_CONDITION_FLAG_IS_LOOPBACK` flag, which Windows sets on traffic to any of its own
+    addresses: permit TCP 127.0.0.1:7435 (the relay) and port 53 to the configured DNS servers,
+    then block the rest with `FWPM_FILTER_FLAG_CLEAR_ACTION_RIGHT`. Two more hard blocks drop the
+    loopback flag and take multicast and broadcast to any host (224.0.0.0/4 and 255.255.255.255
+    as `FWP_V4_ADDR_MASK`, ff00::/8 as `FWP_V6_ADDR_MASK`), which the firewall rules don't, and
+    which a live run reached. A live run proved the loopback blocks (127.0.0.1, ::1, wildcard
+    listeners, the mesh port, the host's own addresses). The filters have fixed keys; `SetWFP`
+    deletes every Tentmaker key and adds the wanted filters in one transaction, and
+    reads them back by key. Each filter's description spells out all of its conditions.
+  - `checkNet` reads the profiles, the group's rules and the DNS servers (`Get-DnsClientServerAddress`,
+    the command setup used) in one PowerShell call, plus the WFP filters. A firewall profile that
+    is off, no rules, no filters, or a rule or filter for another SID, `allow_lan` or version
+    refuses the job. The right ones with a rule or filter missing or extra (a new DNS server, or
+    one deleted by hand) are stale: `Start` writes the rules and filters again and checks once
+    more. When WFP refuses the filters, setup fails and so does `Start`.
 - macOS: the Softnet rules already cover all of it (Softnet's default drops non-global IPv4 and all
   IPv6); `allow_lan` does nothing there.
 
@@ -517,8 +600,9 @@ section is rewritten.
   owner back and refuses a folder still owned by anyone but SYSTEM or Administrators. ProgramData
   lets any user create a folder first, and an owner can always rewrite the DACL and read the
   runner password (review r1 partS first-F3).
-- Network rules are written at setup. A changed `allow_lan` takes effect only after `sudo tentmaker setup` runs again; until then the loaded rules don't match the config, and Linux (missing LAN rules) or Windows (description mismatch) refuses jobs. Rules stricter than the config pass. A reload that changes `allow_lan` rebuilds the worker and its executors (the daemon's worker key includes it), so the next job is checked against the new policy; before, the old executors kept the old `allow_lan` and jobs ran under the weaker policy (review r1 sol-F1).
+- Network rules are written at setup. A changed `allow_lan` takes effect only after `sudo tentmaker setup` runs again; until then the loaded rules don't match the config: Linux treats rules missing the LAN as stale and reloads them stricter at the next `Start`, and Windows (description mismatch) refuses jobs. Rules stricter than the config pass. Host facts the rules name (Linux subuid ranges, Tailscale interfaces, on-link IPv6 prefixes and DNS servers; Windows DNS servers) are read again at every `Start`. A reload that changes `allow_lan` rebuilds the worker and its executors (the daemon's worker key includes it), so the next job is checked against the new policy; before, the old executors kept the old `allow_lan` and jobs ran under the weaker policy (review r1 sol-F1).
 - Linux job units have no `--collect` and set `OOMPolicy=stop`: a unit the OOM killer ended stays loaded with `Result=oom-kill` until `Clean` runs `systemctl reset-failed`, so `CheckResult` can say "ran out of memory" instead of "cancelled" or "no result.json".
+- A Windows job object's memory limit fails the allocation instead of killing the job, so check-run reports an ordinary step failure. The job object posts `JOB_OBJECT_MSG_JOB_MEMORY_LIMIT` to a completion port the process reads; `CheckResult` then says "ran out of memory (the job's limit is N GiB)" ahead of check-run's words, unless the job passed anyway. .NET caps its own heap at 75% of a job object's limit and throws first, so a .NET program that runs out reads as an ordinary failure. The daemon remembers this only while it tracks the job.
 
 **mesh**
 

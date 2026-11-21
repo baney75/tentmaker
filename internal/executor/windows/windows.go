@@ -38,7 +38,11 @@ const MinFreeDisk = 10 << 30
 
 // Options configures the executor. Zero values pick the defaults.
 type Options struct {
-	StateDir string // default %ProgramData%\Tentmaker; jobs live in <StateDir>\jobs\<name>
+	// BaseDir is Tentmaker's own folder (%ProgramData%\Tentmaker), which
+	// holds the config, state, logs and cache. Install makes it readable
+	// but not writable by other users; empty leaves it alone.
+	BaseDir  string
+	StateDir string // default %ProgramData%\Tentmaker\state; jobs live in <StateDir>\jobs\<name>
 	CacheDir string // downloads (<CacheDir>\dist); default <StateDir>\cache
 	Log      *slog.Logger
 	// Binary returns the tentmaker binary for a guest platform (KindCheck).
@@ -76,10 +80,12 @@ type Executor struct {
 // job is one tracked job. p is nil while Start is still setting it up;
 // such a job counts as running, so nothing cleans it from under Start.
 type job struct {
-	p     Process
-	timer *time.Timer
-	done  bool
-	code  int
+	p      Process
+	timer  *time.Timer
+	done   bool
+	code   int
+	memory int64 // the job's memory limit
+	oom    bool  // the job object refused memory past it
 }
 
 // New returns an executor. It does not touch the host.
@@ -164,6 +170,14 @@ func (e *Executor) powershell() string {
 // adminACL is SYSTEM and Administrators only.
 func adminACL() []ACE {
 	return []ACE{{SIDSystem, AccessFull, true}, {SIDAdmins, AccessFull, true}}
+}
+
+// baseACL is for Tentmaker's own folder and its state folder: everyone may
+// read them, and only SYSTEM and Administrators may add or change a file.
+// Without it they inherit ProgramData's ACL, under which any user, a job
+// too, may add files to their subfolders.
+func baseACL() []ACE {
+	return append(adminACL(), ACE{SIDUsers, AccessReadAndExecute, true})
 }
 
 // jobACL lets the runner user change everything under its job directory.
@@ -256,7 +270,7 @@ func (e *Executor) Start(ctx context.Context, spec core.ExecSpec) error {
 		e.mu.Unlock()
 		return fmt.Errorf("job %s already exists", spec.Name)
 	}
-	j := &job{code: -1}
+	j := &job{code: -1, memory: spec.Limits.MemoryBytes}
 	e.jobs[spec.Name] = j // reserve the name; the copy below takes a while
 	e.mu.Unlock()
 	started := false
@@ -272,7 +286,7 @@ func (e *Executor) Start(ctx context.Context, spec core.ExecSpec) error {
 		return fmt.Errorf("look up %s (run install): %w", User, err)
 	}
 	// Fail closed: no firewall rules for this user, no job.
-	if err := e.checkNet(ctx, sid); err != nil {
+	if err := e.ensureNet(ctx, sid); err != nil {
 		return fmt.Errorf("the network rules for CI jobs are not in force: %v; run tentmaker setup as an administrator", err)
 	}
 	pw, err := e.password()
@@ -331,7 +345,7 @@ func (e *Executor) wait(name string, j *job) {
 	<-p.Done()
 	timer.Stop()
 	e.mu.Lock()
-	j.done, j.code = true, p.ExitCode()
+	j.done, j.code, j.oom = true, p.ExitCode(), p.MemoryLimitHit()
 	e.mu.Unlock()
 	e.log.Info("job exited", "executor", Name, "name", name, "code", j.code)
 }
@@ -695,11 +709,26 @@ func (e *Executor) CheckResult(ctx context.Context, name string) (core.CheckResu
 	e.mu.Lock()
 	j, ok := e.jobs[name]
 	running := ok && !j.done
+	oom, memory := ok && j.oom, int64(0)
+	if ok {
+		memory = j.memory
+	}
 	e.mu.Unlock()
 	if running {
 		return core.CheckResult{}, fmt.Errorf("job %s is still running", name)
 	}
-	return readCheckResult(e.jobDir(name), "out", name), nil
+	res := readCheckResult(e.jobDir(name), "out", name)
+	// The job object's limit makes an allocation fail rather than killing
+	// the job, so check-run reports an ordinary step failure; say why. A
+	// job that got by without that memory and passed stays passed.
+	if oom && res.State != "success" {
+		why := fmt.Sprintf("ran out of memory (the job's limit is %.1f GiB)", float64(memory)/(1<<30))
+		if res.Description != "" {
+			why += "; " + res.Description
+		}
+		res.State, res.Description = "failure", trunc(why, 1000)
+	}
+	return res, nil
 }
 
 func redact(s string, secret []byte) string {

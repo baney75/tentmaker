@@ -121,6 +121,9 @@ func TestInstall(t *testing.T) {
 	if !strings.Contains(read(filepath.Join(root, ".config", "environment.d", "10-tentmaker.conf")), "XDG_CONFIG_HOME="+root+"/.config") {
 		t.Error("environment.d")
 	}
+	if !strings.Contains(read(filepath.Join(root, ".config", "containers", "containers.conf")), `cgroup_manager = "cgroupfs"`) {
+		t.Error("containers.conf does not pick the cgroupfs manager")
+	}
 	if l, _ := os.Readlink(filepath.Join(root, ".config", "systemd", "user", "sockets.target.wants", "podman.socket")); l != "/usr/lib/systemd/user/podman.socket" {
 		t.Errorf("podman.socket link %q", l)
 	}
@@ -252,7 +255,7 @@ func TestUninstall(t *testing.T) {
 
 	must(t, Uninstall(ctx, v.o, true))
 	cmds := strings.Join(v.f.commands(), "\n")
-	for _, s := range []string{"systemctl stop tentmaker-job-*.service", "loginctl disable-linger tentmaker-runner", "userdel tentmaker-runner"} {
+	for _, s := range []string{"systemctl stop tentmaker-job-*.service", "systemctl stop tentmaker-podns.service", "loginctl disable-linger tentmaker-runner", "userdel tentmaker-runner"} {
 		if !strings.Contains(cmds, s) {
 			t.Errorf("purge did not run %q", s)
 		}

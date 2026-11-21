@@ -9,7 +9,7 @@
 # show that the job still has what it needs (the internet, DNS), so a
 # blocked attack means the sandbox stopped it, not that nothing works.
 #
-#   attack.ps1 main | sibling | oom | pids
+#   attack.ps1 main | sibling | oom | pids | lan | closed
 param([string]$Mode = 'main')
 $ErrorActionPreference = 'Continue'
 $ProgressPreference = 'SilentlyContinue'
@@ -28,6 +28,23 @@ function HttpOk([string]$Url, [hashtable]$Headers = @{}) {
 }
 function Reach([string]$Name, [string]$Url, [hashtable]$Headers = @{}) {
     if (HttpOk $Url $Headers) { Say $Name SUCCEEDED "$Url answered" } else { Say $Name BLOCKED }
+}
+# UdpOk: a UDP decoy (or DNS server) answered a DNS query for github.com.
+function UdpOk([string]$Addr, [int]$Port) {
+    try {
+        $ip = [System.Net.IPAddress]::Parse($Addr)
+        $u = [System.Net.Sockets.UdpClient]::new($ip.AddressFamily)
+        $u.Client.ReceiveTimeout = 4000
+        $q = [byte[]](0x7a, 0x11, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 6, 103, 105, 116, 104, 117, 98, 3, 99, 111, 109, 0, 0, 1, 0, 1)
+        [void]$u.Send($q, $q.Length, [System.Net.IPEndPoint]::new($ip, $Port))
+        $ep = [System.Net.IPEndPoint]::new([System.Net.IPAddress]::Any, 0)
+        $r = $u.Receive([ref]$ep)
+        $u.Close()
+        return $r.Length -gt 0
+    } catch { return $false }
+}
+function UdpReach([string]$Name, [string]$Addr, [int]$Port) {
+    if (UdpOk $Addr $Port) { Say $Name SUCCEEDED "udp ${Addr}:$Port answered" } else { Say $Name BLOCKED }
 }
 function HostIP {
     try {
@@ -64,38 +81,77 @@ switch ($Mode) {
     'oom' {
         # Allocate past the job's limit (2 GiB in the harness). The sandbox
         # must stop the job; a line here means it didn't.
+        # Native memory, not .NET arrays: .NET caps its own heap at 75% of a
+        # job object's limit and fails first, so arrays never test the
+        # sandbox's limit. AllocHGlobal commits outside that heap, against
+        # the job object's limit alone.
         # A failed allocation ends the script with an error, as it would end
         # any program.
         $ErrorActionPreference = 'Stop'
-        $chunks = [System.Collections.Generic.List[byte[]]]::new()
-        for ($i = 0; $i -lt 128; $i++) { $chunks.Add([byte[]]::new(64MB)) }
-        if ($chunks.Count -eq 128) { Write-Output "ATTACK memory-limit SUCCEEDED allocated $($chunks.Count * 64) MiB" }
+        $blocks = [System.Collections.Generic.List[IntPtr]]::new()
+        for ($i = 0; $i -lt 128; $i++) { $blocks.Add([System.Runtime.InteropServices.Marshal]::AllocHGlobal(64MB)) }
+        if ($blocks.Count -eq 128) { Write-Output "ATTACK memory-limit SUCCEEDED allocated $($blocks.Count * 64) MiB" }
         exit 0
     }
     'pids' {
         # A process bomb that stops at 3000. Reaching that many means nothing
-        # bounds the job's processes.
-        $procs = [System.Collections.Generic.List[System.Diagnostics.Process]]::new()
-        $err = ''
-        for ($i = 0; $i -lt 3000; $i++) {
-            try {
-                $si = [System.Diagnostics.ProcessStartInfo]::new("$env:SystemRoot\System32\PING.EXE", '-n 120 127.0.0.1')
-                $si.UseShellExecute = $false
-                $si.CreateNoWindow = $true
-                $si.RedirectStandardOutput = $true
-                $procs.Add([System.Diagnostics.Process]::Start($si))
-            } catch {
-                $err = $_.Exception.Message
-                break
+        # bounds the job's processes. It runs in a child shell: when the job's
+        # memory runs out, that shell can die (stack overflow), and this one
+        # still reports.
+        $count = Join-Path $env:TEMP "tm-bomb-$PID.txt"
+        $bomb = {
+            param($count)
+            $procs = [System.Collections.Generic.List[System.Diagnostics.Process]]::new()
+            $err = ''
+            for ($i = 0; $i -lt 3000; $i++) {
+                try {
+                    $si = [System.Diagnostics.ProcessStartInfo]::new("$env:SystemRoot\System32\PING.EXE", '-n 120 127.0.0.1')
+                    $si.UseShellExecute = $false
+                    $si.CreateNoWindow = $true
+                    $si.RedirectStandardOutput = $true
+                    $procs.Add([System.Diagnostics.Process]::Start($si))
+                    if ($procs.Count % 50 -eq 0) { Set-Content -Path $count -Value $procs.Count }
+                } catch {
+                    $err = $_.Exception.Message
+                    break
+                }
             }
+            Set-Content -Path $count -Value "$($procs.Count) $err"
+            foreach ($p in $procs) { try { $p.Kill() } catch {} }
         }
-        $n = $procs.Count
-        foreach ($p in $procs) { try { $p.Kill() } catch {} }
+        $shell = (Get-Process -Id $PID).Path
+        & $shell -NoProfile -NonInteractive -Command $bomb -args $count *> $null
+        $code = $LASTEXITCODE
+        Get-Process PING -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+        $line = ''
+        try { $line = (Get-Content -Path $count -Raw -ErrorAction Stop).Trim() } catch {}
+        $n = 0
+        $err = ''
+        if ($line -match '^(\d+)\s*(.*)$') { $n = [int]$Matches[1]; $err = $Matches[2] }
+        if ($code -ne 0) { $err = "its shell died (exit $code) $err".Trim() }
         if ($n -ge 3000) { Say fork-bomb SUCCEEDED "started $n processes" } else { Say fork-bomb BLOCKED "after $n processes: $err" }
         exit 0
     }
+    'lan' {
+        # Run with [guards] allow_lan = true: the tailnet and this host stay shut.
+        if (HttpOk 'https://api.github.com/zen') { Write-Output 'CONTROL internet OK' } else { Write-Output 'CONTROL internet FAILED' }
+        $ip = HostIP
+        Reach lan-decoy-tailnet-v4 'http://100.64.77.1:8080/'
+        Reach lan-mesh-port-host-ip "http://${ip}:7433/"
+        Reach lan-host-own-v4 'http://192.0.2.77:8767/'
+        Reach lan-host-own-v6 'http://[2001:db8:77::1]:8767/'
+        Reach lan-host-ip-other-port "http://${ip}:8767/"
+        exit 0
+    }
+    'closed' {
+        # Queued while the harness has removed the network rules: the device
+        # must refuse to start it, so any line here means it ran.
+        Write-Output 'ATTACK fail-closed SUCCEEDED the job ran without the network rules'
+        Reach closed-decoy-tailnet-v4 'http://100.64.77.1:8080/'
+        exit 0
+    }
     'main' {}
-    default { Write-Error 'usage: attack.ps1 main|sibling|oom|pids'; exit 2 }
+    default { Write-Error 'usage: attack.ps1 main|sibling|oom|pids|lan|closed'; exit 2 }
 }
 
 Write-Output "tentmaker abuse: job dir $jobDir, user $([Security.Principal.WindowsIdentity]::GetCurrent().Name)"
@@ -123,6 +179,23 @@ function TryPause([string]$Token = '') {
         return $r.StatusCode -eq 200
     } catch { return $false }
 }
+# The relay port answers the job, so the pause attacks are refused by the
+# API, not cut off by the network (Tentmaker's WFP filters permit only it on
+# this host).
+# The source archive relay answers the job: on 7435 once it has a listener
+# of its own, on 7434 while it shares the control API's.
+$relayOk = $false
+foreach ($p in 7435, 7434) {
+    try {
+        $c = [System.Net.Sockets.TcpClient]::new([System.Net.Sockets.AddressFamily]::InterNetwork)
+        $relayOk = $c.ConnectAsync('127.0.0.1', $p).Wait(4000) -and $c.Connected
+        $c.Close()
+    } catch { $relayOk = $false }
+    if ($relayOk) { break }
+}
+if ($relayOk) { Write-Output 'CONTROL relay OK' } else { Write-Output 'CONTROL relay FAILED' }
+# The control API's GETs need no token, so the job must not reach it.
+Reach control-api-read 'http://127.0.0.1:7434/v1/status'
 if (TryPause) { Say pause-no-token SUCCEEDED } else { Say pause-no-token BLOCKED }
 $guessed = $false
 foreach ($t in @(('0' * 64), ('f' * 64), [Guid]::NewGuid().ToString('N') + [Guid]::NewGuid().ToString('N'))) {
@@ -130,16 +203,43 @@ foreach ($t in @(('0' * 64), ('f' * 64), [Guid]::NewGuid().ToString('N') + [Guid
 }
 if ($guessed) { Say pause-guessed-token SUCCEEDED } else { Say pause-guessed-token BLOCKED }
 
-# The network: tailnet, LAN, link-local, the mesh port, loopback services.
+# The network: tailnet, MagicDNS, LAN, multicast, link-local, this host's
+# own addresses, the mesh port on every address, loopback services.
 Reach decoy-tailnet-v4 'http://100.64.77.1:8080/'
 Reach decoy-tailnet-v6 'http://[fd7a:115c:a1e0::77]:8080/'
+Reach magicdns-http 'http://100.100.100.100/'
+UdpReach magicdns-dns '100.100.100.100' 53
 Reach decoy-lan-v4 'http://10.77.0.1:8080/'
+UdpReach lan-multicast '239.77.77.77' 7777
 Reach cloud-metadata 'http://169.254.169.254/metadata/instance?api-version=2021-02-01' @{ Metadata = 'true' }
+Reach host-own-v4 'http://192.0.2.77:8767/'
+Reach host-own-v6 'http://[2001:db8:77::1]:8767/'
 $ip = HostIP
+if ($ip) { Reach host-ip-other-port "http://${ip}:8767/" } else { Say host-ip-other-port BLOCKED 'no host address found' }
 if ($ip) { Reach mesh-port-host-ip "http://${ip}:7433/" } else { Say mesh-port-host-ip BLOCKED 'no host address found' }
+Reach mesh-port-lan 'http://10.77.0.1:7433/'
 Reach mesh-port-tailnet 'http://100.64.77.1:7433/'
+Reach mesh-port-tailnet-v6 'http://[fd7a:115c:a1e0::77]:7433/'
+Reach mesh-port-host-v6 'http://[2001:db8:77::1]:7433/'
 Reach mesh-port-loopback 'http://127.0.0.1:7433/'
+Reach mesh-port-loopback-v6 'http://[::1]:7433/'
 Reach loopback-other-port 'http://127.0.0.1:8766/'
+Reach loopback-v6-other-port 'http://[::1]:8766/'
+# A host service bound to every address ([::] and 0.0.0.0), by loopback.
+Reach loopback-wildcard 'http://127.0.0.1:8767/'
+Reach loopback-v6-wildcard 'http://[::1]:8767/'
+# tailscaled's local API on its named pipe: Windows lets only
+# administrators and the signed-in owner use it.
+try {
+    $pipe = [System.IO.Pipes.NamedPipeClientStream]::new('.', 'ProtectedPrefix\Administrators\Tailscale\tailscaled', [System.IO.Pipes.PipeDirection]::InOut)
+    $pipe.Connect(3000)
+    $w = [System.IO.StreamWriter]::new($pipe)
+    $w.Write("GET /localapi/v0/status HTTP/1.0`r`nHost: local-tailscaled.sock`r`nSec-Tailscale: localapi`r`n`r`n")
+    $w.Flush()
+    $first = [System.IO.StreamReader]::new($pipe).ReadLine()
+    $pipe.Dispose()
+    if ($first -match '^HTTP/1\.\d 200') { Say tailscaled-socket SUCCEEDED "the pipe answered $first" } else { Say tailscaled-socket BLOCKED "the pipe answered $first" }
+} catch { Say tailscaled-socket BLOCKED $_.Exception.Message }
 
 # Privilege.
 $admin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)

@@ -1,0 +1,28 @@
+# Queued by the abuse test (abuse.yml) partway through, not with
+# tentmaker-abuse.yml: after the harness sets [guards] allow_lan = true,
+# to prove the LAN opens and the tailnet and its subnet routes stay shut.
+#
+# GitHub's own runners run this file too on every push. There TENTMAKER is
+# unset, so every step only says it is skipping.
+name: tentmaker-abuse-lan
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  abuse-lan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - run: if [ "${TENTMAKER:-}" = 1 ]; then bash scripts/abuse/attack.sh lan; else echo "not under Tentmaker; skipping"; fi
+
+  abuse-lan-windows:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - shell: pwsh
+        run: if ($env:TENTMAKER -eq '1') { & ./scripts/abuse/attack.ps1 lan } else { Write-Output 'not under Tentmaker; skipping' }

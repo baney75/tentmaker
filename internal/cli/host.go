@@ -118,9 +118,20 @@ func installExecutors(ctx context.Context, goos string, cfg config.Config, binar
 	case "darwin":
 		return darwin.Install(ctx, darwin.Options{StateDir: cfg.StateDir, CacheDir: cfg.CacheDir, Binary: binary, MacOSGuests: o.MacOSGuests})
 	case "windows":
-		return windows.Install(ctx, windows.Options{StateDir: cfg.StateDir, CacheDir: cfg.CacheDir, Binary: binary, AllowLAN: cfg.Guards.AllowLAN})
+		return windows.Install(ctx, windows.Options{BaseDir: windowsBaseDir(config.Path()), StateDir: cfg.StateDir, CacheDir: cfg.CacheDir, Binary: binary, AllowLAN: cfg.Guards.AllowLAN})
 	}
 	return fmt.Errorf("Tentmaker has no sandbox for %s", goos)
+}
+
+// windowsBaseDir is the folder that holds the config, when it is
+// Tentmaker's own (%ProgramData%\Tentmaker), or "": setup never changes the
+// ACL of a folder a custom config path points into.
+func windowsBaseDir(configPath string) string {
+	d := filepath.Dir(configPath)
+	if !strings.EqualFold(filepath.Base(d), "Tentmaker") {
+		return ""
+	}
+	return d
 }
 
 // uninstallExecutors runs this OS's executor Uninstall.

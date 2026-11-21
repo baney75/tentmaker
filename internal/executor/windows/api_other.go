@@ -37,3 +37,6 @@ func (*OSAPI) KillUserProcesses(string) (int, error)              { return 0, er
 func (*OSAPI) DeleteUserTasks(string, string) (int, error)        { return 0, errNotWindows }
 func (*OSAPI) Fetch(ctx context.Context, url, dst string) error   { return httpFetch(ctx, url, dst) }
 func (*OSAPI) PowerShell(context.Context, string) (string, error) { return "", errNotWindows }
+func (*OSAPI) SetWFP([]WFPFilter) error                           { return errNotWindows }
+func (*OSAPI) WFPInstalled() ([]WFPState, error)                  { return nil, errNotWindows }
+func (*OSAPI) RemoveWFP() error                                   { return errNotWindows }

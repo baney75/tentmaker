@@ -124,6 +124,14 @@ func Install(ctx context.Context, o Options) error {
 	if err := os.MkdirAll(e.o.StateDir, 0o755); err != nil {
 		return err
 	}
+	for _, d := range []string{e.o.BaseDir, e.o.StateDir} {
+		if d == "" {
+			continue
+		}
+		if err := e.api.SetDACL(d, baseACL()); err != nil {
+			return fmt.Errorf("protect %s: %w", d, err)
+		}
+	}
 	for _, d := range []string{e.jobsDir(), e.libDir(), e.runnerRoot(), e.secretDir(), e.distDir()} {
 		if err := os.MkdirAll(d, 0o700); err != nil {
 			return err
