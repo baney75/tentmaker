@@ -290,12 +290,17 @@ func TestQuarantineAndRecovery(t *testing.T) {
 	r.tick()
 	name := started(w.ex)[0]
 	r.run(2*time.Second, 2*time.Second)
+	r.forge.HideJob(name, true) // the forge never says which job it ran
 	if _, ok := r.forge.TakeAny(name); !ok {
 		t.Fatal("take")
 	}
 	r.forge.Finish(name)
 	w.ex.Exit(name)
 	r.run(6*time.Second, 2*time.Second)
+	if r.device("alpha").Quarantined {
+		t.Fatalf("quarantined before the 30 s an ended runner's job has to show up")
+	}
+	r.run(30*time.Second, 2*time.Second)
 	if !r.device("alpha").Quarantined {
 		t.Fatalf("device not quarantined")
 	}
@@ -303,11 +308,14 @@ func TestQuarantineAndRecovery(t *testing.T) {
 		t.Fatalf("worker did not take the quarantine")
 	}
 	r.addJob(repoApp)
-	r.run(30*time.Second, 2*time.Second)
-	if n := len(started(w.ex)); n != 1 {
-		t.Fatalf("started %d jobs while quarantined", n-1)
+	// The worker resets once a minute; until then it takes nothing.
+	for i := 0; i < 45 && w.w.Status().Sources[0].Quarantined; i++ {
+		if n := len(started(w.ex)); n != 1 {
+			t.Fatalf("started %d jobs while quarantined", n-1)
+		}
+		r.run(2*time.Second, 2*time.Second)
 	}
-	r.run(30*time.Second, 2*time.Second)
+	r.run(4*time.Second, 2*time.Second)
 	if n := len(started(w.ex)); n != 2 {
 		t.Fatalf("starts = %d; work should resume after the reset", n)
 	}

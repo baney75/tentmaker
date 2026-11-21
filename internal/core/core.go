@@ -55,6 +55,12 @@ type Job struct {
 	// HeadSHA is the commit a check job (Event KindCheck) tests. Check jobs
 	// have no forge ID, so it and Name identify them.
 	HeadSHA string `json:"head_sha,omitempty"`
+	// RunnerID and RunnerName name the runner that took the job, when the
+	// forge says (GitHub does on in-progress and finished jobs). They are
+	// how the broker learns which job a runner took when Runner reports no
+	// JobID.
+	RunnerID   int64  `json:"runner_id,omitempty"`
+	RunnerName string `json:"runner_name,omitempty"`
 }
 
 // Key identifies a job across the pool. A check job's key is its commit and

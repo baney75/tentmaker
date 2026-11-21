@@ -92,6 +92,8 @@ func toJob(repo string, run apiRun, j apiJob) core.Job {
 		FromFork:   fromFork(run, repo),
 		Status:     j.Status,
 		CreatedAt:  created,
+		RunnerID:   j.RunnerID,
+		RunnerName: j.RunnerName,
 	}
 }
 
@@ -361,7 +363,8 @@ func (c *Client) Grant(ctx context.Context, repo, runnerName string, labels []st
 }
 
 // Runner reports a runner's state. A missing runner is Exists=false. GitHub
-// does not say which job a busy runner has, so JobID is 0 (use RunningJobs).
+// does not say which job a busy runner has, so JobID is 0: the broker finds
+// it in RunningJobs, whose jobs carry RunnerID and RunnerName.
 func (c *Client) Runner(ctx context.Context, repo string, runnerID int64) (core.RunnerStatus, error) {
 	rp, err := repoPath(repo)
 	if err != nil {

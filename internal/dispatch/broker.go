@@ -992,28 +992,85 @@ func (b *Broker) watch(ctx context.Context, f core.Forge, rec *grantRec, r grant
 	}
 	busySince := rec.BusySince
 	b.mu.Unlock()
-	if st.JobID == 0 {
-		b.unidentified(ctx, f, rec, r, busySince, now, "the forge does not say which job it took")
-		return
-	}
-	fctx, cancel = context.WithTimeout(ctx, forgeTimeout)
-	j, err := f.JobByID(fctx, r.Repo, st.JobID)
-	cancel()
+	j, ok, err := b.busyJob(ctx, f, r, st)
 	if err != nil {
 		b.noteErr(r.Repo, "read job", err)
 		b.unidentified(ctx, f, rec, r, busySince, now, "its job could not be read")
 		return
 	}
-	b.mu.Lock()
-	rec.TookJob, rec.TookRun, rec.Identified, rec.Fork = j.ID, j.RunID, true, j.FromFork
-	rec.Settled = !j.FromFork
-	b.mu.Unlock()
+	if !ok {
+		b.unidentified(ctx, f, rec, r, busySince, now, "no running job names this runner")
+		return
+	}
+	b.tookLocked(rec, j)
 	if j.FromFork {
 		b.forkCaught(ctx, f, rec, r, j)
 		return
 	}
 	b.log.Info("runner took a job", "runner", r.Name, "device", r.Device, "repo", r.Repo, "job_id", j.ID,
 		"job", j.Name, "granted_for", r.Job.ID)
+}
+
+// busyJob finds the job a busy runner took: by the job ID the forge
+// reports, else among the repo's running jobs by runner ID or name (GitHub's
+// runner API never says which job a busy runner has). ok is false when no
+// job names this runner.
+func (b *Broker) busyJob(ctx context.Context, f core.Forge, r grantRec, st core.RunnerStatus) (core.Job, bool, error) {
+	fctx, cancel := context.WithTimeout(ctx, forgeTimeout)
+	defer cancel()
+	if st.JobID != 0 {
+		j, err := f.JobByID(fctx, r.Repo, st.JobID)
+		return j, err == nil, err
+	}
+	jobs, err := f.RunningJobs(fctx, r.Repo)
+	if err != nil {
+		return core.Job{}, false, err
+	}
+	for _, j := range jobs {
+		if ranOn(j, r) {
+			return j, true, nil
+		}
+	}
+	return core.Job{}, false, nil
+}
+
+// endedJob finds the job a runner that is gone at the forge ran: still
+// listed as running, or the job it was granted for when that job names it.
+// A runner that took another job and ended between two checks is not found.
+func (b *Broker) endedJob(ctx context.Context, f core.Forge, r grantRec) (core.Job, bool, error) {
+	if j, ok, err := b.busyJob(ctx, f, r, core.RunnerStatus{}); err != nil || ok {
+		return j, ok, err
+	}
+	if r.Job.ID == 0 {
+		return core.Job{}, false, nil
+	}
+	fctx, cancel := context.WithTimeout(ctx, forgeTimeout)
+	defer cancel()
+	j, err := f.JobByID(fctx, r.Repo, r.Job.ID)
+	if errors.Is(err, core.ErrNotFound) {
+		return core.Job{}, false, nil
+	}
+	if err != nil {
+		return core.Job{}, false, err
+	}
+	return j, ranOn(j, r), nil
+}
+
+// ranOn reports whether job j names runner r. Runner IDs decide when both
+// are known; else the name, which the broker made unique.
+func ranOn(j core.Job, r grantRec) bool {
+	if j.RunnerID != 0 && r.RunnerID != 0 {
+		return j.RunnerID == r.RunnerID
+	}
+	return j.RunnerName != "" && strings.EqualFold(j.RunnerName, r.Name)
+}
+
+// tookLocked records the job a runner took. A same-repo job settles it.
+func (b *Broker) tookLocked(rec *grantRec, j core.Job) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	rec.TookJob, rec.TookRun, rec.Identified, rec.Fork = j.ID, j.RunID, true, j.FromFork
+	rec.Settled = !j.FromFork
 }
 
 func (b *Broker) unidentified(ctx context.Context, f core.Forge, rec *grantRec, r grantRec, busySince, now time.Time, why string) {
@@ -1116,30 +1173,53 @@ func (b *Broker) verdict(ctx context.Context, f core.Forge, rec *grantRec, r gra
 		b.log.Info("runner ended without taking a job", "runner", r.Name, "device", r.Device, "repo", r.Repo)
 		b.release(&r)
 		settle()
-	case st.Exists && st.Busy && st.JobID != 0:
-		fctx, cancel := context.WithTimeout(ctx, forgeTimeout)
-		j, err := f.JobByID(fctx, r.Repo, st.JobID)
-		cancel()
-		if err != nil {
+	case st.Exists && st.Busy:
+		j, ok, err := b.busyJob(ctx, f, r, st)
+		if err != nil || !ok {
+			if err != nil {
+				b.noteErr(r.Repo, "read ended runner's job", err)
+			}
 			if now.Sub(r.EndedAt) >= identifyTimeout {
-				giveUp("job unreadable")
+				b.tryDelete(ctx, f, r)
+				giveUp(unknownWhy(err, "busy with an unknown job"))
 			}
 			return
 		}
+		b.tookLocked(rec, j)
 		if j.FromFork {
 			b.forkCaught(ctx, f, rec, r, j)
 		} else {
 			b.tryDelete(ctx, f, r)
 		}
 		settle()
-	case st.Exists && st.Busy:
-		if now.Sub(r.EndedAt) >= identifyTimeout {
-			b.tryDelete(ctx, f, r)
-			giveUp("busy with an unknown job")
-		}
 	default:
-		giveUp("runner gone after an unseen job")
+		j, ok, err := b.endedJob(ctx, f, r)
+		if err != nil || !ok {
+			if err != nil {
+				b.noteErr(r.Repo, "read ended runner's job", err)
+			}
+			if now.Sub(r.EndedAt) >= identifyTimeout {
+				giveUp(unknownWhy(err, "runner gone after an unseen job"))
+			}
+			return
+		}
+		b.tookLocked(rec, j)
+		if j.FromFork {
+			b.forkCaught(ctx, f, rec, r, j)
+		} else {
+			b.log.Info("ended runner's job identified", "runner", r.Name, "device", r.Device, "repo", r.Repo,
+				"job_id", j.ID, "job", j.Name)
+		}
+		settle()
 	}
+}
+
+// unknownWhy says why an ended runner's job stayed unknown.
+func unknownWhy(err error, why string) string {
+	if err != nil {
+		return "job unreadable"
+	}
+	return why
 }
 
 func (b *Broker) addStopLocked(rec *grantRec) {

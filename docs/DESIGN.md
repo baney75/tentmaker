@@ -252,6 +252,14 @@ idle past `idle_ttl`, or busy on a fork job means `Stop` to that worker on its n
 `CancelRun` for a fork), plus `DeleteRunner`. A worker silent for 2 minutes gets its runners
 deleted. Never grants more runners for one job than one per worker.
 
+The broker identifies a busy runner's job by the `JobID` that `Runner` reports, or, when it is 0
+(GitHub never reports one), by the `RunningJobs` entry whose `RunnerID` (else `RunnerName`) is
+this grant's runner. A runner that ended before it was seen busy is identified by `RunningJobs`
+or by the job it was granted for when that job names it; one still unknown 30 s after it ended
+quarantines its device. Tests run every runner-mode case again against `fakeforge.LikeGitHub`,
+since the default fake reports `JobID` and once hid that every real GitHub job was stopped or
+quarantined its device (review r1 partA first-F1, sol-F1).
+
 Worker: each tick (2 s) reads `Budget.Decide`, applies `SetPoolLimit`, reports `Running` and
 `Ended`, asks sources for `Free` offers, starts each with the matching executor, honors `Stop`,
 evicts on `Evict`, resets the executor when nothing runs and the node is dirty, persists

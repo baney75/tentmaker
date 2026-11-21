@@ -205,6 +205,10 @@ type rig struct {
 	planner *planner
 }
 
+// rigLikeGitHub makes newRig's fake forge behave like GitHub (see
+// fakeforge.LikeGitHub). TestRunnerModeLikeGitHub sets it.
+var rigLikeGitHub bool
+
 func testConfig(device string, repos ...config.Repo) config.Config {
 	c := config.Default(16<<30, 8)
 	c.Device = device
@@ -222,6 +226,7 @@ func newRig(t *testing.T, repos ...config.Repo) *rig {
 	r.log = slog.New(slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	r.cfg = testConfig("alpha", repos...)
 	r.forge = fakeforge.New("github", clk.Now)
+	r.forge.LikeGitHub(rigLikeGitHub)
 	r.bdir = t.TempDir()
 	r.broker = r.newBroker(r.cfg, r.bdir, nil)
 	return r

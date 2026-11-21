@@ -332,6 +332,26 @@ func TestRunningJobs(t *testing.T) {
 	}
 }
 
+// The runner API never says which job a busy runner has, so the jobs must
+// carry the runner that took them (review r1 partA first-F1).
+func TestJobsNameTheirRunner(t *testing.T) {
+	h := newHarness(t)
+	running := mkJob(70, 7, "in_progress", t0)
+	running["runner_id"], running["runner_name"] = 4242, "tm-box-1"
+	h.f.json("GET", inProgressURI, 200, runList(mkRun(7, "acme/app", t0, "u")))
+	h.f.json("GET", jobsURI(7), 200, jobList(running))
+	h.f.json("GET", "/repos/acme/app/actions/jobs/70", 200, running)
+	h.f.json("GET", "/repos/acme/app/actions/runs/7", 200, mkRun(7, "acme/app", t0, "u"))
+	got, err := h.c.RunningJobs(context.Background(), "acme/app")
+	if err != nil || len(got) != 1 || got[0].RunnerID != 4242 || got[0].RunnerName != "tm-box-1" {
+		t.Fatalf("RunningJobs = %+v, %v", got, err)
+	}
+	j, err := h.c.JobByID(context.Background(), "acme/app", 70)
+	if err != nil || j.RunnerID != 4242 || j.RunnerName != "tm-box-1" {
+		t.Fatalf("JobByID = %+v, %v", j, err)
+	}
+}
+
 func TestGrantParsesJITConfig(t *testing.T) {
 	h := newHarness(t)
 	h.f.json("POST", "/repos/acme/app/actions/runners/generate-jitconfig", 201, map[string]any{

@@ -84,6 +84,8 @@ type Forge struct {
 	statuses map[string]map[string]string // repo@sha -> context -> state
 	posts    []StatusPost
 	token    string
+
+	likeGitHub bool // Runner never reports a busy runner's JobID
 }
 
 var (
@@ -232,6 +234,7 @@ func (f *Forge) Take(name string, id int64) error {
 	}
 	r.Busy, r.JobID, r.Online = true, id, true
 	j.Status = "in_progress"
+	f.nameRunnerLocked(r, j)
 	return nil
 }
 
@@ -270,15 +273,40 @@ func (f *Forge) TakeAny(name string) (core.Job, bool) {
 	}
 	r.Busy, r.JobID, r.Online = true, best.ID, true
 	best.Status = "in_progress"
+	f.nameRunnerLocked(r, best)
 	return *best, true
 }
 
-// HideJob makes Runner report JobID 0 for the named runner while busy.
+// LikeGitHub makes the fake behave like GitHub: Runner never says which job
+// a busy runner has (JobID 0), and only the jobs (JobByID, RunningJobs) name
+// the runner that took them.
+func (f *Forge) LikeGitHub(on bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.likeGitHub = on
+}
+
+// HideJob makes Runner report JobID 0 for the named runner while busy, and
+// the job it took name no runner: the forge never says which job it is.
 func (f *Forge) HideJob(name string, hide bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if r := f.byName(name); r != nil {
-		r.HideJob = hide
+	r := f.byName(name)
+	if r == nil {
+		return
+	}
+	r.HideJob = hide
+	if j := f.jobs[r.Repo][r.JobID]; r.Busy && j != nil {
+		f.nameRunnerLocked(r, j)
+	}
+}
+
+// nameRunnerLocked records on j the runner that took it, unless the runner
+// hides its job.
+func (f *Forge) nameRunnerLocked(r *Runner, j *core.Job) {
+	j.RunnerID, j.RunnerName = r.ID, r.Name
+	if r.HideJob {
+		j.RunnerID, j.RunnerName = 0, ""
 	}
 }
 
@@ -506,7 +534,7 @@ func (f *Forge) Runner(ctx context.Context, repo string, runnerID int64) (core.R
 	if r.Online || r.Busy {
 		st.Status = "online"
 	}
-	if r.Busy && !r.HideJob {
+	if r.Busy && !r.HideJob && !f.likeGitHub {
 		st.JobID = r.JobID
 	}
 	return st, nil
