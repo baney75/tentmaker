@@ -399,3 +399,18 @@ func (e *Executor) protectDir(d string, aces []ACE) error {
 	}
 	return nil
 }
+
+// LoopbackNote is the doctor's note for every Windows device: the fence
+// that keeps a job off this host's services also blocks servers the job
+// starts on 127.0.0.1 or ::1, since WFP can't tell a job's own listener
+// from the host's (review r2 partS second-S2-F6; TestWFPLoopbackConditionsLive).
+var LoopbackNote = core.Problem{
+	Check: "windows-loopback",
+	What:  "Windows jobs can't reach servers they start on 127.0.0.1 or ::1, so tests that run a local server fail here",
+	Fix:   "run jobs that need a local test server on a Linux or macOS device (runs-on: [self-hosted, tentmaker, linux])",
+}
+
+// Notes implements the doctor's optional notes.
+func (e *Executor) Notes(ctx context.Context) []core.Problem {
+	return []core.Problem{LoopbackNote}
+}

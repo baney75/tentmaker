@@ -312,7 +312,7 @@ physical LAN only, never what the tailnet routes.
     remote user comes from IPsec credentials). A live probe showed it, even with an Everyone
     descriptor, while the loopback flag and the listener's `ALE_USER_ID` did match
     (`wfp_live_windows_test.go`, review r2 partS second-S2-F6). Letting a job reach its own
-    listeners needs a callout driver or an AppContainer, not filters. The filters have fixed keys; `SetWFP`
+    listeners needs a callout driver or an AppContainer, not filters; until then the executor's `Notes` makes doctor warn about it on every Windows device. The filters have fixed keys; `SetWFP`
     deletes every Tentmaker key and adds the wanted filters in one transaction, and
     reads them back by key. Each filter's description spells out all of its conditions.
   - `checkNet` reads the profiles, the group's rules and the DNS servers (`Get-DnsClientServerAddress`,

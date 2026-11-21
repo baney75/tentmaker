@@ -1258,3 +1258,21 @@ func TestStartingJobIsProtected(t *testing.T) {
 	v.api.startErr = nil
 	must(t, v.e.Start(ctx, spec("job-mid-2", "")))
 }
+
+// The doctor tells a Windows owner that jobs have no usable loopback, with
+// a fix, since the fence can't allow a job's own listeners (review r2 partS
+// second-S2-F6).
+func TestDoctorNotesTheLoopbackLimit(t *testing.T) {
+	var e any = &Executor{}
+	n, ok := e.(interface {
+		Notes(context.Context) []core.Problem
+	})
+	if !ok {
+		t.Fatal("the Windows executor has no doctor notes")
+	}
+	ps := n.Notes(context.Background())
+	if len(ps) != 1 || ps[0].Check != "windows-loopback" || ps[0].Fix == "" ||
+		!strings.Contains(ps[0].What, "127.0.0.1") {
+		t.Fatalf("notes = %+v, want the loopback limit with a fix", ps)
+	}
+}
