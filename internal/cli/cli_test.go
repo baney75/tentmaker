@@ -591,6 +591,33 @@ func TestVerifyToken(t *testing.T) {
 	}
 }
 
+// An app installation token (Actions' GITHUB_TOKEN) gets 403 from /user
+// but is valid; a token GitHub refuses everywhere is not.
+func TestVerifyTokenGitHubInstallation(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth := r.Header.Get("Authorization")
+		switch {
+		case !strings.Contains(auth, canary):
+			w.WriteHeader(http.StatusUnauthorized)
+		case r.URL.Path == "/user":
+			w.WriteHeader(http.StatusForbidden)
+			io.WriteString(w, `{"message":"Resource not accessible by integration"}`)
+		case r.URL.Path == "/installation/repositories" && strings.Contains(auth, "inst"):
+			io.WriteString(w, `{"total_count":1,"repositories":[]}`)
+		default:
+			w.WriteHeader(http.StatusForbidden)
+		}
+	}))
+	defer srv.Close()
+	login, err := verifyToken(context.Background(), srv.Client(), "github", srv.URL, canary+"inst")
+	if err != nil || login != "" {
+		t.Errorf("installation token: %q %v", login, err)
+	}
+	if _, err := verifyToken(context.Background(), srv.Client(), "github", srv.URL, canary); err == nil || !strings.Contains(err.Error(), "403") {
+		t.Errorf("refused token: %v", err)
+	}
+}
+
 func TestPauseResumeNeedsService(t *testing.T) {
 	f := newFixture(t)
 	f.setUp()
