@@ -399,7 +399,9 @@ are rediscovered every 30 s; a peer failing 3 calls in a row is skipped for a mi
 - Update: download, verify, write next to the binary, run `<new> version --json` as a health
   check, swap atomically (Windows: rename the running exe aside, then move the new one in), restart
   the service, and roll back to the old binary if the daemon isn't healthy within 60 s. Auto-update
-  only between jobs.
+  only between jobs: after the download it takes `Worker.Hold`, which closes admission and counts
+  jobs under one lock, and keeps it through the swap and exit, so no job starts between the last
+  zero-jobs check and the restart. A hold is memory only; a restart drops it.
 - Auto-update has no one watching, so the daemon guards itself: before it swaps the binary it
   writes `<state>/update-pending.json` (from, to, time), and if that write fails it does not
   update at all; a failed swap deletes the marker. The new binary deletes it once

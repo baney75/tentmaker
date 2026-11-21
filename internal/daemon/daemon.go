@@ -851,7 +851,11 @@ func (d *Daemon) autoUpdate(ctx context.Context, cfg config.Config) error {
 	if r, err := filepath.EvalSymlinks(exe); err == nil {
 		exe = r
 	}
-	if d.runningJobs() > 0 {
+	// Hold admission from here to the exit: a job that started after a
+	// plain zero-jobs check would be cut off by the restart.
+	jobs, release := d.holdAdmission()
+	if jobs > 0 {
+		release()
 		return errors.New("a job started during the download; trying again later")
 	}
 	// The marker goes down before the swap: without it a new binary that
@@ -859,12 +863,14 @@ func (d *Daemon) autoUpdate(ctx context.Context, cfg config.Config) error {
 	// (review r1 partB sol-F4). A marker left by a swap that never happened
 	// names another version, and the next start clears it as stale.
 	if err := d.guard.markPending(d.o.Version, rel.Version, d.o.Now()); err != nil {
+		release()
 		return fmt.Errorf("not updating to %s: the pending-update marker that lets a bad update roll back was not written: %w", rel.Version, err)
 	}
 	if err := d.o.Updater.Apply(dctx, bin, exe, rel.Version); err != nil {
 		if cerr := d.guard.clearPending(); cerr != nil {
 			d.log.Warn("pending-update marker not cleared after a failed apply", "error", cerr)
 		}
+		release()
 		return err
 	}
 	d.log.Info("update applied; exiting so the service manager starts the new binary", "version", rel.Version)
@@ -962,6 +968,18 @@ func (d *Daemon) rollback(p pendingUpdate) error {
 	d.log.Error("the update did not get healthy in time; rolled back, and auto-update will skip it",
 		"bad", p.To, "back_to", p.From, "within", UpdateGrace.String())
 	return fmt.Errorf("rolled back the update to %s: %w", p.To, ErrRestart)
+}
+
+// holdAdmission stops the worker taking jobs until release, and returns the
+// jobs it still counts. With no worker there is nothing to hold.
+func (d *Daemon) holdAdmission() (int, func()) {
+	d.mu.RLock()
+	w := d.worker
+	d.mu.RUnlock()
+	if w == nil {
+		return 0, func() {}
+	}
+	return w.Hold()
 }
 
 func (d *Daemon) runningJobs() int {

@@ -87,6 +87,7 @@ type fakeUpdater struct {
 	newer      atomic.Bool
 	applied    atomic.Int32
 	rolledBack atomic.Value // string: the binary rolled back
+	onApply    func()       // runs inside Apply, like its staging and health check
 }
 
 func (f *fakeUpdater) Rollback(curBin string) error {
@@ -103,6 +104,9 @@ func (f *fakeUpdater) Download(ctx context.Context, rel update.Release, dir stri
 }
 func (f *fakeUpdater) Apply(ctx context.Context, newBin, curBin, want string) error {
 	f.applied.Add(1)
+	if f.onApply != nil {
+		f.onApply()
+	}
 	return nil
 }
 
@@ -524,6 +528,37 @@ func TestDaemonSkipsARolledBackVersion(t *testing.T) {
 	}
 	if err := r.stop(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// While the update is applied the worker admits nothing: a job that
+// started after the last zero-jobs check would be cut off by the restart
+// right after (review r1 partB sol-F5).
+func TestDaemonAutoUpdateHoldsAdmissionAcrossTheSwap(t *testing.T) {
+	r := newRig(t, func(c *config.Config) { c.Update.Auto = true; c.Mesh.Enabled = false })
+	freeDuringApply := atomic.Int32{}
+	freeDuringApply.Store(-1)
+	r.up.onApply = func() {
+		if w := r.d.Status(context.Background()).Worker; w != nil {
+			freeDuringApply.Store(int32(w.Slots.Free))
+		}
+	}
+	r.start()
+	r.eventually("the worker to have free slots", func() bool {
+		w := r.d.Status(context.Background()).Worker
+		return w != nil && w.Slots.Free > 0
+	})
+	r.up.newer.Store(true)
+	select {
+	case err := <-r.done:
+		if !errors.Is(err, ErrRestart) {
+			t.Fatalf("run returned %v, want ErrRestart", err)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("no restart after an update")
+	}
+	if n := freeDuringApply.Load(); n != 0 {
+		t.Fatalf("the worker offered %d free slots while the update was applied", n)
 	}
 }
 

@@ -65,6 +65,7 @@ type Worker struct {
 	lastTick     time.Time
 	relays       map[string]*relayEntry // relay id -> archive; memory only
 	cleanErrs    map[string]string      // leftover runner -> why its Clean failed; memory only
+	holds        int                    // Hold calls not yet released; memory only
 
 	starts sync.WaitGroup // executor Starts in flight
 }
@@ -658,7 +659,7 @@ func (w *Worker) capacityLocked(e *execInfo) int {
 }
 
 func (w *Worker) freeLocked(d core.Decision, now time.Time) int {
-	if w.st.Paused || w.shutting || !d.Admit {
+	if w.st.Paused || w.shutting || w.holds > 0 || !d.Admit {
 		return 0
 	}
 	free := d.Slots - len(w.st.Jobs)
@@ -1011,6 +1012,27 @@ func (w *Worker) Pause(reason string) {
 	w.log.Info("paused", "reason", reason)
 	if err := w.save(); err != nil {
 		w.log.Error("state not saved", "error", err)
+	}
+}
+
+// Hold takes no new jobs until release runs, and returns how many jobs
+// were counted when it took hold. The count and the hold are taken under
+// one lock, so a zero count means no job can start until release: the
+// daemon holds across an update's swap and restart, where checking for
+// zero jobs first left a window for a job to start (review r1 partB
+// sol-F5). Unlike Pause it is not saved, so a restart drops it.
+func (w *Worker) Hold() (jobs int, release func()) {
+	w.mu.Lock()
+	w.holds++
+	jobs = len(w.st.Jobs)
+	w.mu.Unlock()
+	var once sync.Once
+	return jobs, func() {
+		once.Do(func() {
+			w.mu.Lock()
+			w.holds--
+			w.mu.Unlock()
+		})
 	}
 }
 
