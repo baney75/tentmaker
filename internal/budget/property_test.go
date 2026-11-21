@@ -64,7 +64,7 @@ func randScenario(r *rand.Rand) scenario {
 			State: core.PowerState{Known: r.Intn(6) != 0, OnAC: r.Intn(2) == 0, HasBattery: r.Intn(3) != 0, BatteryPercent: r.Intn(101)},
 			Err:   pick(r, errs...),
 		},
-		idle:  power.FakeIdle{Idle: time.Duration(r.Intn(60)-5) * time.Minute, Err: pick(r, errs...)},
+		idle: power.FakeIdle{Idle: time.Duration(r.Intn(60)-5) * time.Minute, Err: pick(r, errs...)},
 		probe: guards.Fake{
 			Memory: int64(pick(r, 0, config.GiB, 4*config.GiB, 64*config.GiB)),
 			Disk:   int64(pick(r, 0, 4*config.GiB, 100*config.GiB)),

@@ -1,6 +1,7 @@
 package github
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -36,6 +37,7 @@ func FuzzMigrateWorkflow(f *testing.F) {
 		"on: push\njobs:\n  a: {steps: [], runs-on: [\n    ubuntu-latest\n    ]}\n",
 		"on: push\njobs:\n  a:\n    runs-on: ${{ matrix.os }}\n    strategy:\n      matrix:\n        os: [ubuntu-latest, windows-2022, macos-15]\n    steps:\n      - run: echo\n",
 		"on: push\nx: |\n  jobs:\n    runs-on: ubuntu-latest\njobs:\n  a:\n    runs-on: ubuntu-latest\n",
+		"on: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - run: |\n          runs-on: ubuntu-latest\n",
 		"jobs:\n  a:\n    runs-on: \"ubuntu-latest\" # c\n",
 		"on: [push]\njobs:\n  b:\n    runs-on: 'ubuntu-24.04'\n    steps:\n      - run: sudo apt-get install x\n",
 	} {
@@ -70,8 +72,62 @@ func FuzzMigrateWorkflow(f *testing.F) {
 			if err := yaml.Unmarshal(once, &out); err != nil {
 				t.Fatalf("valid YAML became invalid on %s: %v\nin:\n%s\nout:\n%s", platform, err, src, once)
 			}
+			if why := sameButRunsOn(&in, &out, 0); why != "" {
+				t.Fatalf("YAML outside runs-on values changed on %s: %s\nin:\n%s\nout:\n%s", platform, why, src, once)
+			}
 		}
 	})
+}
+
+// sameButRunsOn compares two parsed workflows and returns what differs,
+// or "" when they match. Values of runs-on keys are not compared, and a
+// concurrency key that only the output has is skipped: those are the
+// edits MigrateWorkflow makes. The line check above can't see a runs-on
+// line inside a script or string, so this one reads what YAML reads.
+func sameButRunsOn(a, b *yaml.Node, depth int) string {
+	if depth > 64 {
+		return ""
+	}
+	if a.Kind != b.Kind {
+		return fmt.Sprintf("line %d: kind %v became %v", a.Line, a.Kind, b.Kind)
+	}
+	if a.Kind == yaml.ScalarNode || a.Kind == yaml.AliasNode {
+		if a.Value != b.Value {
+			return fmt.Sprintf("line %d: %q became %q", a.Line, a.Value, b.Value)
+		}
+		return ""
+	}
+	ac, bc := a.Content, b.Content
+	if a.Kind == yaml.MappingNode && depth <= 2 && len(bc) == len(ac)+2 {
+		// The added concurrency block: drop it from the output's top level.
+		for k := 0; k+1 < len(bc); k += 2 {
+			if bc[k].Value == "concurrency" && !hasKey(ac, "concurrency") {
+				bc = append(append([]*yaml.Node{}, bc[:k]...), bc[k+2:]...)
+				break
+			}
+		}
+	}
+	if len(ac) != len(bc) {
+		return fmt.Sprintf("line %d: %d children became %d", a.Line, len(ac), len(bc))
+	}
+	for i := range ac {
+		if a.Kind == yaml.MappingNode && i%2 == 1 && ac[i-1].Kind == yaml.ScalarNode && ac[i-1].Value == "runs-on" {
+			continue
+		}
+		if why := sameButRunsOn(ac[i], bc[i], depth+1); why != "" {
+			return why
+		}
+	}
+	return ""
+}
+
+func hasKey(content []*yaml.Node, key string) bool {
+	for k := 0; k+1 < len(content); k += 2 {
+		if content[k].Value == key {
+			return true
+		}
+	}
+	return false
 }
 
 // untouchedLines drops runs-on lines, the block-list items under them,

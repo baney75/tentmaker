@@ -416,6 +416,14 @@ func TestGitLabDuration(t *testing.T) {
 	if _, ok := gitlabDuration("soon"); ok {
 		t.Error("soon parsed")
 	}
+	// Each part fits in a Duration but the sum does not. Summed as
+	// Durations it wraps to about 0.3s; it must read as a long timeout.
+	if got, ok := gitlabDuration("2562047h 2562047h 94m 34s"); !ok || got < maxTimeout {
+		t.Errorf("an overflowing sum: %v %v, want at least %v", got, ok, maxTimeout)
+	}
+	if got, ok := gitlabDuration("99999999999 weeks"); !ok || got < maxTimeout {
+		t.Errorf("a huge timeout: %v %v, want at least %v", got, ok, maxTimeout)
+	}
 }
 
 // A matrix job runs once per combination. Each needs its own status

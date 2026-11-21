@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
@@ -57,7 +58,18 @@ func FuzzConfigRoundTrip(f *testing.F) {
 		if err != nil {
 			return
 		}
-		_ = c1.Validate()
+		if len(c1.Validate()) == 0 {
+			// A config Validate accepts must not hand the budget NaN,
+			// infinite or negative CPUs, or a negative slot cap.
+			for _, v := range []float64{c1.Budget.Everyday.CPUs, c1.Budget.Boost.CPUs, c1.Job.CPUs} {
+				if math.IsNaN(v) || math.IsInf(v, 0) || v < 0 {
+					t.Fatalf("Validate accepted cpus = %v\ninput:\n%s", v, data)
+				}
+			}
+			if c1.Job.MaxSlots < 0 {
+				t.Fatalf("Validate accepted max_slots = %d\ninput:\n%s", c1.Job.MaxSlots, data)
+			}
+		}
 		out := filepath.Join(dir, "out.toml")
 		if err := Save(out, c1); err != nil {
 			t.Fatalf("Save of a loaded config failed: %v\ninput:\n%s", err, data)

@@ -131,6 +131,19 @@ jobs:
 	}
 }
 
+// A runs-on line inside a job's script is script text, not the job's
+// runs-on key, and must stay as written.
+func TestMigrateLeavesRunsOnInAScriptAlone(t *testing.T) {
+	src := "on: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - run: |\n          runs-on: ubuntu-latest\n"
+	out, _, changed := migrate(t, src, "linux")
+	if !changed || !strings.Contains(out, "    runs-on: ${{") {
+		t.Fatalf("the job's runs-on was not moved to the pool:\n%s", out)
+	}
+	if !strings.Contains(out, "\n          runs-on: ubuntu-latest\n") {
+		t.Fatalf("the script's runs-on line was rewritten:\n%s", out)
+	}
+}
+
 func TestMigrateKeepsExistingConcurrency(t *testing.T) {
 	src := `on: [push]
 concurrency:
