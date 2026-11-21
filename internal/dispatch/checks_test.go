@@ -362,3 +362,66 @@ func TestCheckLogsPruned(t *testing.T) {
 		t.Error("the new log was pruned")
 	}
 }
+
+// Two brokers with the same checks-mode repo see the same commit with no
+// status yet. Workers ask both. The claimer must make each check run once:
+// claims are keyed per commit and job, and held by the granting broker, so
+// a worker that asks both brokers can't win the same check from each.
+func TestTwoBrokersChecksRunOnce(t *testing.T) {
+	r := newRig(t, checksRepo(repoSite))
+	c := &claimer{}
+	ba := r.newBroker(testConfig("alpha", checksRepo(repoSite)), t.TempDir(), c)
+	bb := r.newBroker(testConfig("beta", checksRepo(repoSite)), t.TempDir(), c)
+	r.broker = ba
+	r.forge.SetFile(repoSite, sha1, ciWorkflow, []byte("test\nlint\n"))
+	r.forge.SetFile(repoSite, sha2, ciWorkflow, []byte("test\nlint\n"))
+	r.forge.SetCommits(repoSite, []core.Commit{{SHA: sha1, Ref: "main"}, {SHA: sha2, Ref: "topic"}})
+	wa := r.addWorker("gamma", 8)
+	wb := r.addWorker("delta", 8)
+	wa.sources = []core.WorkSource{ba, bb}
+	wb.sources = []core.WorkSource{bb, ba}
+	for i := 0; i < 5; i++ {
+		for _, b := range []*Broker{ba, bb} {
+			if err := b.Tick(bg); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for _, w := range r.workers {
+			if err := w.w.Tick(bg); err != nil {
+				t.Fatal(err)
+			}
+		}
+		r.clk.Add(2 * time.Second)
+	}
+	runs := map[string][]string{}
+	for _, w := range r.workers {
+		for _, n := range started(w.ex) {
+			spec, _ := w.ex.Spec(n)
+			b := bundleOf(t, spec)
+			k := b.SHA[:4] + "/" + b.Job.Name
+			runs[k] = append(runs[k], w.name+":"+n)
+		}
+	}
+	if len(runs) != 4 {
+		t.Fatalf("checks run = %v, want sha1 and sha2 x test and lint", runs)
+	}
+	for k, v := range runs {
+		if len(v) != 1 {
+			t.Fatalf("check %s ran %d times: %v", k, len(v), v)
+		}
+	}
+	pending := map[string]int{}
+	for _, p := range r.forge.Posts() {
+		if p.State == "pending" {
+			pending[p.SHA[:4]+"/"+p.Context]++
+		}
+	}
+	for k, n := range pending {
+		if n != 1 {
+			t.Fatalf("%s got %d pending statuses, want 1: %v", k, n, pending)
+		}
+	}
+	if c.denied == 0 {
+		t.Fatalf("no claim was denied; the brokers did not race")
+	}
+}

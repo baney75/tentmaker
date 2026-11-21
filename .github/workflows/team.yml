@@ -1,0 +1,485 @@
+# Tentmaker as a team pool on a real tailnet. GitHub's throwaway runners join
+# the tailnet as ephemeral nodes tagged tag:tentmaker-ci and stand in for a
+# team's devices: broker A and later broker D hold the GITHUB_TOKEN and the
+# repo (checks mode); workers B (Linux) and C (Windows) hold no token and
+# take work over the mesh. E only joins with Tailscale SSH, for devices add.
+#
+# Jobs coordinate through commit statuses on this workflow's head sha
+# (contexts tm-team/<run id>.<attempt>.<signal>, see .github/team/team.sh).
+# Broker A pushes throwaway tm-team-<run id>-<attempt>-* branches that carry
+# a child of this commit that changes only .github/team/check/*; the cleanup
+# job deletes them.
+#
+# Scenarios (metrics/team-<scenario>.json, summary on broker A's page):
+#   1 pool            every device's pool lists A, B, C with platforms in 2 min
+#   2 spread          A's worker paused: Linux checks run on B, Windows on C, once
+#   3 worker-loss     B drops off mid-check: "device went offline" in 3 min, re-push runs elsewhere
+#   4 two-brokers     D joins with the same repo and token: every check still runs once
+#   5 broker-restart  A restarts while B runs checks: results still post, once
+#   6 devices-add     best effort: A installs onto E over Tailscale SSH
+#
+# The TS_AUTHKEY secret is used only here, on push and workflow_dispatch;
+# never add pull_request to this workflow.
+name: team
+
+on:
+  push:
+    branches: [test/team]
+  workflow_dispatch:
+
+permissions:
+  contents: write # push and delete the throwaway branches
+  statuses: write # the coordination signals and the checks' statuses
+
+concurrency:
+  group: team-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  TM_VERSION: 0.0.0-team.${{ github.run_number }}
+  TM_PORT: "8765"
+  REPO: ${{ github.repository }}
+  TEAM_SHA: ${{ github.sha }}
+  RUN_KEY: ${{ github.run_id }}.${{ github.run_attempt }}
+  POOL: ci-${{ github.run_id }}
+  HOST_PREFIX: tm-${{ github.run_id }}
+  BR_PREFIX: tm-team-${{ github.run_id }}-${{ github.run_attempt }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+      - name: build the release archives
+        run: scripts/build.sh "$TM_VERSION"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist
+          path: dist/
+          retention-days: 3
+
+  broker-a:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 80
+    env:
+      ROLE: a
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist
+      - name: join the tailnet
+        id: ts
+        uses: tailscale/github-action@064b10558093f38325e838ddea35486bdc6b1d5c # v4.4.0
+        with:
+          authkey: ${{ secrets.TS_AUTHKEY }}
+          hostname: ${{ env.HOST_PREFIX }}-a
+          retry: "3"
+      - name: say why the tailnet login failed
+        if: failure() && steps.ts.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/team/team.sh login-hint
+      - name: record this node's tailnet identity
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: bash .github/team/team.sh identity
+      - &install-linux
+        name: install with the one-liner from a fake release
+        run: |
+          srv=$RUNNER_TEMP/srv
+          mkdir -p "$srv/latest/download"
+          cp dist/* "$srv/latest/download/"
+          cp scripts/install.sh "$srv/install.sh"
+          nohup python3 -m http.server --bind 127.0.0.1 --directory "$srv" "$TM_PORT" >"$RUNNER_TEMP/http.log" 2>&1 &
+          up=0
+          for _ in $(seq 1 50); do
+            if curl -fsS --max-time 2 -o /dev/null "http://127.0.0.1:$TM_PORT/latest/download/SHA256SUMS"; then up=1; break; fi
+            sleep 0.2
+          done
+          test "$up" = 1 || { echo "::error::the release server did not start"; cat "$RUNNER_TEMP/http.log"; exit 1; }
+          curl -fsSL --max-time 60 "http://127.0.0.1:$TM_PORT/install.sh" |
+            sudo env TENTMAKER_DOWNLOAD_BASE="http://127.0.0.1:$TM_PORT" sh
+          got=$(tentmaker version --json | jq -r .version)
+          test "$got" = "$TM_VERSION" || { echo "::error::installed $got, want $TM_VERSION"; exit 1; }
+          # The runner image leaves /home/linuxbrew world-readable, and setup
+          # refuses a host where the CI user could read a home.
+          for h in /home/*; do sudo chmod o-rwx "$h"; done
+      - &setup-linux
+        name: setup (mesh on, pool ci-<run id>, tagged devices are members)
+        id: setup
+        run: |
+          rc=0
+          sudo tentmaker setup --yes --json --device "$HOST_PREFIX-$ROLE" --pool "$POOL" --no-gh \
+            --memory 4GiB --boost-memory 8GiB --cpus 4 --boost-cpus 4 >"$RUNNER_TEMP/setup.json" || rc=$?
+          cat "$RUNNER_TEMP/setup.json"
+          test "$rc" = 0 || { echo "::error::setup exited $rc"; exit 1; }
+          jq -e '.ok == true and .service == "running"' "$RUNNER_TEMP/setup.json" >/dev/null || { echo "::error::setup did not finish"; exit 1; }
+          # Tagged nodes are never "the same user": serve them by membership.
+          sudo python3 .github/team/editcfg.py /etc/tentmaker/config.toml
+          sudo systemctl restart tentmaker
+      - name: pause A's worker, connect GitHub and add the repo (checks mode)
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sudo tentmaker pause --json team spread | jq -e '.ok == true and .paused == true'
+          bash .github/team/team.sh placeholders
+          printf %s "$GITHUB_TOKEN" | sudo tentmaker connect github --token-stdin --json | jq -e '.ok == true'
+          args=()
+          while read -r b; do args+=(--branch "$b"); done < <(bash .github/team/team.sh branches)
+          sudo tentmaker repo add "$REPO" --mode checks --allow-public --workflow .github/workflows/tentmaker-team.yml "${args[@]}" --json | tee "$RUNNER_TEMP/repo.json"
+          jq -e '.ok == true' "$RUNNER_TEMP/repo.json" >/dev/null
+          bash .github/team/team.sh ready a
+      - name: 1 pool
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: bash .github/team/team.sh a-pool
+      - name: 2 spread
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: bash .github/team/team.sh a-spread
+      - name: 3 worker-loss
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: bash .github/team/team.sh a-worker-loss
+      - name: 4 two-brokers
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: bash .github/team/team.sh a-two-brokers
+      - name: 5 broker-restart
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: bash .github/team/team.sh a-broker-restart
+      - name: 6 devices-add (best effort)
+        continue-on-error: true
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: bash .github/team/team.sh a-devices-add
+      - name: tell the other jobs it is done
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: bash .github/team/team.sh sig-post done success "scenarios finished"
+      - name: summary
+        if: always()
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: bash .github/team/team.sh summary
+      - &dump-linux
+        name: dump on failure
+        if: failure()
+        run: |
+          echo "== status"; sudo tentmaker status --json || true
+          echo "== pool"; sudo tentmaker pool --json || true
+          echo "== tailscale"; sudo tailscale status || true
+          echo "== config"; sudo cat /etc/tentmaker/config.toml || true
+          echo "== daemon log"; sudo journalctl -u tentmaker --no-pager -n 600 || true
+          for f in /var/lib/tentmaker/broker.json /var/lib/tentmaker/state.json; do echo "== $f"; sudo tail -c 20000 "$f" 2>/dev/null; echo; done
+          sudo sh -c 'for f in /var/lib/tentmaker/checks/*.log; do echo "== $f"; tail -n 40 "$f"; done' 2>/dev/null || true
+      - name: keep the metrics and the daemon log
+        if: always()
+        run: |
+          sudo journalctl -u tentmaker --no-pager >metrics/daemon-a.log 2>/dev/null || true
+          sudo sh -c 'cat /var/lib/tentmaker/checks/*.log' >metrics/checks-a.log 2>/dev/null || true
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: team-metrics
+          path: metrics/
+          retention-days: 14
+      - &abort
+        name: tell the other jobs this one failed
+        if: failure()
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: bash .github/team/team.sh abort "$GITHUB_JOB" "$GITHUB_JOB failed; see its log"
+      - &uninstall-linux
+        name: uninstall --purge
+        if: ${{ !cancelled() && steps.setup.outcome != 'skipped' }}
+        run: |
+          sudo tentmaker uninstall --purge --yes --json | tee "$RUNNER_TEMP/uninstall.json"
+          jq -e '.ok == true and .purged == true' "$RUNNER_TEMP/uninstall.json" >/dev/null || { echo "::error::uninstall did not finish"; exit 1; }
+
+  worker-b:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 80
+    env:
+      ROLE: b
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist
+      - name: join the tailnet
+        id: ts
+        uses: tailscale/github-action@064b10558093f38325e838ddea35486bdc6b1d5c # v4.4.0
+        with:
+          authkey: ${{ secrets.TS_AUTHKEY }}
+          hostname: ${{ env.HOST_PREFIX }}-b
+          retry: "3"
+      - name: say why the tailnet login failed
+        if: failure() && steps.ts.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/team/team.sh login-hint
+      - name: record this node's tailnet identity
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: bash .github/team/team.sh identity
+      - *install-linux
+      - *setup-linux
+      - name: ready
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: bash .github/team/team.sh ready b
+      - name: 1 pool
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: bash .github/team/team.sh pool b
+      - name: 3 worker-loss (stop the daemon, tailscale down, come back)
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: bash .github/team/team.sh b-loss
+      - name: wait for the scenarios to finish
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: bash .github/team/team.sh sig-wait done 4200
+      - *dump-linux
+      - *abort
+      - *uninstall-linux
+
+  worker-c:
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 80
+    env:
+      ROLE: c
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist
+      - name: join the tailnet
+        id: ts
+        uses: tailscale/github-action@064b10558093f38325e838ddea35486bdc6b1d5c # v4.4.0
+        with:
+          authkey: ${{ secrets.TS_AUTHKEY }}
+          hostname: ${{ env.HOST_PREFIX }}-c
+          retry: "3"
+      - name: say why the tailnet login failed
+        if: failure() && steps.ts.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/team/team.sh login-hint
+      - name: record this node's tailnet identity
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: bash .github/team/team.sh identity
+      # The runner ends a step's processes with the step, so the release
+      # server and the install share one.
+      - name: install with the one-liner from a fake release
+        shell: pwsh
+        run: |
+          $srv = Join-Path $env:RUNNER_TEMP 'srv'
+          New-Item -ItemType Directory -Force -Path "$srv\latest\download" | Out-Null
+          Copy-Item dist\* "$srv\latest\download\"
+          Copy-Item scripts\install.ps1 "$srv\install.ps1"
+          $server = Start-Process -PassThru -FilePath python -ArgumentList @('-m', 'http.server', '--bind', '127.0.0.1', '--directory', $srv, $env:TM_PORT) -WindowStyle Hidden `
+            -RedirectStandardOutput "$env:RUNNER_TEMP\http.out" -RedirectStandardError "$env:RUNNER_TEMP\http.err"
+          $up = $false
+          for ($i = 0; $i -lt 50 -and -not $up; $i++) {
+            try { Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 "http://127.0.0.1:$env:TM_PORT/latest/download/SHA256SUMS" | Out-Null; $up = $true } catch { Start-Sleep -Milliseconds 200 }
+          }
+          if (-not $up) { Write-Output "::error::the release server did not start"; Get-Content "$env:RUNNER_TEMP\http.err"; exit 1 }
+          $env:TENTMAKER_DOWNLOAD_BASE = "http://127.0.0.1:$env:TM_PORT"
+          irm -TimeoutSec 60 "http://127.0.0.1:$env:TM_PORT/install.ps1" | iex
+          Stop-Process -Id $server.Id -ErrorAction SilentlyContinue
+          Add-Content -Path $env:GITHUB_PATH -Value (Join-Path $env:ProgramFiles 'Tentmaker')
+          $got = ((& "$env:ProgramFiles\Tentmaker\tentmaker.exe" version --json) -join "`n" | ConvertFrom-Json).version
+          if ($got -ne $env:TM_VERSION) { Write-Output "::error::installed $got, want $env:TM_VERSION"; exit 1 }
+      - name: setup (mesh on, pool ci-<run id>, tagged devices are members)
+        id: setup
+        shell: pwsh
+        run: |
+          $out = (tentmaker setup --yes --json --device "$env:HOST_PREFIX-c" --pool $env:POOL --no-gh --memory 4GiB --boost-memory 8GiB --cpus 4 --boost-cpus 4) -join "`n"
+          $rc = $LASTEXITCODE
+          Write-Output $out
+          if ($rc -ne 0) { Write-Output "::error::setup exited $rc"; exit 1 }
+          $v = $out | ConvertFrom-Json
+          if (-not ($v.ok -and $v.service -eq 'running')) { Write-Output "::error::setup did not finish"; exit 1 }
+          python .github/team/editcfg.py "$env:ProgramData\Tentmaker\config.toml"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          Restart-Service Tentmaker
+          Write-Output "== firewall profiles (the mesh port must take inbound tailnet calls)"
+          Get-NetFirewallProfile | Format-Table Name, Enabled, DefaultInboundAction -AutoSize
+          Get-NetConnectionProfile | Format-Table InterfaceAlias, NetworkCategory -AutoSize
+      - name: ready
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: bash .github/team/team.sh ready c
+      - name: 1 pool
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: bash .github/team/team.sh pool c
+      - name: wait for the scenarios to finish
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: bash .github/team/team.sh sig-wait done 4200
+      - name: dump on failure
+        if: failure()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          Write-Output "== status"; tentmaker status --json
+          Write-Output "== pool"; tentmaker pool --json
+          Write-Output "== tailscale"; & "$env:ProgramFiles\Tailscale\tailscale.exe" status
+          Write-Output "== config"; Get-Content "$env:ProgramData\Tentmaker\config.toml"
+          Write-Output "== daemon log"; Get-Content -Tail 600 "$env:ProgramData\Tentmaker\logs\tentmaker.log" -ErrorAction SilentlyContinue
+          Get-ChildItem -Recurse -File "$env:ProgramData\Tentmaker" -Include log.txt, result.json, state.json -ErrorAction SilentlyContinue |
+            ForEach-Object { Write-Output "== $($_.FullName)"; Get-Content -Tail 200 $_.FullName }
+          exit 0
+      - *abort
+      - name: uninstall --purge
+        if: ${{ !cancelled() && steps.setup.outcome != 'skipped' }}
+        shell: pwsh
+        run: |
+          $out = (tentmaker uninstall --purge --yes --json) -join "`n"; Write-Output $out
+          $v = $out | ConvertFrom-Json
+          if (-not ($v.ok -and $v.purged)) { Write-Output "::error::uninstall did not finish"; exit 1 }
+
+  broker-d:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 80
+    env:
+      ROLE: d
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist
+      - name: join the tailnet
+        id: ts
+        uses: tailscale/github-action@064b10558093f38325e838ddea35486bdc6b1d5c # v4.4.0
+        with:
+          authkey: ${{ secrets.TS_AUTHKEY }}
+          hostname: ${{ env.HOST_PREFIX }}-d
+          retry: "3"
+      - name: say why the tailnet login failed
+        if: failure() && steps.ts.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/team/team.sh login-hint
+      - name: record this node's tailnet identity
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: bash .github/team/team.sh identity
+      - *install-linux
+      - name: wait for scenario 4
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: bash .github/team/team.sh sig-wait start-d 4200
+      - *setup-linux
+      - name: connect GitHub and add the same repo
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          printf %s "$GITHUB_TOKEN" | sudo tentmaker connect github --token-stdin --json | jq -e '.ok == true'
+          args=()
+          while read -r b; do args+=(--branch "$b"); done < <(bash .github/team/team.sh branches)
+          sudo tentmaker repo add "$REPO" --mode checks --allow-public --workflow .github/workflows/tentmaker-team.yml "${args[@]}" --json | jq -e '.ok == true'
+          bash .github/team/team.sh ready d
+      - name: 4 two-brokers (then stop, before scenario 5)
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: bash .github/team/team.sh d-stop
+      - name: wait for the scenarios to finish
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: bash .github/team/team.sh sig-wait done 4200
+      - *dump-linux
+      - name: keep the daemon log
+        if: always()
+        run: |
+          mkdir -p metrics
+          sudo journalctl -u tentmaker --no-pager >metrics/daemon-d.log 2>/dev/null || true
+          sudo sh -c 'cat /var/lib/tentmaker/checks/*.log' >metrics/checks-d.log 2>/dev/null || true
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: team-broker-d
+          path: metrics/
+          retention-days: 14
+      - *abort
+      - *uninstall-linux
+
+  device-e:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 80
+    env:
+      ROLE: e
+    # Scenario 6 is best effort: E never fails the suite.
+    continue-on-error: true
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: join the tailnet with Tailscale SSH on
+        id: ts
+        uses: tailscale/github-action@064b10558093f38325e838ddea35486bdc6b1d5c # v4.4.0
+        with:
+          authkey: ${{ secrets.TS_AUTHKEY }}
+          hostname: ${{ env.HOST_PREFIX }}-e
+          args: --ssh
+          retry: "3"
+      - name: say why the tailnet login failed
+        if: failure() && steps.ts.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/team/team.sh login-hint
+      - name: record this node's tailnet identity
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: bash .github/team/team.sh identity
+      - name: ready
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: bash .github/team/team.sh sig-post ready-e success "E is on the tailnet with Tailscale SSH"
+      - name: wait for the scenarios to finish
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: bash .github/team/team.sh sig-wait done 4200
+      - name: what devices add left here
+        if: always()
+        run: |
+          command -v tentmaker && sudo tentmaker status --json || echo "tentmaker is not installed here"
+          sudo tentmaker uninstall --purge --yes --json 2>/dev/null || true
+
+  cleanup:
+    needs: [broker-a, worker-b, worker-c, broker-d, device-e]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: delete the throwaway branches
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          refs=$(timeout 30 gh api "repos/$REPO/git/matching-refs/heads/$BR_PREFIX-" --jq '.[].ref') || refs=""
+          for r in $refs; do
+            case $r in
+              "refs/heads/$BR_PREFIX-"*) timeout 30 gh api -X DELETE "repos/$REPO/git/${r#refs/}" && echo "deleted $r" ;;
+            esac
+          done
