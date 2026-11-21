@@ -65,7 +65,10 @@ func (c controller) AddRepo(ctx context.Context, repo, forge, mode string, allow
 	if err := c.mutating(); err != nil {
 		return err
 	}
-	_, err := c.a.repoAdd(ctx, repoAddOpts{Name: repo, Forge: forge, Mode: mode, AllowPublic: allowPublic})
+	// allow_public promises the fork approval step, which only Enable runs;
+	// without it a public repo was saved with its fork policy unchanged and
+	// the broker refused it (review r1 partB first-F4).
+	_, err := c.a.repoAdd(ctx, repoAddOpts{Name: repo, Forge: forge, Mode: mode, AllowPublic: allowPublic, Enable: allowPublic})
 	return mcpErr(err)
 }
 

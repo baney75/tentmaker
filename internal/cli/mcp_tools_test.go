@@ -2,10 +2,17 @@ package cli
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"io"
+	"log/slog"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/baney75/tentmaker/internal/config"
+	"github.com/baney75/tentmaker/internal/core"
 )
 
 // mcpSession runs `tentmaker mcp` on the fixture over pipes and returns a
@@ -72,5 +79,30 @@ func TestMCPAddRepoForgejoDefaultsToChecks(t *testing.T) {
 	}
 	if r := f.config().Repos; len(r) != 1 || r[0].Mode != "checks" || r[0].Forge != "forgejo" {
 		t.Fatalf("repos %+v", r)
+	}
+}
+
+// add_repo with allow_public sets the fork approval policy the tool
+// description promises (review r1 partB first-F4).
+func TestMCPAddRepoAllowPublicSetsForkApproval(t *testing.T) {
+	f := newFixture(t)
+	f.setUp()
+	f.isRoot = true
+	f.store.Set("github-token", []byte(canary))
+	f.forge.SetRepo(core.RepoInfo{Repo: "o/pub", Public: true, DefaultBranch: "main", ForkPolicy: "approve_first_time"})
+	ff := &forkForge{Forge: f.forge}
+	f.env.NewForge = func(name string, fc config.Forge, tok func(context.Context) (string, error), log *slog.Logger) (core.Forge, core.StatusForge, error) {
+		return ff, f.forge, nil
+	}
+	call := mcpSession(t, f)
+	res, ok := call("add_repo", map[string]any{"repo": "o/pub", "allow_public": true})
+	if !ok {
+		t.Fatalf("add_repo: %s", mustJSON(res))
+	}
+	if !reflect.DeepEqual(ff.set, []string{"o/pub"}) {
+		t.Fatalf("fork approval set on %v, want [o/pub]", ff.set)
+	}
+	if strings.Contains(f.stderr.String(), canary) {
+		t.Error("credential on stderr")
 	}
 }
