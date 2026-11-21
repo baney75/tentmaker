@@ -106,3 +106,26 @@ func TestMCPAddRepoAllowPublicSetsForkApproval(t *testing.T) {
 		t.Error("credential on stderr")
 	}
 }
+
+// update with a channel switches to it even when this binary is already
+// the newest release there (review r1 partB sol-F7).
+func TestMCPUpdateSwitchesChannelWhenCurrent(t *testing.T) {
+	f := newFixture(t)
+	f.setUp()
+	f.isRoot = true
+	cfg := f.config()
+	cfg.Update.Channel = "dev"
+	a := &app{env: f.env, ctx: context.Background(), json: true}
+	if err := a.saveConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+	f.up.newer = false
+	call := mcpSession(t, f)
+	res, ok := call("update", map[string]any{"channel": "stable"})
+	if !ok {
+		t.Fatalf("update: %s", mustJSON(res))
+	}
+	if got := f.config().Update.Channel; got != "stable" {
+		t.Fatalf("channel after update --channel stable with nothing newer: %q", got)
+	}
+}

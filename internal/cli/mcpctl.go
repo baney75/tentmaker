@@ -114,8 +114,10 @@ func (c controller) Update(ctx context.Context, channel string) (any, error) {
 	if err != nil {
 		return v, mcpErr(err)
 	}
-	// The tool promises that passing a channel switches the device to it.
-	if channel != "" && v.Applied && !v.RolledBack {
+	// The tool promises that passing a channel switches the device to it,
+	// including when this binary is already the newest on that channel
+	// (review r1 partB sol-F7).
+	if channel != "" && v.OK && !v.RolledBack && (v.Applied || !v.Available) {
 		cfg, _, lerr := c.a.loadConfig()
 		if lerr == nil && cfg.Update.Channel != channel {
 			cfg.Update.Channel = channel
