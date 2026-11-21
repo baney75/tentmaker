@@ -391,6 +391,75 @@ func (n *Node) authorize(w http.ResponseWriter, r *http.Request) bool {
 	return true
 }
 
+// rediscoverAfter is how stale the peer table may be before a request from
+// an unknown address runs discovery again, so a device that just joined is
+// recognized without letting callers force a discovery on every request.
+const rediscoverAfter = 5 * time.Second
+
+// callerIs answers 403 unless device is the name the calling tailnet node
+// announced in its /v1/hello. Members are other people's devices, so a
+// device name in a body or header is only a claim; binding it to the
+// WhoIs-checked source address stops one device from reporting results or
+// fetching archives as another (review r1 partS first-F4).
+func (n *Node) callerIs(w http.ResponseWriter, r *http.Request, device string) bool {
+	ctx, cancel := context.WithTimeout(r.Context(), n.helloTimeout+whoisTimeout)
+	defer cancel()
+	name, why := n.callerDevice(ctx, r.RemoteAddr)
+	switch {
+	case why != "":
+	case name != device:
+		why = "it sent another device's name"
+	default:
+		return true
+	}
+	n.refuse(r, name, why)
+	writeErr(w, http.StatusForbidden, "this tailnet device can't act as "+strconv.Quote(device))
+	return false
+}
+
+// callerDevice returns the device name the pool peer at remote announced,
+// or why there is none: no pool peer has that address, the name is this
+// device's own, or another pool peer announced the same name.
+func (n *Node) callerDevice(ctx context.Context, remote string) (name, why string) {
+	ap, err := parseRemote(remote)
+	if err != nil {
+		return "", err.Error()
+	}
+	ip := ap.Addr()
+	look := func() (string, string, bool) {
+		n.peersMu.Lock()
+		defer n.peersMu.Unlock()
+		var me *peerState
+		for _, st := range n.peers {
+			if st != nil && slices.Contains(st.ips, ip) {
+				me = st
+				break
+			}
+		}
+		if me == nil {
+			return "", "", false
+		}
+		name := me.hello.Device
+		if name == "" || name == n.o.Device {
+			return "", "it announced no name or this device's own", true
+		}
+		for _, st := range n.peers {
+			if st != nil && st != me && st.hello.Device == name {
+				return "", "another pool device announced the same name", true
+			}
+		}
+		return name, "", true
+	}
+	if name, why, ok := look(); ok {
+		return name, why
+	}
+	n.ensureWithin(ctx, rediscoverAfter)
+	if name, why, ok := look(); ok {
+		return name, why
+	}
+	return "", "it is not a known pool device"
+}
+
 // refusalLog keeps a refusal log line per caller and reason to one a minute,
 // so a noisy device can't flood the log.
 type refusalLog struct {
@@ -449,6 +518,9 @@ func (n *Node) handleWork(w http.ResponseWriter, r *http.Request) {
 	if !readJSON(w, r, &req) {
 		return
 	}
+	if !n.callerIs(w, r, req.Device) {
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), ioTimeout)
 	defer cancel()
 	resp, err := n.o.Broker.Work(ctx, req)
@@ -472,6 +544,9 @@ func (n *Node) handleArchive(w http.ResponseWriter, r *http.Request, ref string)
 	device := r.Header.Get(deviceHeader)
 	if !ok || n.o.Broker == nil || !validRef(ref) || device == "" || len(device) > 128 {
 		writeErr(w, http.StatusNotFound, "no such archive")
+		return
+	}
+	if !n.callerIs(w, r, device) {
 		return
 	}
 	rc := http.NewResponseController(w)

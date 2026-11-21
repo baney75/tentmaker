@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/baney75/tentmaker/internal/core"
 )
@@ -172,6 +173,17 @@ func do(t *testing.T, h http.Handler, method, path, remote string, body io.Reade
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	return rec
+}
+
+// knowPeer puts a pool peer in n's table as discovery would, and marks the
+// table fresh so a request doesn't run discovery over it.
+func knowPeer(n *Node, id, ip, device string) {
+	n.peersMu.Lock()
+	n.peers[id] = &peerState{id: id, ips: []netip.Addr{netip.MustParseAddr(ip)}, hello: helloResponse{Device: device, Pool: n.o.Pool}}
+	n.peersMu.Unlock()
+	n.discMu.Lock()
+	n.discAt = n.now()
+	n.discMu.Unlock()
 }
 
 func errText(rec *httptest.ResponseRecorder) string {
@@ -345,6 +357,7 @@ func TestWorkSecretInResponseNotLogs(t *testing.T) {
 	secret := []byte("JITCONFIG-very-secret-0123456789")
 	fb := &fakeBroker{secret: secret}
 	n := New(Options{Device: "alice-mac", Pool: "home", Tailscale: newFakeTS(), Broker: fb, Log: log})
+	knowPeer(n, "n2", "100.64.0.2", "alice-linux")
 	req := core.WorkRequest{Device: "alice-linux", Free: 1, Platforms: []core.Platform{{OS: "linux", Arch: "x64"}}}
 	body, _ := json.Marshal(req)
 	rec := do(t, n.handler(), "POST", "/v1/work", "100.64.0.2:1", bytes.NewReader(body), "home")
@@ -379,7 +392,8 @@ func assertNoSecret(t *testing.T, logs string, secret []byte) {
 func TestBrokerErrorIs502(t *testing.T) {
 	fb := &fakeBroker{err: errors.New("forge down")}
 	n := New(Options{Device: "alice-mac", Pool: "home", Tailscale: newFakeTS(), Broker: fb})
-	rec := do(t, n.handler(), "POST", "/v1/work", "100.64.0.2:1", strings.NewReader(`{}`), "home")
+	knowPeer(n, "n2", "100.64.0.2", "alice-linux")
+	rec := do(t, n.handler(), "POST", "/v1/work", "100.64.0.2:1", strings.NewReader(`{"device":"alice-linux"}`), "home")
 	if rec.Code != http.StatusBadGateway || !strings.Contains(errText(rec), "forge down") {
 		t.Fatalf("%d %s", rec.Code, rec.Body)
 	}
@@ -416,5 +430,64 @@ func TestClaimEndpoints(t *testing.T) {
 		if c, _ := post("/v1/claim", bad); c != 400 {
 			t.Errorf("claim %s: %d", bad, c)
 		}
+	}
+}
+
+// A member device (another person's login) can't act as another device:
+// the device name in a work body or archive header must be the one the
+// caller's tailnet address announced (review r1 partS first-F4).
+func TestWorkAndArchiveBindDeviceToCaller(t *testing.T) {
+	ref := strings.Repeat("ab", 32)
+	fb := &fakeBroker{secret: []byte("s"), archives: map[string]fakeArchive{
+		ref: {device: "alice-linux", data: []byte("tar")},
+	}}
+	n := New(Options{Device: "alice-mac", Pool: "home", Tailscale: newFakeTS(), Broker: fb, Members: []string{"bob@example.com", TaggedLogin}})
+	at := n.now()
+	n.now = func() time.Time { return at } // no rediscovery over the seeded table
+	knowPeer(n, "n2", "100.64.0.2", "alice-linux")
+	knowPeer(n, "n5", "100.64.0.5", "bob-pc")
+	work := func(remote, device string) int {
+		body, _ := json.Marshal(core.WorkRequest{Device: device, Free: 1})
+		return do(t, n.handler(), "POST", "/v1/work", remote, bytes.NewReader(body), "home").Code
+	}
+	archive := func(remote, device string) int {
+		req := httptest.NewRequest("GET", "/v1/archive/"+ref, nil)
+		req.RemoteAddr = remote
+		req.Header.Set(poolHeader, "home")
+		req.Header.Set(deviceHeader, device)
+		rec := httptest.NewRecorder()
+		n.handler().ServeHTTP(rec, req)
+		return rec.Code
+	}
+	if c := work("100.64.0.5:1", "alice-linux"); c != http.StatusForbidden {
+		t.Errorf("bob's device posting as alice-linux: %d", c)
+	}
+	if c := archive("100.64.0.5:1", "alice-linux"); c != http.StatusForbidden {
+		t.Errorf("bob's device fetching alice-linux's archive: %d", c)
+	}
+	if c := work("100.64.0.6:1", "ci-box"); c != http.StatusForbidden {
+		t.Errorf("a device that never announced itself: %d", c)
+	}
+	fb.mu.Lock()
+	seen := len(fb.reqs)
+	fb.mu.Unlock()
+	if seen != 0 {
+		t.Fatalf("the broker acted on a refused request: %+v", fb.reqs)
+	}
+	if c := work("100.64.0.5:1", "bob-pc"); c != 200 {
+		t.Errorf("bob's device as itself: %d", c)
+	}
+	if c := archive("100.64.0.2:1", "alice-linux"); c != 200 {
+		t.Errorf("alice-linux's own archive: %d", c)
+	}
+	// A second node announcing the same name makes the name nobody's.
+	knowPeer(n, "n6", "100.64.0.6", "alice-linux")
+	if c := work("100.64.0.2:1", "alice-linux"); c != http.StatusForbidden {
+		t.Errorf("a name two nodes announced: %d", c)
+	}
+	// No peer may take the broker's own name.
+	knowPeer(n, "n6", "100.64.0.6", "alice-mac")
+	if c := work("100.64.0.6:1", "alice-mac"); c != http.StatusForbidden {
+		t.Errorf("a peer using the broker's own name: %d", c)
 	}
 }

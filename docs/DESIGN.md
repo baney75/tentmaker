@@ -381,7 +381,11 @@ devices whose `/v1/hello` pool name matches. Endpoints: `GET /v1/hello` (device,
 broker yes/no), `GET /v1/status`, `POST /v1/work` (core.WorkRequest -> core.WorkResponse),
 `POST /v1/claim`, `POST /v1/release`, `GET /v1/archive/<ref>` (a check's source archive, streamed
 from the broker to the device named in the `Tentmaker-Device` header; the broker checks that it
-granted the check to that device; 404 otherwise). Bodies are JSON, capped at 1 MiB, 10 s
+granted the check to that device; 404 otherwise). The device in a work body or the
+`Tentmaker-Device` header must be the name the caller's tailnet address announced in its
+`/v1/hello` (403 otherwise; an unknown address runs discovery at most every 5 s). A name two
+nodes announce, or this device's own name, is nobody's. Claim and release bodies name the
+grantee, not the caller, so they are not bound. Bodies are JSON, capped at 1 MiB, 10 s
 timeouts, except the archive stream (10 min, 2 GiB). Peers
 are rediscovered every 30 s; a peer failing 3 calls in a row is skipped for a minute.
 
@@ -490,6 +494,9 @@ section is rewritten.
 - Served callers are the same tailnet user OR a login in `members`.
 - Tagged devices are served only when `members` contains `tagged-devices`.
 - Every endpoint but `/v1/hello` needs a matching `Tentmaker-Pool` header.
+- A member's device acts only as itself: binding the device name to the WhoIs-checked source
+  address stops one device reporting results or fetching archives as another (review r1 partS
+  first-F4).
 - `Claim` walks devices in name order, so exactly one racing broker wins.
 - `RemoteInstall` saves install.sh to a temp file and runs the installer itself as root (`sudo -n sh "$f" --channel <c> --yes -- <setup flags>`, or plain `sh` when already root), so install.sh puts the binary on root's PATH and runs setup. It used to run install.sh as the login user and then `sudo -n tentmaker setup`, which failed when the binary landed in `~/.local/bin`.
 - `Run` restarts its listener when the tailnet IPs change.

@@ -41,8 +41,13 @@ func TestArchiveThroughMesh(t *testing.T) {
 	if !bytes.Equal(buf.Bytes(), tarball) {
 		t.Fatalf("got %q", buf.Bytes())
 	}
-	// Another device's ref, an unknown ref, a malformed ref: not found.
-	for _, c := range []struct{ ref, device string }{{ref, "mallory"}, {strings.Repeat("00", 32), "a-worker"}, {"../v1/work", "a-worker"}} {
+	// Asking as another device is refused before the broker sees it.
+	buf.Reset()
+	if err := as.FetchArchive(context.Background(), ref, "mallory", &buf); err == nil || buf.Len() != 0 {
+		t.Errorf("fetch as mallory: err=%v bytes=%d", err, buf.Len())
+	}
+	// An unknown ref, a malformed ref: not found.
+	for _, c := range []struct{ ref, device string }{{strings.Repeat("00", 32), "a-worker"}, {"../v1/work", "a-worker"}} {
 		buf.Reset()
 		if err := as.FetchArchive(context.Background(), c.ref, c.device, &buf); !errors.Is(err, core.ErrNotFound) || buf.Len() != 0 {
 			t.Errorf("fetch %q as %s: err=%v bytes=%d", c.ref, c.device, err, buf.Len())
@@ -64,6 +69,7 @@ func TestArchiveEndpointAuth(t *testing.T) {
 	ref := strings.Repeat("ab", 32)
 	fb := &fakeBroker{archives: map[string]fakeArchive{ref: {device: "w", data: []byte("tar")}}}
 	n := New(Options{Device: "alice-mac", Pool: "home", Tailscale: newFakeTS(), Broker: fb})
+	knowPeer(n, "n2", "100.64.0.2", "w")
 	get := func(remote, pool, device string) int {
 		req, _ := http.NewRequest("GET", "/v1/archive/"+ref, nil)
 		req.RemoteAddr = remote

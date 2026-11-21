@@ -34,6 +34,7 @@ func FuzzHandlerBodies(f *testing.F) {
 			body = append(body, bytes.Repeat([]byte(" "), maxBody)...)
 		}
 		n := New(Options{Device: "alice-mac", Pool: "home", Tailscale: newFakeTS(), Broker: &fakeBroker{secret: []byte("s")}})
+		knowPeer(n, "n2", "100.64.0.2", "x")
 		req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body))
 		req.RemoteAddr = "100.64.0.2:40000"
 		req.Header.Set(poolHeader, "home")
@@ -63,7 +64,7 @@ func FuzzHandlerBodies(f *testing.F) {
 			}
 		}
 		switch rec.Code {
-		case http.StatusOK, http.StatusBadRequest, http.StatusRequestEntityTooLarge:
+		case http.StatusOK, http.StatusBadRequest, http.StatusRequestEntityTooLarge, http.StatusForbidden:
 		default:
 			t.Fatalf("%s: unexpected status %d: %s", path, rec.Code, rec.Body.String())
 		}

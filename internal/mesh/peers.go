@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/netip"
 	"sort"
 	"strings"
 	"sync"
@@ -26,8 +27,9 @@ var (
 
 // peerState is one pool device this node has said hello to.
 type peerState struct {
-	id        string // tailnet node ID
-	base      string // http://ip:port
+	id        string       // tailnet node ID
+	base      string       // http://ip:port
+	ips       []netip.Addr // its tailnet addresses, which its requests come from
 	hello     helloResponse
 	failures  int
 	skipUntil time.Time
@@ -137,7 +139,7 @@ func (n *Node) discover(ctx context.Context) {
 				st = &peerState{id: f.p.ID}
 				n.log.Info("mesh: found a pool device", "device", f.hello.Device, "broker", f.hello.Broker)
 			}
-			st.base, st.hello = f.base, f.hello
+			st.base, st.hello, st.ips = f.base, f.hello, f.p.IPs
 			n.okLocked(st, f.d)
 			next[f.p.ID] = st
 		}
@@ -148,8 +150,13 @@ func (n *Node) discover(ctx context.Context) {
 // ensureFresh runs discovery if nothing has for one discovery period, so
 // Brokers, Claim and Pool work without Run.
 func (n *Node) ensureFresh(ctx context.Context) {
+	n.ensureWithin(ctx, n.discoverEvery)
+}
+
+// ensureWithin runs discovery unless one ran less than max ago.
+func (n *Node) ensureWithin(ctx context.Context, max time.Duration) {
 	n.discMu.Lock()
-	stale := n.discAt.IsZero() || n.now().Sub(n.discAt) >= n.discoverEvery
+	stale := n.discAt.IsZero() || n.now().Sub(n.discAt) >= max
 	n.discMu.Unlock()
 	if stale {
 		n.discover(ctx)
