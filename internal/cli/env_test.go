@@ -242,7 +242,14 @@ func deadAddr(t *testing.T) string {
 
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
-	root := filepath.Join(t.TempDir(), "tentmaker")
+	// Setup resolves the binary's real path, so the fixture works in the
+	// real path too: macOS temp dirs sit under a /var symlink and Windows
+	// ones under an 8.3 short name.
+	tmp, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(tmp, "tentmaker")
 	paths := daemon.Paths{
 		Config:  filepath.Join(root, "etc", "config.toml"),
 		Secrets: filepath.Join(root, "etc", "secrets"),
