@@ -749,7 +749,7 @@ func (w *Worker) exchange(ctx context.Context, now time.Time, d core.Decision, a
 		var sent report
 		if r := w.st.Unacked[name]; r != nil {
 			sent.Ended = append([]string(nil), r.Ended...)
-			sent.Results = append([]core.CheckResult(nil), r.Results...)
+			sent.Results = append([]core.CheckResult(nil), fitResults(r.Results)...)
 		}
 		w.mu.Unlock()
 
@@ -806,6 +806,26 @@ func (w *Worker) exchange(ctx context.Context, now time.Time, d core.Decision, a
 			}
 		}
 	}
+}
+
+// resultBudget bounds the check results one work request carries, in JSON
+// bytes. The mesh refuses a body over 1 MiB, and a result's 64 KiB log tail
+// can escape to 384 KiB, so the first result always fits; the rest wait for
+// the next exchange, since ackLocked acks only what was sent.
+const resultBudget = 512 << 10
+
+// fitResults returns the leading results that fit resultBudget, and always
+// at least one.
+func fitResults(rs []core.CheckResult) []core.CheckResult {
+	size := 0
+	for i, x := range rs {
+		b, _ := json.Marshal(x)
+		size += len(b)
+		if i > 0 && size > resultBudget {
+			return rs[:i]
+		}
+	}
+	return rs
 }
 
 func (w *Worker) ackLocked(source string, sent report) {

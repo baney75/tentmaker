@@ -323,7 +323,9 @@ func New(o Options) *Client                            // implements core.Status
   repo's `branches`; never forks), plans the
   workflows at that sha via `FileAt`/`ListDir`, and offers one check job per planned job that has
   no `tentmaker/<job>` status yet. It posts `pending` ("running on <device>") when granting and
-  the final state from `WorkRequest.Results`. It also writes the result's log tail, with repo,
+  the final state from `WorkRequest.Results`. A worker sends at most 512 KiB of results (JSON) per
+  request, and always one, so a backlog of 64 KiB log tails never passes the mesh's 1 MiB cap; the rest
+  go in the next exchanges. It also writes the result's log tail, with repo,
   sha, check, state, device and runner, to `<state>/checks/<owner>_<repo>-<sha12>-<job>.log` (mode
   0600, newest 200 kept), since the worker deletes the job dir when the job ends. A worker that goes silent for 2 minutes gets its
   pending statuses set to `error` ("device went offline") so they can be retried by a re-run.
