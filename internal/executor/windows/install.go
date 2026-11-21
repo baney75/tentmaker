@@ -128,22 +128,22 @@ func Install(ctx context.Context, o Options) error {
 		if err := os.MkdirAll(d, 0o700); err != nil {
 			return err
 		}
-		if err := e.api.SetDACL(d, adminACL()); err != nil {
-			return fmt.Errorf("protect %s: %w", d, err)
+		if err := e.protectDir(d, adminACL()); err != nil {
+			return err
 		}
 	}
 	sid, err := e.installUser()
 	if err != nil {
 		return err
 	}
-	if err := e.api.SetDACL(e.libDir(), libACL(sid)); err != nil {
-		return fmt.Errorf("protect %s: %w", e.libDir(), err)
+	if err := e.protectDir(e.libDir(), libACL(sid)); err != nil {
+		return err
 	}
 	if err := os.MkdirAll(e.toolsDir(), 0o755); err != nil {
 		return err
 	}
-	if err := e.api.SetDACL(e.toolsDir(), libACL(sid)); err != nil {
-		return fmt.Errorf("protect %s: %w", e.toolsDir(), err)
+	if err := e.protectDir(e.toolsDir(), libACL(sid)); err != nil {
+		return err
 	}
 	if err := e.installNet(ctx, sid); err != nil {
 		return err
@@ -371,4 +371,23 @@ func Uninstall(ctx context.Context, o Options, purge bool) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// protectDir sets a folder's owner and DACL, then reads the owner back.
+// ProgramData lets any user create a folder, so one could exist before
+// setup; a folder that still belongs to someone else after SetDACL is
+// refused, since its owner can always rewrite the DACL and read what
+// setup puts there (review r1 partS first-F3).
+func (e *Executor) protectDir(d string, aces []ACE) error {
+	if err := e.api.SetDACL(d, aces); err != nil {
+		return fmt.Errorf("protect %s: %w", d, err)
+	}
+	owner, err := e.api.Owner(d)
+	if err != nil {
+		return fmt.Errorf("protect %s: read its owner: %w", d, err)
+	}
+	if owner != SIDAdmins && owner != SIDSystem {
+		return fmt.Errorf("protect %s: it is owned by %s, not Administrators; delete the folder and run setup again", d, owner)
+	}
+	return nil
 }

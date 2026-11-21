@@ -31,6 +31,7 @@ func (*OSAPI) HideUser(string, bool) error                        { return errNo
 func (*OSAPI) Protect([]byte) ([]byte, error)                     { return nil, errNotWindows }
 func (*OSAPI) Unprotect([]byte) ([]byte, error)                   { return nil, errNotWindows }
 func (*OSAPI) SetDACL(string, []ACE) error                        { return errNotWindows }
+func (*OSAPI) Owner(string) (string, error)                       { return "", errNotWindows }
 func (*OSAPI) StartProcess(ProcSpec) (Process, error)             { return nil, errNotWindows }
 func (*OSAPI) KillUserProcesses(string) (int, error)              { return 0, errNotWindows }
 func (*OSAPI) DeleteUserTasks(string, string) (int, error)        { return 0, errNotWindows }

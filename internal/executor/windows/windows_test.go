@@ -78,15 +78,18 @@ type fakeAPI struct {
 	rights   map[string][]string
 	hidden   map[string]bool
 	dacls    map[string][]ACE
-	procs    []ProcSpec
-	running  []*fakeProc
-	startErr error
-	onStart  func() // runs inside StartProcess, before it records anything
-	zip      []byte
-	fetches  int
-	killed   int
-	tasks    int
-	free     uint64
+	owners   map[string]string // path -> owner SID; unset = SYSTEM
+	// keepOwner plays an OS whose SetDACL leaves the owner alone.
+	keepOwner bool
+	procs     []ProcSpec
+	running   []*fakeProc
+	startErr  error
+	onStart   func() // runs inside StartProcess, before it records anything
+	zip       []byte
+	fetches   int
+	killed    int
+	tasks     int
+	free      uint64
 	// Windows Firewall: rule name -> "Action Description", profile -> on.
 	fw       map[string]string
 	profiles map[string]string
@@ -96,7 +99,7 @@ type fakeAPI struct {
 
 func newFakeAPI() *fakeAPI {
 	return &fakeAPI{admin: true, users: map[string]string{}, rights: map[string][]string{},
-		hidden: map[string]bool{}, dacls: map[string][]ACE{}, free: 100 << 30,
+		hidden: map[string]bool{}, dacls: map[string][]ACE{}, owners: map[string]string{}, free: 100 << 30,
 		fw: map[string]string{}, profiles: map[string]string{"Domain": "True", "Private": "True", "Public": "True"},
 		dns: []string{"168.63.129.16", "fe80::1%4", "192.168.1.1"}}
 }
@@ -256,7 +259,19 @@ func (f *fakeAPI) SetDACL(path string, aces []ACE) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.dacls[path] = slices.Clone(aces)
+	if !f.keepOwner {
+		f.owners[path] = SIDAdmins
+	}
 	return nil
+}
+
+func (f *fakeAPI) Owner(path string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if o, ok := f.owners[path]; ok {
+		return o, nil
+	}
+	return SIDSystem, nil
 }
 
 func (f *fakeAPI) StartProcess(p ProcSpec) (Process, error) {
@@ -483,6 +498,11 @@ func TestInstall(t *testing.T) {
 	if !a.hidden[User] {
 		t.Fatal("user not hidden from the sign-in screen")
 	}
+	for _, d := range []string{v.e.jobsDir(), v.e.runnerRoot(), v.e.secretDir(), v.e.distDir(), v.e.libDir(), v.e.toolsDir()} {
+		if a.owners[d] != SIDAdmins {
+			t.Fatalf("%s owner = %q, want Administrators", d, a.owners[d])
+		}
+	}
 	for _, d := range []string{v.e.jobsDir(), v.e.runnerRoot(), v.e.secretDir(), v.e.distDir()} {
 		if !slices.Equal(a.dacls[d], adminACL()) {
 			t.Fatalf("%s ACL = %v, want SYSTEM and Administrators only", d, a.dacls[d])
@@ -558,6 +578,20 @@ func TestInstallRefuses(t *testing.T) {
 	v.o.Pin = nil
 	if err := Install(context.Background(), v.o); err == nil {
 		t.Fatal("installed on an unsupported arch")
+	}
+
+	// A user made the secret folder before setup and keeps owning it:
+	// setup refuses rather than store the runner password where that
+	// user can re-grant themselves access (review r1 partS first-F3).
+	v = newEnv(t)
+	v.api.keepOwner = true
+	v.api.owners[v.e.secretDir()] = "S-1-5-21-1-2-3-1001"
+	err = Install(context.Background(), v.o)
+	if err == nil || !strings.Contains(err.Error(), "owned by") {
+		t.Fatalf("a user-owned secret folder: %v", err)
+	}
+	if v.api.has("CreateUser") {
+		t.Fatal("went on to create the runner user")
 	}
 }
 

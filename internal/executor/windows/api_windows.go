@@ -445,14 +445,34 @@ func aclFrom(aces []ACE) (*win.ACL, error) {
 }
 
 // SetDACL implements API. The DACL is protected: nothing is inherited from
-// the parent (ProgramData lets Users create folders).
+// the parent (ProgramData lets Users create folders). The owner becomes
+// Administrators in the same call, so a user who made the folder first
+// keeps no implicit right to rewrite the DACL.
 func (*OSAPI) SetDACL(path string, aces []ACE) error {
 	acl, err := aclFrom(aces)
 	if err != nil {
 		return err
 	}
+	owner, err := win.StringToSid(SIDAdmins)
+	if err != nil {
+		return err
+	}
 	return win.SetNamedSecurityInfo(path, win.SE_FILE_OBJECT,
-		win.DACL_SECURITY_INFORMATION|win.PROTECTED_DACL_SECURITY_INFORMATION, nil, nil, acl, nil)
+		win.OWNER_SECURITY_INFORMATION|win.DACL_SECURITY_INFORMATION|win.PROTECTED_DACL_SECURITY_INFORMATION,
+		owner, nil, acl, nil)
+}
+
+// Owner implements API.
+func (*OSAPI) Owner(path string) (string, error) {
+	sd, err := win.GetNamedSecurityInfo(path, win.SE_FILE_OBJECT, win.OWNER_SECURITY_INFORMATION)
+	if err != nil {
+		return "", err
+	}
+	sid, _, err := sd.Owner()
+	if err != nil {
+		return "", err
+	}
+	return sid.String(), nil
 }
 
 func securityAttrs(aces []ACE) (*win.SecurityAttributes, error) {

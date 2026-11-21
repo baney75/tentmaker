@@ -32,9 +32,12 @@ func Dir(dir string) Store { return &dpapiStore{dir: dir} }
 
 type dpapiStore struct{ dir string }
 
-// protectedDACL: SYSTEM and Administrators get full control, inherited by
-// files and subfolders; P blocks inheritance from the parent.
-const protectedDACL = "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
+// protectedDACL: Administrators own it; SYSTEM and Administrators get full
+// control, inherited by files and subfolders; P blocks inheritance from the
+// parent. The owner matters: a user who made the folder before setup would
+// otherwise stay its owner and could rewrite the DACL (review r1 partS
+// first-F3).
+const protectedDACL = "O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
 
 // magic marks a Tentmaker secret file, version 1.
 var magic = []byte("TMS1")
@@ -57,8 +60,13 @@ func protect(path string) error {
 	if err != nil {
 		return fmt.Errorf("read DACL: %w", err)
 	}
+	owner, _, err := sd.Owner()
+	if err != nil {
+		return fmt.Errorf("read owner: %w", err)
+	}
 	err = windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT,
-		windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, nil, nil, dacl, nil)
+		windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION,
+		owner, nil, dacl, nil)
 	if err != nil {
 		return fmt.Errorf("set ACL on %s: %w", path, err)
 	}

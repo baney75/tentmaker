@@ -99,7 +99,12 @@ type API interface {
 
 	Protect(b []byte) ([]byte, error) // DPAPI, machine scope
 	Unprotect(b []byte) ([]byte, error)
-	SetDACL(path string, aces []ACE) error // replaces the DACL and blocks inheritance
+	// SetDACL makes Administrators the owner and replaces the DACL in one
+	// call, blocking inheritance. Both at once: a folder a user created
+	// first stays theirs otherwise, and an owner can always rewrite the
+	// DACL (review r1 partS first-F3).
+	SetDACL(path string, aces []ACE) error
+	Owner(path string) (string, error) // the owner's SID
 
 	StartProcess(p ProcSpec) (Process, error)
 	KillUserProcesses(sid string) (int, error)
