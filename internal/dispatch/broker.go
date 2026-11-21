@@ -100,9 +100,13 @@ type infoCache struct {
 
 // grantRec is one runner the broker granted. It holds no secret.
 type grantRec struct {
-	Name       string        `json:"name"`
-	Kind       string        `json:"kind"`
-	Device     string        `json:"device"`
+	Name   string `json:"name"`
+	Kind   string `json:"kind"`
+	Device string `json:"device"`
+	// Node is the tailnet node that asked for the grant (core.CallerNode),
+	// "" for this broker's own device. Only that node speaks for Device
+	// while any of its grants is on record.
+	Node       string        `json:"node,omitempty"`
 	Forge      string        `json:"forge"`
 	Repo       string        `json:"repo"`
 	RunnerID   int64         `json:"runner_id,omitempty"`
@@ -234,12 +238,23 @@ func (b *Broker) Work(ctx context.Context, req core.WorkRequest) (core.WorkRespo
 	if req.Device == "" {
 		return core.WorkResponse{}, errors.New("work request without a device name")
 	}
+	node := core.CallerNode(ctx)
 	now := b.now()
 	var resp core.WorkResponse
 	var picks []*grantRec
 	var logs []checkLog
 
 	b.mu.Lock()
+	// A device name is only a claim: while another tailnet node holds any
+	// of this device's grants, this request changes nothing, not even the
+	// device's silence clock, so the holder's grants end on schedule if it
+	// is gone (review r2 partS sol-S2-F2).
+	for _, rec := range b.grants {
+		if rec.Device == req.Device && rec.Node != node {
+			b.mu.Unlock()
+			return core.WorkResponse{}, core.ErrOtherNode
+		}
+	}
 	dev := b.device(req.Device)
 	if dev.Offline {
 		b.log.Info("device back online", "device", req.Device)
@@ -359,6 +374,9 @@ func (b *Broker) Work(ctx context.Context, req core.WorkRequest) (core.WorkRespo
 	}
 	if req.Free > 0 && blocked == "" {
 		picks = b.pickLocked(req, now)
+		for _, rec := range picks {
+			rec.Node = node
+		}
 	}
 	b.pruneArchivesLocked() // revokes the archive refs of expired grants too
 	b.mu.Unlock()

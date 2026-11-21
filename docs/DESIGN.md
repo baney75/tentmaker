@@ -338,6 +338,15 @@ idle past `idle_ttl`, or busy on a fork job means `Stop` to that worker on its n
 `CancelRun` for a fork), plus `DeleteRunner`. A worker silent for 2 minutes gets its runners
 deleted. Never grants more runners for one job than one per worker.
 
+Each grant records the tailnet node that asked for it: `core.CallerNode(ctx)`, the WhoIs stable
+node ID the mesh puts in the context with `core.WithCallerNode`, or "" for the broker's own
+device. While any grant of a device is on record, a `Work` call for that device from another node
+returns `core.ErrOtherNode` and changes nothing, not even the device's silence clock, so the
+holder's grants still end on schedule if it is gone. The node is saved with the grant, so the
+binding survives a restart. Once the device has no grant on record, its name is free for any
+node (a reinstalled device waits until its old grants end, about 2 minutes after it went
+silent).
+
 The broker identifies a busy runner's job by the `JobID` that `Runner` reports, or, when it is 0
 (GitHub never reports one), by the `RunningJobs` entry whose `RunnerID` (else `RunnerName`) is
 this grant's runner. A runner that ended before it was seen busy is identified by `RunningJobs`
@@ -429,7 +438,7 @@ func New(o Options) *Client                            // implements core.Status
   `ArchiveRef` (32 random bytes, hex) and no URL or header. The broker keeps, in memory only, ref
   -> (runner, granted device, forge, repo, sha) while that check is active and drops it when the
   check ends. `Broker.FetchArchive(ctx, ref, device, w)` (core.ArchiveSource) serves it only to
-  the granted device, at most 3 times, by calling `StatusForge.Archive` itself and streaming the
+  the granted device on the granted tailnet node (`core.CallerNode(ctx)`), at most 3 times, by calling `StatusForge.Archive` itself and streaming the
   download (redirects followed, the header sent only to the archive's own host, 10 min, 2 GiB).
   A remote broker is reached over the mesh (`GET /v1/archive/<ref>`). The worker, for each check
   offer, mints a relay id (32 random bytes, hex) bound to (source, ref, runner), expiring with
@@ -479,9 +488,14 @@ broker yes/no), `GET /v1/status`, `POST /v1/work` (core.WorkRequest -> core.Work
 `POST /v1/claim`, `POST /v1/release`, `GET /v1/archive/<ref>` (a check's source archive, streamed
 from the broker to the device named in the `Tentmaker-Device` header; the broker checks that it
 granted the check to that device; 404 otherwise). The device in a work body or the
-`Tentmaker-Device` header must be the name the caller's tailnet address announced in its
-`/v1/hello` (403 otherwise; an unknown address runs discovery at most every 5 s). A name two
-nodes announce, or this device's own name, is nobody's. Claim and release bodies name the
+`Tentmaker-Device` header must be the name the caller's tailnet node announced in its
+`/v1/hello` (403 otherwise; an unknown node runs discovery at most every 5 s). The caller is the
+peer whose stable node ID `WhoIs` returned (`Identity.ID`, the same ID as `Peer.ID`), at an
+address that peer has; a `WhoIs` answer without one acts as no device. A name two nodes announce,
+or this device's own name, is nobody's. The work and archive handlers pass the caller's node to
+the broker (`core.WithCallerNode`), which serves a grant's reports and archive only to the node it
+was granted to; `core.ErrOtherNode` from `Work` is a 403. So a node that announces the name of a
+device that dropped out of discovery inherits none of its grants. Claim and release bodies name the
 grantee, not the caller, so they are not bound. Bodies are JSON, capped at 1 MiB, 10 s
 timeouts, except the archive stream (10 min, 2 GiB). Peers
 are rediscovered every 30 s; a peer failing 3 calls in a row is skipped for a minute.
@@ -613,6 +627,9 @@ section is rewritten.
 - A member's device acts only as itself: binding the device name to the WhoIs-checked source
   address stops one device reporting results or fetching archives as another (review r1 partS
   first-F4).
+- `Identity` has `ID`, the stable node ID. The broker binds each grant to the caller's node, so a
+  node that announces the name of one that dropped out of discovery can't report for or fetch
+  the archives of that device's grants (review r2 partS sol-S2-F2).
 - `Claim` walks devices in name order, so exactly one racing broker wins.
 - `RemoteInstall` saves install.sh to a temp file and runs the installer itself as root (`sudo -n sh "$f" --channel <c> --yes -- <setup flags>`, or plain `sh` when already root), so install.sh puts the binary on root's PATH and runs setup. It used to run install.sh as the login user and then `sudo -n tentmaker setup`, which failed when the binary landed in `~/.local/bin`.
 - `Run` restarts its listener when the tailnet IPs change.

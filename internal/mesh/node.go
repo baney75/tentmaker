@@ -320,9 +320,11 @@ func (n *Node) allowed(self Peer, userID int64, login string, tags []string) boo
 // handler is the peer API with WhoIs auth in front of every route.
 func (n *Node) handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !n.authorize(w, r) {
+		id, ok := n.authorize(w, r)
+		if !ok {
 			return
 		}
+		r = r.WithContext(context.WithValue(r.Context(), callerKey{}, id))
 		if r.URL.Path != "/v1/hello" && r.Header.Get(poolHeader) != n.o.Pool {
 			n.refuse(r, "", "pool mismatch")
 			writeErr(w, http.StatusForbidden, "this device is in another pool")
@@ -367,40 +369,44 @@ func (n *Node) route(w http.ResponseWriter, r *http.Request, method string, h ht
 	h(w, r)
 }
 
-// authorize runs WhoIs on the caller and fails closed.
-func (n *Node) authorize(w http.ResponseWriter, r *http.Request) bool {
+// callerKey is the request context key of the caller's WhoIs Identity.
+type callerKey struct{}
+
+// authorize runs WhoIs on the caller and fails closed. It returns the
+// caller's identity.
+func (n *Node) authorize(w http.ResponseWriter, r *http.Request) (Identity, bool) {
 	ctx, cancel := context.WithTimeout(r.Context(), whoisTimeout)
 	defer cancel()
 	self, err := n.selfPeer(ctx, false)
 	if err != nil {
 		n.refuse(r, "", "can't read this device's tailnet identity: "+err.Error())
 		writeErr(w, http.StatusForbidden, "forbidden")
-		return false
+		return Identity{}, false
 	}
 	if why := fromSelf(self, r.RemoteAddr); why != "" {
 		n.refuse(r, "", why)
 		writeErr(w, http.StatusForbidden, "forbidden")
-		return false
+		return Identity{}, false
 	}
 	id, err := n.o.Tailscale.WhoIs(ctx, r.RemoteAddr)
 	if err != nil {
 		n.refuse(r, "", "whois failed: "+err.Error())
 		writeErr(w, http.StatusForbidden, "forbidden")
-		return false
+		return Identity{}, false
 	}
 	for _, ip := range id.IPs {
 		if slices.Contains(self.IPs, ip.Unmap()) {
 			n.refuse(r, id.LoginName+" on "+id.Node, "whois names this device itself")
 			writeErr(w, http.StatusForbidden, "forbidden")
-			return false
+			return Identity{}, false
 		}
 	}
 	if !n.allowed(self, id.UserID, id.LoginName, id.Tags) {
 		n.refuse(r, id.LoginName+" on "+id.Node, "not this tailnet user or a member")
 		writeErr(w, http.StatusForbidden, "forbidden")
-		return false
+		return Identity{}, false
 	}
-	return true
+	return id, true
 }
 
 // fromSelf says why a request from remote comes from this device itself,
@@ -432,28 +438,37 @@ const rediscoverAfter = 5 * time.Second
 // callerIs answers 403 unless device is the name the calling tailnet node
 // announced in its /v1/hello. Members are other people's devices, so a
 // device name in a body or header is only a claim; binding it to the
-// WhoIs-checked source address stops one device from reporting results or
-// fetching archives as another (review r1 partS first-F4).
-func (n *Node) callerIs(w http.ResponseWriter, r *http.Request, device string) bool {
+// WhoIs-checked node stops one device from reporting results or fetching
+// archives as another (review r1 partS first-F4). On success it returns
+// the request's context carrying the caller's stable node ID
+// (core.WithCallerNode): the broker binds each grant to that node, so a
+// node that later announces the same name can't act for the grants of one
+// that dropped out of discovery (review r2 partS sol-S2-F2).
+func (n *Node) callerIs(w http.ResponseWriter, r *http.Request, device string) (context.Context, bool) {
+	id, _ := r.Context().Value(callerKey{}).(Identity)
 	ctx, cancel := context.WithTimeout(r.Context(), n.helloTimeout+whoisTimeout)
 	defer cancel()
-	name, why := n.callerDevice(ctx, r.RemoteAddr)
+	name, why := n.callerDevice(ctx, id, r.RemoteAddr)
 	switch {
 	case why != "":
 	case name != device:
 		why = "it sent another device's name"
 	default:
-		return true
+		return core.WithCallerNode(r.Context(), id.ID), true
 	}
 	n.refuse(r, name, why)
 	writeErr(w, http.StatusForbidden, "this tailnet device can't act as "+strconv.Quote(device))
-	return false
+	return nil, false
 }
 
-// callerDevice returns the device name the pool peer at remote announced,
-// or why there is none: no pool peer has that address, the name is this
-// device's own, or another pool peer announced the same name.
-func (n *Node) callerDevice(ctx context.Context, remote string) (name, why string) {
+// callerDevice returns the device name the pool peer id announced, or why
+// there is none: WhoIs gave no stable node ID, no pool peer is that node at
+// remote, the name is this device's own, or another pool peer announced
+// the same name.
+func (n *Node) callerDevice(ctx context.Context, id Identity, remote string) (name, why string) {
+	if id.ID == "" {
+		return "", "whois gave no stable node ID"
+	}
 	ap, err := parseRemote(remote)
 	if err != nil {
 		return "", err.Error()
@@ -462,14 +477,8 @@ func (n *Node) callerDevice(ctx context.Context, remote string) (name, why strin
 	look := func() (string, string, bool) {
 		n.peersMu.Lock()
 		defer n.peersMu.Unlock()
-		var me *peerState
-		for _, st := range n.peers {
-			if st != nil && slices.Contains(st.ips, ip) {
-				me = st
-				break
-			}
-		}
-		if me == nil {
+		me := n.peers[id.ID]
+		if me == nil || me.id != id.ID || !slices.Contains(me.ips, ip) {
 			return "", "", false
 		}
 		name := me.hello.Device
@@ -551,12 +560,18 @@ func (n *Node) handleWork(w http.ResponseWriter, r *http.Request) {
 	if !readJSON(w, r, &req) {
 		return
 	}
-	if !n.callerIs(w, r, req.Device) {
+	cctx, ok := n.callerIs(w, r, req.Device)
+	if !ok {
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), ioTimeout)
+	ctx, cancel := context.WithTimeout(cctx, ioTimeout)
 	defer cancel()
 	resp, err := n.o.Broker.Work(ctx, req)
+	if errors.Is(err, core.ErrOtherNode) {
+		n.refuse(r, req.Device, err.Error())
+		writeErr(w, http.StatusForbidden, "this tailnet device can't act as "+strconv.Quote(req.Device)+": "+err.Error())
+		return
+	}
 	if err != nil {
 		n.log.Warn("mesh: broker work failed", "device", req.Device, "err", err)
 		writeErr(w, http.StatusBadGateway, "broker: "+err.Error())
@@ -579,12 +594,13 @@ func (n *Node) handleArchive(w http.ResponseWriter, r *http.Request, ref string)
 		writeErr(w, http.StatusNotFound, "no such archive")
 		return
 	}
-	if !n.callerIs(w, r, device) {
+	cctx, ok := n.callerIs(w, r, device)
+	if !ok {
 		return
 	}
 	rc := http.NewResponseController(w)
 	_ = rc.SetWriteDeadline(time.Now().Add(archiveTimeout + time.Minute))
-	ctx, cancel := context.WithTimeout(r.Context(), archiveTimeout)
+	ctx, cancel := context.WithTimeout(cctx, archiveTimeout)
 	defer cancel()
 	lw := &lazyWriter{w: w}
 	err := as.FetchArchive(ctx, ref, device, lw)

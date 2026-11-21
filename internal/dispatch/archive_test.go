@@ -259,3 +259,72 @@ func TestWorkerRefusesBundleWithCredentials(t *testing.T) {
 		t.Fatalf("%d starts", n)
 	}
 }
+
+// A device name is only a claim: the broker binds each grant to the tailnet
+// node that asked for it. A node that later announces the same name (the
+// first dropped out of discovery) can't report the grant's result, fetch
+// its archive or get work as that device while the grant is on record, a
+// restart included; the first node still can (review r2 partS sol-S2-F2).
+func TestGrantsBoundToTheirTailnetNode(t *testing.T) {
+	r := newRig(t, checksRepo(repoSite))
+	w := r.addWorker("beta", 2)
+	src := &source{inner: r.broker, node: "nBETA"}
+	w.sources = []core.WorkSource{src}
+	r.forge.SetFile(repoSite, sha1, ciWorkflow, []byte("test\n"))
+	r.forge.SetCommits(repoSite, []core.Commit{{SHA: sha1, Ref: "main"}})
+	r.tick()
+	names := started(w.ex)
+	if len(names) != 1 {
+		t.Fatalf("starts = %v", names)
+	}
+	name, ref := names[0], brokerRef(t, r)
+	grant := func() *grantRec {
+		r.broker.mu.Lock()
+		defer r.broker.mu.Unlock()
+		return r.broker.grants[name]
+	}
+	if g := grant(); g == nil || g.Node != "nBETA" {
+		t.Fatalf("grant = %+v, want node nBETA", g)
+	}
+
+	impostor := core.WithCallerNode(bg, "nOTHER")
+	report := core.WorkRequest{Device: "beta", Free: 2, Platforms: []core.Platform{linuxX64},
+		Results: []core.CheckResult{{Runner: name, State: "failure", Description: "forged"}}}
+	if _, err := r.broker.Work(impostor, report); !errors.Is(err, core.ErrOtherNode) {
+		t.Fatalf("another node's report as beta: %v", err)
+	}
+	if got := r.forge.Status(repoSite, sha1, "tentmaker/test"); got != "pending" {
+		t.Fatalf("status after the forged report = %q, want pending", got)
+	}
+	if grant() == nil {
+		t.Fatal("the forged report removed the grant")
+	}
+	var buf bytes.Buffer
+	for _, ctx := range []context.Context{impostor, bg} {
+		if err := r.broker.FetchArchive(ctx, ref, "beta", &buf); !errors.Is(err, core.ErrNotFound) || buf.Len() != 0 {
+			t.Fatalf("archive for node %q: err=%v bytes=%d", core.CallerNode(ctx), err, buf.Len())
+		}
+	}
+	if err := src.FetchArchive(bg, ref, "beta", &buf); err != nil || buf.Len() == 0 {
+		t.Fatalf("archive for the granted node: err=%v bytes=%d", err, buf.Len())
+	}
+
+	// The binding is saved with the grant.
+	r.broker = r.newBroker(r.cfg, r.bdir, nil)
+	src.inner = r.broker
+	if _, err := r.broker.Work(impostor, report); !errors.Is(err, core.ErrOtherNode) {
+		t.Fatalf("after a restart, another node's report as beta: %v", err)
+	}
+
+	// The granted node reports its own result.
+	w.ex.SetResult(name, core.CheckResult{State: "success", Description: "ok"})
+	w.ex.Exit(name)
+	r.run(2*time.Second, 2*time.Second)
+	if got := r.forge.Status(repoSite, sha1, "tentmaker/test"); got != "success" {
+		t.Fatalf("status = %q, want success", got)
+	}
+	// With none of beta's grants on record, the name is free again.
+	if _, err := r.broker.Work(impostor, core.WorkRequest{Device: "beta"}); err != nil {
+		t.Fatalf("a new node as beta once its grants ended: %v", err)
+	}
+}

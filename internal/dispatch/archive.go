@@ -55,6 +55,7 @@ func newRef() (string, error) {
 type archiveRec struct {
 	runner  string
 	device  string
+	node    string // the tailnet node the check was granted to (grantRec.Node)
 	forge   string
 	repo    string
 	sha     string
@@ -77,6 +78,11 @@ func (b *Broker) FetchArchive(ctx context.Context, ref, device string, w io.Writ
 	if a.device != device {
 		b.mu.Unlock()
 		b.log.Warn("archive asked for by a device the check was not granted to; refused", "device", device, "runner", a.runner)
+		return core.ErrNotFound
+	}
+	if a.node != core.CallerNode(ctx) {
+		b.mu.Unlock()
+		b.log.Warn("archive asked for by a tailnet node the check was not granted to; refused", "device", device, "runner", a.runner)
 		return core.ErrNotFound
 	}
 	if a.fetches >= MaxArchiveFetches {
@@ -120,7 +126,7 @@ func (b *Broker) addArchiveLocked(rec *grantRec) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	b.archives[ref] = &archiveRec{runner: rec.Name, device: rec.Device, forge: rec.Forge, repo: rec.Repo, sha: rec.SHA}
+	b.archives[ref] = &archiveRec{runner: rec.Name, device: rec.Device, node: rec.Node, forge: rec.Forge, repo: rec.Repo, sha: rec.SHA}
 	return ref, nil
 }
 

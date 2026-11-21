@@ -149,6 +149,9 @@ type source struct {
 	// loseOffers is how many responses with offers are lost on the way
 	// back: the broker granted them, the worker sees only an error.
 	loseOffers int
+	// node, when set, is the tailnet node the calls come from, as the mesh
+	// would pass it (core.WithCallerNode).
+	node string
 }
 
 func (s *source) Name() string { return s.inner.Name() }
@@ -157,6 +160,9 @@ func (s *source) Work(ctx context.Context, req core.WorkRequest) (core.WorkRespo
 	s.mu.Lock()
 	s.reqs = append(s.reqs, req)
 	fail := s.fail
+	if s.node != "" {
+		ctx = core.WithCallerNode(ctx, s.node)
+	}
 	s.mu.Unlock()
 	if fail != nil {
 		return core.WorkResponse{}, fail
@@ -176,6 +182,9 @@ func (s *source) FetchArchive(ctx context.Context, ref, device string, w io.Writ
 	as, ok := s.inner.(core.ArchiveSource)
 	if !ok {
 		return core.ErrNotFound
+	}
+	if s.node != "" {
+		ctx = core.WithCallerNode(ctx, s.node)
 	}
 	return as.FetchArchive(ctx, ref, device, w)
 }

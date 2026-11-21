@@ -88,7 +88,7 @@ func TestParseWhoIs(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := Identity{
-		Node: "alice-linux.example-tailnet.ts.net", HostName: "alice-linux",
+		ID: "nLINUX00CNTRL", Node: "alice-linux.example-tailnet.ts.net", HostName: "alice-linux",
 		IPs:    []netip.Addr{netip.MustParseAddr("100.64.0.2"), netip.MustParseAddr("fd7a:115c:a1e0::2")},
 		UserID: 1001, LoginName: "alice@example.com",
 	}

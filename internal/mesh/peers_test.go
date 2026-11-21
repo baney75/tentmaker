@@ -126,7 +126,7 @@ func newCluster(t *testing.T, specs ...nodeSpec) []*member {
 			if ou != 1001 {
 				login = "bob@example.com"
 			}
-			m.ts.ids[fmt.Sprintf("100.64.1.%d", j+1)] = Identity{Node: o.spec.device + ".example-tailnet.ts.net", HostName: o.spec.device, UserID: ou, LoginName: login}
+			m.ts.ids[fmt.Sprintf("100.64.1.%d", j+1)] = Identity{ID: o.id, Node: o.spec.device + ".example-tailnet.ts.net", HostName: o.spec.device, UserID: ou, LoginName: login}
 		}
 	}
 	return ms
