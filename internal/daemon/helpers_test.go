@@ -14,6 +14,7 @@ import (
 
 	"github.com/baney75/tentmaker/internal/config"
 	"github.com/baney75/tentmaker/internal/core"
+	"github.com/baney75/tentmaker/internal/dispatch"
 	fakeexec "github.com/baney75/tentmaker/internal/executor/fake"
 	fakeforge "github.com/baney75/tentmaker/internal/forge/fake"
 	"github.com/baney75/tentmaker/internal/guards"
@@ -344,4 +345,55 @@ type notedExec struct{ core.Executor }
 
 func (notedExec) Notes(context.Context) []core.Problem {
 	return []core.Problem{{Check: "macos guests", What: "macOS guests are off: the macOS image needs 130 GiB, 60 GiB free; run sudo tentmaker setup --macos-guests when you have room", Fix: "sudo tentmaker setup --macos-guests"}}
+}
+
+// Doctor judges a public allow_public repo's fork policy by the broker's
+// own rule, so it never calls a repo fine that the broker refuses (review
+// r1 partB second-F8).
+func TestDoctorUsesTheBrokersForkRule(t *testing.T) {
+	cfg := Resolve(config.Default(16<<30, 8), Paths{State: t.TempDir(), Cache: t.TempDir()})
+	cfg.Repos = []config.Repo{
+		{Name: "o/first", AllowPublic: true},
+		{Name: "o/off", AllowPublic: true},
+		{Name: "o/all", AllowPublic: true, Mode: "runner"},
+		{Name: "o/checks", AllowPublic: true, Mode: "checks"},
+	}
+	ff := fakeforge.New("github", nil)
+	infos := []core.RepoInfo{
+		{Repo: "o/first", Public: true, ForkPolicy: "approve_first_time"},
+		{Repo: "o/off", Public: true, ForkPolicy: "off"},
+		{Repo: "o/all", Public: true, ForkPolicy: "approve_all"},
+		{Repo: "o/checks", Public: true, ForkPolicy: "approve_first_time"},
+	}
+	for _, info := range infos {
+		ff.SetRepo(info)
+	}
+	rep := Doctor(context.Background(), DoctorInput{
+		Version: "1.0.0", ConfigPath: "/etc/tentmaker/config.toml", ConfigExists: true, Config: cfg,
+		Forges: Forges{Forges: map[string]core.Forge{"github": ff}, Tokens: []string{"github"}},
+	})
+	status := map[string]string{}
+	for _, f := range rep.Checks {
+		if f.Check != "forge" {
+			continue
+		}
+		for _, info := range infos {
+			if strings.HasPrefix(f.What, info.Repo+":") || strings.HasPrefix(f.What, info.Repo+" ") {
+				if old, seen := status[info.Repo]; !seen || old == OK {
+					status[info.Repo] = f.Status
+				}
+			}
+		}
+	}
+	for _, info := range infos {
+		r := config.Repo{Name: info.Repo, AllowPublic: true}
+		broker := dispatch.PublicRepoRefusal(info, r.AllowPublic)
+		want := OK
+		if broker != "" && info.Repo != "o/checks" {
+			want = Fail
+		}
+		if status[info.Repo] != want {
+			t.Errorf("%s (policy %s): doctor says %v, want %v (broker: %q)\n%s", info.Repo, info.ForkPolicy, status[info.Repo], want, broker, fmt.Sprint(rep.Checks))
+		}
+	}
 }

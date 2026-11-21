@@ -525,7 +525,7 @@ section is rewritten.
 - Check offers are marked with `Job.Event = "check"`.
 - A quarantine lifts on the first request after delivery that asks for work with none of that broker's runners running.
 - Boot backoff is per executor.
-- A public repo with `allow_public` also needs fork policy `approve_all` or `off`.
+- A public runner-mode repo with `allow_public` also needs fork policy `approve_all` or `off`. `dispatch.PublicRepoRefusal` is that rule, and `doctor` calls it for runner-mode repos, so doctor fails exactly the repos the broker refuses. Forgejo reports `approve_first_time` (it has no setting for more), so a public Forgejo repo runs in checks mode, and doctor's fix says so.
 - `Broker.Tick` runs one pass (poll due repos, watch runners, handle silent workers, post statuses, save state); `Broker.Shutdown` stops granting and deletes runners that haven't taken a job.
 
 **checks**

@@ -755,10 +755,18 @@ func (b *Broker) repoRefusalLocked(r *repoState, now time.Time) string {
 }
 
 func repoRefusal(r *repoState, info core.RepoInfo) string {
+	return PublicRepoRefusal(info, r.cfg.AllowPublic)
+}
+
+// PublicRepoRefusal says why the broker refuses a runner-mode repo for being
+// public, or "" when it may run: a public repo needs allow_public and a fork
+// policy of "approve_all" or "off". Doctor calls it too, so the two never
+// disagree about a repo.
+func PublicRepoRefusal(info core.RepoInfo, allowPublic bool) string {
 	if !info.Public {
 		return ""
 	}
-	if !r.cfg.AllowPublic {
+	if !allowPublic {
 		return "public repo without allow_public"
 	}
 	switch info.ForkPolicy {

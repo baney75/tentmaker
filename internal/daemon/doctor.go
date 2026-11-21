@@ -9,6 +9,7 @@ import (
 
 	"github.com/baney75/tentmaker/internal/config"
 	"github.com/baney75/tentmaker/internal/core"
+	"github.com/baney75/tentmaker/internal/dispatch"
 	"github.com/baney75/tentmaker/internal/guards"
 	"github.com/baney75/tentmaker/internal/mesh"
 	"github.com/baney75/tentmaker/internal/service"
@@ -259,10 +260,16 @@ func checkForges(ctx context.Context, in DoctorInput) []Finding {
 			out = append(out, Finding{Check: "forge", Status: Fail, What: r.Name + " is public and allow_public is off, so its jobs are refused",
 				Fix: "sudo tentmaker repo add " + r.Name + " --allow-public --enable"})
 		}
-		if info.Public && r.AllowPublic && info.ForkPolicy != "approve_all" && info.ForkPolicy != "approve_first_time" {
-			bad = true
-			out = append(out, Finding{Check: "forge", Status: Fail, What: fmt.Sprintf("%s is public and fork PRs run without approval (policy %q)", r.Name, info.ForkPolicy),
-				Fix: "sudo tentmaker repo add " + r.Name + " --allow-public --enable"})
+		// The broker's own rule, for the repos it applies it to (runner mode).
+		if r.AllowPublic && (r.Mode == "" || r.Mode == "runner") {
+			if why := dispatch.PublicRepoRefusal(info, true); why != "" {
+				bad = true
+				fix := "sudo tentmaker repo add " + r.Name + " --allow-public --enable"
+				if info.ForkPolicy == "approve_first_time" && ForgeConfig(cfg, name).Kind != "github" {
+					fix = "this forge has no setting to require approval for every outside contributor; serve it in checks mode: sudo tentmaker repo add " + r.Name + " --forge " + name + " --mode checks --allow-public"
+				}
+				out = append(out, Finding{Check: "forge", Status: Fail, What: r.Name + ": " + why + ", so the broker refuses its jobs", Fix: fix})
+			}
 		}
 		if !bad {
 			out = append(out, Finding{Check: "forge", Status: OK, What: r.Name + ": token and repo settings are fine"})
