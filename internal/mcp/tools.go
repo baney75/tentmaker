@@ -245,8 +245,9 @@ var tools = []tool{
 		Name:  "update",
 		Title: "Update Tentmaker",
 		Description: "Update this device to the newest release on a channel: download, verify the sha256, health " +
-			"check, swap the binary, restart the service, and roll back if it isn't healthy within 60 s. Waits for " +
-			"running jobs to finish. Omit channel to use the configured one; passing one also switches the device to it.",
+			"check, swap the binary, restart the service, and roll back if it isn't healthy within 60 s. It first " +
+			"pauses new jobs and waits up to 30 min for running ones to finish; if they don't, nothing changes and " +
+			"new jobs resume. Omit channel to use the configured one; passing one also switches the device to it.",
 		Props: []prop{
 			{Name: "channel", Type: "string", Enum: []string{"stable", "dev"}, Description: "stable or dev; omit for the configured channel."},
 		},

@@ -254,7 +254,7 @@ func init() {
 		"resume":    {"tentmaker resume [--json]", (*app).cmdResume},
 		"doctor":    {"tentmaker doctor [--json]", (*app).cmdDoctor},
 		"logs":      {"tentmaker logs [-f] [-n LINES] [--json]", (*app).cmdLogs},
-		"update":    {"tentmaker update [--channel stable|dev] [--check] [--json]", (*app).cmdUpdate},
+		"update":    {"tentmaker update [--channel stable|dev] [--check] [--force] [--json]", (*app).cmdUpdate},
 		"rollback":  {"tentmaker rollback [--json]", (*app).cmdRollback},
 		"uninstall": {"tentmaker uninstall [--purge] [--yes] [--json]", (*app).cmdUninstall},
 		"mcp":       {"tentmaker mcp\n\nStdio MCP server for agents. Register it with: claude mcp add tentmaker -- tentmaker mcp", (*app).cmdMCP},

@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"github.com/baney75/tentmaker/internal/dispatch"
 	"io"
 	"log/slog"
 	"net"
@@ -117,6 +119,7 @@ func (f fakeTS) WhoIs(ctx context.Context, addr string) (mesh.Identity, error) {
 
 type fakeUpdater struct {
 	mu         sync.Mutex
+	onApply    func()
 	newer      bool
 	applied    []string
 	appliedTo  []string
@@ -134,6 +137,9 @@ func (u *fakeUpdater) Download(ctx context.Context, rel update.Release, dir stri
 }
 
 func (u *fakeUpdater) Apply(ctx context.Context, newBin, curBin, want string) error {
+	if u.onApply != nil {
+		u.onApply()
+	}
 	u.mu.Lock()
 	u.applied = append(u.applied, want)
 	u.appliedTo = append(u.appliedTo, curBin)
@@ -151,17 +157,26 @@ func (u *fakeUpdater) Rollback(curBin string) error {
 
 // fakeDaemon answers the control API like a running service.
 type fakeDaemon struct {
-	mu      sync.Mutex
-	version string
-	reloads int
-	paused  []string
-	resumes int
+	mu       sync.Mutex
+	version  string
+	reloads  int
+	paused   []string
+	resumes  int
+	isPaused bool
+	running  int // jobs the worker reports
 }
 
 func (d *fakeDaemon) Status(ctx context.Context) (any, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	return daemon.Status{Version: d.version, Device: "box", Why: "everyday: you are working"}, nil
+	st := daemon.Status{Version: d.version, Device: "box", Why: "everyday: you are working", Paused: d.isPaused}
+	if d.running > 0 {
+		st.Worker = &dispatch.WorkerStatus{Paused: d.isPaused}
+		for i := 0; i < d.running; i++ {
+			st.Worker.Running = append(st.Worker.Running, dispatch.RunningJob{Name: fmt.Sprintf("job-%d", i)})
+		}
+	}
+	return st, nil
 }
 func (d *fakeDaemon) Pool(ctx context.Context) (any, error) { return []mesh.DeviceStatus{}, nil }
 func (d *fakeDaemon) Doctor(ctx context.Context) (any, error) {
@@ -170,12 +185,14 @@ func (d *fakeDaemon) Doctor(ctx context.Context) (any, error) {
 func (d *fakeDaemon) Pause(ctx context.Context, reason string, dur time.Duration) error {
 	d.mu.Lock()
 	d.paused = append(d.paused, reason)
+	d.isPaused = true
 	d.mu.Unlock()
 	return nil
 }
 func (d *fakeDaemon) Resume(ctx context.Context) error {
 	d.mu.Lock()
 	d.resumes++
+	d.isPaused = false
 	d.mu.Unlock()
 	return nil
 }

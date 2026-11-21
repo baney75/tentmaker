@@ -402,6 +402,11 @@ are rediscovered every 30 s; a peer failing 3 calls in a row is skipped for a mi
   only between jobs: after the download it takes `Worker.Hold`, which closes admission and counts
   jobs under one lock, and keeps it through the swap and exit, so no job starts between the last
   zero-jobs check and the restart. A hold is memory only; a restart drops it.
+- `tentmaker update` (CLI and the MCP tool) pauses new jobs through the control API and waits up
+  to 30 min for running ones, because the restart ends them (on Windows the daemon's job object
+  kills them). If they don't finish it resumes and changes nothing; `--force` (CLI only) skips the
+  wait. It resumes after the new version reports healthy, or after a rollback, unless the device
+  was paused before the update (review r1 partB first-F5).
 - Auto-update has no one watching, so the daemon guards itself: before it swaps the binary it
   writes `<state>/update-pending.json` (from, to, time), and if that write fails it does not
   update at all; a failed swap deletes the marker. The new binary deletes it once

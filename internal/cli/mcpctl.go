@@ -110,7 +110,7 @@ func (c controller) Update(ctx context.Context, channel string) (any, error) {
 	if err := c.mutating(); err != nil {
 		return nil, err
 	}
-	v, err := c.a.update(ctx, channel, false)
+	v, err := c.a.update(ctx, channel, false, false)
 	if err != nil {
 		return v, mcpErr(err)
 	}

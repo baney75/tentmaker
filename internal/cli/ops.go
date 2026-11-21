@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/baney75/tentmaker/internal/config"
+	"github.com/baney75/tentmaker/internal/control"
 	"github.com/baney75/tentmaker/internal/core"
 	"github.com/baney75/tentmaker/internal/daemon"
 	"github.com/baney75/tentmaker/internal/dispatch"
@@ -390,7 +391,11 @@ func (a *app) channel(flagValue string) string {
 	return daemon.Channel(a.env.Version)
 }
 
-func (a *app) update(ctx context.Context, channel string, checkOnly bool) (updateView, error) {
+// UpdateDrainWait bounds how long update waits, with new jobs paused, for
+// running jobs to finish before it restarts the service.
+var UpdateDrainWait = 30 * time.Minute
+
+func (a *app) update(ctx context.Context, channel string, checkOnly, force bool) (updateView, error) {
 	channel = a.channel(channel)
 	v := updateView{OK: true, Channel: channel, Current: a.env.Version}
 	cctx, cancel := context.WithTimeout(ctx, 60*time.Second)
@@ -422,26 +427,108 @@ func (a *app) update(ctx context.Context, channel string, checkOnly bool) (updat
 	if err != nil {
 		return v, fail("try again later", "download %s: %v", rel.Version, err)
 	}
+	// The restart ends running jobs (on Windows the daemon's job object
+	// kills them), so new jobs pause and running ones finish first
+	// (review r1 partB first-F5).
+	st, serr := a.env.Service.Status(ctx)
+	installed := serr == nil && st.Installed
+	undrain := func() string { return "" }
+	if installed {
+		if undrain, err = a.drain(ctx, rc, rel.Version, force); err != nil {
+			return v, err
+		}
+	}
 	if err := a.env.Updater.Apply(ctx, newBin, cur, rel.Version); err != nil {
+		undrain()
 		return v, fail("nothing changed; try again later", "apply %s: %v", rel.Version, err)
 	}
 	v.Applied = true
-	st, err := a.env.Service.Status(ctx)
-	if err != nil || !st.Installed {
+	if !installed {
 		v.Note = "updated the binary; the service is not installed"
 		return v, nil
 	}
 	if err := a.env.Service.Restart(ctx); err == nil && a.waitVersion(rc, rel.Version, UpdateHealthWait) == nil {
-		v.Note = "updated and restarted"
+		v.Note = "updated and restarted" + undrain()
 		return v, nil
 	}
 	if err := a.env.Updater.Rollback(cur); err != nil {
-		return v, fail("sudo tentmaker rollback", "%s did not come up, and rollback failed: %v", rel.Version, err)
+		return v, fail("sudo tentmaker rollback, then sudo tentmaker resume", "%s did not come up, and rollback failed: %v", rel.Version, err)
 	}
 	a.env.Service.Restart(ctx)
 	v.OK, v.RolledBack = false, true
 	v.Note = rel.Version + " did not come up within " + UpdateHealthWait.String() + ", so the previous version is back"
+	if a.waitVersion(rc, a.env.Version, UpdateHealthWait) == nil {
+		v.Note += undrain()
+	} else {
+		v.Note += "; run sudo tentmaker resume once the service is back"
+	}
 	return v, nil
+}
+
+// drain pauses new jobs through the control API and waits, up to
+// UpdateDrainWait, for running jobs to finish; with force it does not
+// wait. It returns a function that resumes the pause it set (none when the
+// device was already paused) and says so for the update's note. A service
+// that doesn't answer has no worker taking jobs, so there is nothing to
+// drain.
+func (a *app) drain(ctx context.Context, cfg config.Config, version string, force bool) (func() string, error) {
+	c := a.controlClient(cfg)
+	status := func() (daemon.Status, error) {
+		var st daemon.Status
+		cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		return st, c.Get(cctx, "/v1/status", &st)
+	}
+	running := func(st daemon.Status) int {
+		if st.Worker == nil {
+			return 0
+		}
+		return len(st.Worker.Running)
+	}
+	st, err := status()
+	if err != nil {
+		return func() string { return "" }, nil
+	}
+	was := st.Paused || (st.Worker != nil && st.Worker.Paused)
+	if !was {
+		cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		err := c.Post(cctx, "/v1/pause", control.PauseRequest{Reason: "updating to " + version})
+		cancel()
+		if err != nil {
+			return nil, fail("tentmaker doctor", "pause new jobs before the update: %v", err)
+		}
+	}
+	resume := func() string {
+		if was {
+			return "; the device stays paused as it was"
+		}
+		cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		if err := c.Post(cctx, "/v1/resume", nil); err != nil {
+			return "; new jobs are still paused: run sudo tentmaker resume"
+		}
+		return ""
+	}
+	if force {
+		return resume, nil
+	}
+	wctx, cancel := context.WithTimeout(ctx, UpdateDrainWait)
+	defer cancel()
+	for {
+		st, err := status()
+		n := running(st)
+		if err == nil && n == 0 {
+			return resume, nil
+		}
+		if wctx.Err() != nil {
+			resume()
+			if err != nil {
+				return nil, fail("tentmaker doctor", "can't see whether jobs are running: %v; nothing changed", err)
+			}
+			return nil, fail("wait for them, or pass --force to end them", "%d job(s) still running after %s; nothing changed", n, UpdateDrainWait)
+		}
+		a.env.Sleep(2 * time.Second)
+	}
 }
 
 func (v updateView) exitCode() int {
@@ -475,6 +562,7 @@ func (a *app) cmdUpdate(args []string) (any, error) {
 	f := a.flags("update", commands["update"].usage)
 	ch := f.String("channel", "", "stable or dev")
 	check := f.Bool("check", false, "only check")
+	force := f.Bool("force", false, "restart without waiting for running jobs, which ends them")
 	pos, err := a.parse(f, args)
 	if err != nil {
 		return nil, err
@@ -492,7 +580,7 @@ func (a *app) cmdUpdate(args []string) (any, error) {
 			return nil, err
 		}
 	}
-	v, err := a.update(a.ctx, *ch, *check)
+	v, err := a.update(a.ctx, *ch, *check, *force)
 	if err != nil {
 		return nil, err
 	}
