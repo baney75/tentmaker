@@ -150,6 +150,9 @@ type Repo struct {
 	Workflows []string `toml:"workflows" json:"workflows"`
 	// Authors whose PR heads checks mode runs (empty = the repo owner only).
 	Authors []string `toml:"authors" json:"authors"`
+	// Branches whose heads checks mode runs besides the default branch, such
+	// as a release branch. Only people who can push to the repo move them.
+	Branches []string `toml:"branches" json:"branches"`
 }
 
 // Forge is how to reach one forge.
@@ -287,6 +290,14 @@ func (c Config) Validate() []string {
 		if (kind == "gitlab" || kind == "forgejo" || kind == "gitea") && r.Mode != "checks" {
 			p = append(p, fmt.Sprintf(`repo %q: %s repos run in mode = "checks" in this version`, r.Name, kind))
 		}
+		for _, b := range r.Branches {
+			if !ValidBranch(b) {
+				p = append(p, fmt.Sprintf("repo %q: %q is not a branch name", r.Name, b))
+			}
+		}
+		if len(r.Branches) > 0 && r.Mode != "checks" {
+			p = append(p, fmt.Sprintf(`repo %q: branches apply only to mode = "checks"`, r.Name))
+		}
 	}
 	switch c.Update.Channel {
 	case "stable", "dev":
@@ -412,4 +423,20 @@ func maxf(a, b float64) float64 {
 		return a
 	}
 	return b
+}
+
+// ValidBranch reports whether b is a plain git branch name: no spaces,
+// control characters, "..", or the characters git refuses in refs.
+func ValidBranch(b string) bool {
+	if b == "" || len(b) > 255 || strings.HasPrefix(b, "-") || strings.HasPrefix(b, "/") ||
+		strings.HasSuffix(b, "/") || strings.HasSuffix(b, ".") || strings.HasSuffix(b, ".lock") ||
+		strings.Contains(b, "..") || strings.Contains(b, "//") || strings.Contains(b, "@{") {
+		return false
+	}
+	for _, r := range b {
+		if r <= ' ' || r == 0x7f || strings.ContainsRune("~^:?*[\\", r) {
+			return false
+		}
+	}
+	return true
 }

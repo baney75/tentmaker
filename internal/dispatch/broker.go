@@ -1193,7 +1193,7 @@ func (b *Broker) pollChecks(ctx context.Context, r *repoState, now time.Time) {
 		return
 	}
 	fctx, cancel := context.WithTimeout(ctx, forgeTimeout)
-	commits, err := sf.PendingCommits(fctx, r.cfg.Name)
+	commits, err := sf.PendingCommits(fctx, r.cfg.Name, r.cfg.Branches...)
 	cancel()
 	if err != nil {
 		b.repoFailed(r, now, "poll commits", err)

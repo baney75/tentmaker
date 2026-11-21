@@ -268,7 +268,8 @@ func New(o Options) *Client                            // implements core.Status
   fails the job with the fix), stops at the first failing step unless continue-on-error, enforces
   the job timeout, writes `result.json` and `log.txt`.
 - **Broker in checks mode** polls `PendingCommits` per checks-mode repo (same-repo PR heads whose
-  author is in `authors`, default the owner, plus default-branch heads; never forks), plans the
+  author is in `authors`, default the owner, plus the default-branch head and the heads of the
+  repo's `branches`; never forks), plans the
   workflows at that sha via `FileAt`/`ListDir`, and offers one check job per planned job that has
   no `tentmaker/<job>` status yet. It posts `pending` ("running on <device>") when granting and
   the final state from `WorkRequest.Results`. A worker that goes silent for 2 minutes gets its
@@ -397,6 +398,7 @@ section is rewritten.
 
 **checks**
 
+- `StatusForge.PendingCommits(ctx, repo, branches...)` also returns the heads of `branches` (config `[[repos]] branches`, `repo add --branch`); a branch that doesn't exist is skipped. Branch heads, like the default branch, need no `authors` match: only people with push access move them.
 - `CheckBundle.Ref` carries the branch.
 - An empty `Platform.Arch` means any arch.
 - `ListDir` returns sorted entry names, and `ErrNotFound` for a missing folder.

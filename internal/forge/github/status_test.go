@@ -35,6 +35,26 @@ func TestPendingCommits(t *testing.T) {
 	}
 }
 
+func TestPendingCommitsBranches(t *testing.T) {
+	h := newHarness(t)
+	h.f.json("GET", "/repos/acme/app", 200, map[string]any{"default_branch": "main"})
+	h.f.json("GET", "/repos/acme/app/pulls?state=open&per_page=100&page=1", 200, []map[string]any{})
+	h.f.json("GET", "/repos/acme/app/branches/main", 200, map[string]any{"commit": map[string]any{"sha": "ddd"}})
+	h.f.json("GET", "/repos/acme/app/branches/release%2F1", 200, map[string]any{"commit": map[string]any{"sha": "eee", "author": map[string]any{"login": "owner"}}})
+	h.f.json("GET", "/repos/acme/app/branches/gone", 404, map[string]any{"message": "Branch not found"})
+	got, err := h.c.PendingCommits(context.Background(), "acme/app", "release/1", "main", "gone")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []core.Commit{
+		{Repo: "acme/app", SHA: "ddd", Ref: "main"},
+		{Repo: "acme/app", SHA: "eee", Ref: "release/1", Author: "owner"},
+	}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("got  %+v\nwant %+v", got, want)
+	}
+}
+
 func TestFileAtAndListDir(t *testing.T) {
 	h := newHarness(t)
 	h.f.on("GET", "/repos/acme/app/contents/.github/workflows/ci.yml?ref=abc123", func(w http.ResponseWriter, r *http.Request) {

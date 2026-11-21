@@ -18,8 +18,9 @@ import (
 const MaxDescription = 140
 
 // PendingCommits lists open PR heads (FromFork set for forks, so the caller
-// can refuse them) and the default branch head.
-func (c *Client) PendingCommits(ctx context.Context, repo string) ([]core.Commit, error) {
+// can refuse them), the default branch head and the heads of branches. A
+// listed branch that doesn't exist is skipped.
+func (c *Client) PendingCommits(ctx context.Context, repo string, branches ...string) ([]core.Commit, error) {
 	rp, err := repoPath(repo)
 	if err != nil {
 		return nil, err
@@ -56,7 +57,12 @@ func (c *Client) PendingCommits(ctx context.Context, repo string) ([]core.Commit
 	if err != nil {
 		return nil, err
 	}
-	if r.DefaultBranch != "" {
+	seen := map[string]bool{}
+	for i, name := range append([]string{r.DefaultBranch}, branches...) {
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
 		var br struct {
 			Commit struct {
 				SHA    string `json:"sha"`
@@ -65,10 +71,14 @@ func (c *Client) PendingCommits(ctx context.Context, repo string) ([]core.Commit
 				} `json:"author"`
 			} `json:"commit"`
 		}
-		if err := c.getJSON(ctx, rp+"/branches/"+url.PathEscape(r.DefaultBranch), true, &br); err != nil {
+		err := c.getJSON(ctx, rp+"/branches/"+url.PathEscape(name), true, &br)
+		if i > 0 && errors.Is(err, core.ErrNotFound) {
+			continue
+		}
+		if err != nil {
 			return nil, err
 		}
-		cm := core.Commit{Repo: repo, SHA: br.Commit.SHA, Ref: r.DefaultBranch}
+		cm := core.Commit{Repo: repo, SHA: br.Commit.SHA, Ref: name}
 		if br.Commit.Author != nil {
 			cm.Author = br.Commit.Author.Login
 		}

@@ -245,8 +245,10 @@ type Commit struct {
 // GitHub, Forgejo/Gitea and GitLab implement it.
 type StatusForge interface {
 	Name() string
-	// PendingCommits lists open same-repo PR heads and default-branch heads.
-	PendingCommits(ctx context.Context, repo string) ([]Commit, error)
+	// PendingCommits lists open PR heads (forks marked FromFork), the
+	// default branch head, and the heads of branches that exist (a branch
+	// that doesn't is left out, not an error).
+	PendingCommits(ctx context.Context, repo string, branches ...string) ([]Commit, error)
 	FileAt(ctx context.Context, repo, sha, path string) ([]byte, error)
 	ListDir(ctx context.Context, repo, sha, path string) ([]string, error)
 	// Archive returns a URL (and optional auth header) for a tar.gz of the repo at sha.

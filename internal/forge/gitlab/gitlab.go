@@ -78,10 +78,10 @@ func (c *Client) Name() string { return "gitlab" }
 
 func project(repo string) string { return "projects/" + url.PathEscape(repo) }
 
-// PendingCommits lists the default branch head and the heads of open merge
-// requests. A merge request whose source project differs from the target is
-// marked FromFork.
-func (c *Client) PendingCommits(ctx context.Context, repo string) ([]core.Commit, error) {
+// PendingCommits lists the default branch head, the heads of branches and
+// the heads of open merge requests. A merge request whose source project
+// differs from the target is marked FromFork. A missing branch is skipped.
+func (c *Client) PendingCommits(ctx context.Context, repo string, branches ...string) ([]core.Commit, error) {
 	var proj struct {
 		ID            int64  `json:"id"`
 		DefaultBranch string `json:"default_branch"`
@@ -90,20 +90,26 @@ func (c *Client) PendingCommits(ctx context.Context, repo string) ([]core.Commit
 		return nil, err
 	}
 	var out []core.Commit
-	if proj.DefaultBranch != "" {
+	seen := map[string]bool{}
+	for _, name := range append([]string{proj.DefaultBranch}, branches...) {
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
 		var br struct {
 			Commit struct {
 				ID string `json:"id"`
 			} `json:"commit"`
 		}
-		err := c.getJSON(ctx, project(repo)+"/repository/branches/"+url.PathEscape(proj.DefaultBranch), nil, &br)
+		err := c.getJSON(ctx, project(repo)+"/repository/branches/"+url.PathEscape(name), nil, &br)
 		switch {
 		case errors.Is(err, core.ErrNotFound):
-			// An empty repository has no default branch head yet.
+			// An empty repository has no default branch head yet, and a
+			// listed branch may be gone.
 		case err != nil:
 			return nil, err
 		case br.Commit.ID != "":
-			out = append(out, core.Commit{Repo: repo, SHA: br.Commit.ID, Ref: proj.DefaultBranch})
+			out = append(out, core.Commit{Repo: repo, SHA: br.Commit.ID, Ref: name})
 		}
 	}
 	type mr struct {

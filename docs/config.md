@@ -99,6 +99,7 @@ One entry per repository this device serves. A device with repos and a forge tok
 | `allow_public` | bool | `false` | Run jobs for a public repo. The repo must also require approval for every outside contributor's workflow. |
 | `workflows` | list of strings | `[]` | Checks mode: which workflow files to run. Empty means every workflow under `.github/workflows` or `.forgejo/workflows` triggered by `push` or `pull_request`. |
 | `authors` | list of strings | `[]` (the repo owner) | Checks mode: whose same-repo pull requests run. |
+| `branches` | list of strings | `[]` | Checks mode: branches whose head commit runs besides the default branch, such as a release branch (`tentmaker repo add --branch NAME`). Only people who can push to the repo move a branch, so no author list applies. A listed branch that doesn't exist is skipped. |
 
 ## `[forges.<name>]`
 

@@ -29,7 +29,8 @@ tentmaker schedule add --name N --days mon-fri|sat,sun|daily --from HH:MM --to H
 tentmaker schedule remove NAME [--json]`
 	usageRepo = `tentmaker repo list [--json]
 tentmaker repo add OWNER/NAME [--forge github|forgejo|gitlab] [--mode runner|checks]
-                   [--allow-public] [--workflow PATH]... [--author LOGIN]... [--enable] [--json]
+                   [--allow-public] [--workflow PATH]... [--author LOGIN]... [--branch NAME]...
+                   [--enable] [--json]
 tentmaker repo remove OWNER/NAME [--json]`
 )
 
@@ -439,6 +440,7 @@ type repoAddOpts struct {
 	AllowPublic bool
 	Workflows   []string
 	Authors     []string
+	Branches    []string
 	Enable      bool
 }
 
@@ -486,11 +488,19 @@ func (a *app) repoAdd(ctx context.Context, o repoAddOpts) (repoAddView, error) {
 	if checksOnly(o.Forge) && o.Mode != "checks" {
 		return v, usage("use --mode checks", "%s repos run in checks mode", o.Forge)
 	}
+	for _, b := range o.Branches {
+		if !config.ValidBranch(b) {
+			return v, usage("write it like main or release/1.2", "--branch %q is not a branch name", b)
+		}
+	}
+	if len(o.Branches) > 0 && o.Mode != "checks" {
+		return v, usage("add --mode checks", "--branch applies only to checks mode")
+	}
 	cfg, err := a.mustConfig()
 	if err != nil {
 		return v, err
 	}
-	repo := config.Repo{Forge: o.Forge, Name: o.Name, AllowPublic: o.AllowPublic, Mode: o.Mode, Workflows: o.Workflows, Authors: o.Authors}
+	repo := config.Repo{Forge: o.Forge, Name: o.Name, AllowPublic: o.AllowPublic, Mode: o.Mode, Workflows: o.Workflows, Authors: o.Authors, Branches: o.Branches}
 	if repo.Forge == "github" {
 		repo.Forge = ""
 	}
@@ -665,12 +675,13 @@ func (a *app) cmdRepo(args []string) (any, error) {
 	case "add":
 		f := a.flags("repo add", usageRepo)
 		var o repoAddOpts
-		var wf, au multi
+		var wf, au, br multi
 		f.StringVar(&o.Forge, "forge", "github", "github, forgejo or gitlab")
 		f.StringVar(&o.Mode, "mode", "", "runner or checks")
 		f.BoolVar(&o.AllowPublic, "allow-public", false, "serve a public repo")
 		f.Var(&wf, "workflow", "workflow path (checks mode, repeatable)")
 		f.Var(&au, "author", "PR author whose heads checks mode runs (repeatable)")
+		f.Var(&br, "branch", "branch whose head checks mode runs besides the default branch (repeatable)")
 		f.BoolVar(&o.Enable, "enable", false, "set the fork approval policy and preview the migration")
 		pos, err := a.parse(f, args)
 		if err != nil {
@@ -679,7 +690,7 @@ func (a *app) cmdRepo(args []string) (any, error) {
 		if len(pos) != 1 {
 			return nil, usage("usage: tentmaker repo add OWNER/NAME [flags]", "repo add needs one OWNER/NAME")
 		}
-		o.Name, o.Workflows, o.Authors = pos[0], wf, au
+		o.Name, o.Workflows, o.Authors, o.Branches = pos[0], wf, au, br
 		if err := validRepo(o.Name); err != nil {
 			return nil, err
 		}

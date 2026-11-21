@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestParseSize(t *testing.T) {
 	good := map[string]Size{
@@ -52,5 +55,27 @@ func TestChecksOnlyForges(t *testing.T) {
 	c.Repos = []Repo{{Forge: "github", Name: "a/b"}}
 	if err := c.Validate(); err != nil {
 		t.Fatalf("github repo refused: %v", err)
+	}
+}
+
+func TestRepoBranches(t *testing.T) {
+	for _, b := range []string{"main", "release/1.2", "e2e", "feat_x-y"} {
+		if !ValidBranch(b) {
+			t.Errorf("%q should be a branch name", b)
+		}
+	}
+	for _, b := range []string{"", "-x", "a..b", "a b", "a:b", "x.lock", "/x", "x/", "a~1", "a\\b", "a@{1}"} {
+		if ValidBranch(b) {
+			t.Errorf("%q should not be a branch name", b)
+		}
+	}
+	c := Default(int64(16*GiB), 8)
+	c.Repos = []Repo{{Name: "o/r", Mode: "checks", Branches: []string{"e2e"}}}
+	if p := c.Validate(); len(p) != 0 {
+		t.Errorf("checks repo with a branch: %v", p)
+	}
+	c.Repos = []Repo{{Name: "o/r", Branches: []string{"e2e"}}}
+	if p := c.Validate(); len(p) != 1 || !strings.Contains(p[0], "checks") {
+		t.Errorf("runner repo with a branch: %v", p)
 	}
 }

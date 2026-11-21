@@ -287,6 +287,8 @@ var usageCases = [][]string{
 	{"repo", "add", "bad"},
 	{"repo", "add", "a/b", "--forge", "svn"},
 	{"repo", "add", "a/b", "--bogus"},
+	{"repo", "add", "a/b", "--branch", "e2e"},
+	{"repo", "add", "a/b", "--mode", "checks", "--branch", "a..b"},
 	{"repo", "remove"},
 	{"connect"},
 	{"connect", "svn"},
@@ -531,6 +533,13 @@ func TestRepoAdd(t *testing.T) {
 	f.run("", "repo", "remove", "o/pub")
 	if len(f.config().Repos) != 0 {
 		t.Error("not removed")
+	}
+	// Checks mode can follow branches besides the default one.
+	if code := f.run("", "repo", "add", "o/pub", "--allow-public", "--mode", "checks", "--branch", "e2e", "--branch", "release/1"); code != ExitOK {
+		t.Fatalf("--branch: exit %d: %s", code, f.stderr)
+	}
+	if r := f.config().Repos; len(r) != 1 || !reflect.DeepEqual(r[0].Branches, []string{"e2e", "release/1"}) {
+		t.Errorf("branches %+v", r)
 	}
 }
 

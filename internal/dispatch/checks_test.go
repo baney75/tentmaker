@@ -148,6 +148,33 @@ func TestChecksAuthorsListAndForgejoDir(t *testing.T) {
 	}
 }
 
+func TestChecksBranches(t *testing.T) {
+	repo := checksRepo(repoSite)
+	repo.Branches = []string{"release", "e2e", "gone"}
+	r := newRig(t, repo)
+	w := r.addWorker("alpha", 8)
+	for _, sha := range []string{sha1, sha2, sha3} {
+		r.forge.SetFile(repoSite, sha, ciWorkflow, []byte("test\n"))
+	}
+	r.forge.SetCommits(repoSite, []core.Commit{
+		{SHA: sha2, Ref: "e2e", PR: 4, Author: "baney75"}, // the PR head is also branch e2e's head
+		{SHA: sha1, Ref: "main"},
+	})
+	r.forge.SetBranch(repoSite, "release", sha3)
+	r.forge.SetBranch(repoSite, "e2e", sha2)
+	r.forge.SetBranch(repoSite, "other", sha4) // not listed, so never asked for
+	r.tick()
+	got := map[string]int{}
+	for _, n := range started(w.ex) {
+		spec, _ := w.ex.Spec(n)
+		got[bundleOf(t, spec).SHA]++
+	}
+	want := map[string]int{sha1: 1, sha2: 1, sha3: 1}
+	if len(got) != len(want) || got[sha1] != 1 || got[sha2] != 1 || got[sha3] != 1 {
+		t.Fatalf("started per sha = %v, want one each for main, the PR (also branch e2e) and branch release", got)
+	}
+}
+
 func TestChecksWorkerSilentGetsErrorStatus(t *testing.T) {
 	r := newRig(t, checksRepo(repoSite))
 	w := r.addWorker("alpha", 1)

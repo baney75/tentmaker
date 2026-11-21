@@ -3,6 +3,7 @@ package forgejo
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -11,9 +12,10 @@ import (
 	"github.com/baney75/tentmaker/internal/core"
 )
 
-// PendingCommits lists open PR heads (FromFork set for forks) and the
-// default branch head.
-func (c *Client) PendingCommits(ctx context.Context, repo string) ([]core.Commit, error) {
+// PendingCommits lists open PR heads (FromFork set for forks), the default
+// branch head and the heads of branches. A listed branch that doesn't exist
+// is skipped.
+func (c *Client) PendingCommits(ctx context.Context, repo string, branches ...string) ([]core.Commit, error) {
 	rp, err := repoPath(repo)
 	if err != nil {
 		return nil, err
@@ -51,7 +53,12 @@ func (c *Client) PendingCommits(ctx context.Context, repo string) ([]core.Commit
 	if err != nil {
 		return nil, err
 	}
-	if r.DefaultBranch != "" {
+	seen := map[string]bool{}
+	for i, name := range append([]string{r.DefaultBranch}, branches...) {
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
 		var br struct {
 			Commit struct {
 				ID     string `json:"id"`
@@ -60,10 +67,14 @@ func (c *Client) PendingCommits(ctx context.Context, repo string) ([]core.Commit
 				} `json:"author"`
 			} `json:"commit"`
 		}
-		if err := c.getJSON(ctx, rp+"/branches/"+url.PathEscape(r.DefaultBranch), &br); err != nil {
+		err := c.getJSON(ctx, rp+"/branches/"+url.PathEscape(name), &br)
+		if i > 0 && errors.Is(err, core.ErrNotFound) {
+			continue
+		}
+		if err != nil {
 			return nil, err
 		}
-		cm := core.Commit{Repo: repo, SHA: br.Commit.ID, Ref: r.DefaultBranch}
+		cm := core.Commit{Repo: repo, SHA: br.Commit.ID, Ref: name}
 		if br.Commit.Author != nil {
 			cm.Author = br.Commit.Author.Username
 		}

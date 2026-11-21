@@ -79,6 +79,7 @@ type Forge struct {
 	grants     []core.Grant
 
 	commits  map[string][]core.Commit
+	branches map[string]map[string]string // repo -> branch -> head sha
 	files    map[string]map[string][]byte // repo@sha -> path -> content
 	statuses map[string]map[string]string // repo@sha -> context -> state
 	posts    []StatusPost
@@ -110,6 +111,7 @@ func New(name string, now func() time.Time) *Forge {
 		cancelled:  map[string][]int64{},
 		deleted:    map[string][]int64{},
 		commits:    map[string][]core.Commit{},
+		branches:   map[string]map[string]string{},
 		files:      map[string]map[string][]byte{},
 		statuses:   map[string]map[string]string{},
 		token:      "archive-token-" + name,
@@ -360,6 +362,17 @@ func (f *Forge) SetCommits(repo string, cs []core.Commit) {
 	f.commits[repo] = append([]core.Commit(nil), cs...)
 }
 
+// SetBranch sets the head of a branch PendingCommits returns when it is
+// asked for that branch.
+func (f *Forge) SetBranch(repo, branch, sha string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.branches[repo] == nil {
+		f.branches[repo] = map[string]string{}
+	}
+	f.branches[repo][branch] = sha
+}
+
 // SetFile stores a file at repo@sha.
 func (f *Forge) SetFile(repo, sha, p string, content []byte) {
 	f.mu.Lock()
@@ -567,13 +580,20 @@ func (f *Forge) CancelRun(ctx context.Context, repo string, runID int64) error {
 // ---------------------------------------------------------------- core.StatusForge
 
 // PendingCommits implements core.StatusForge.
-func (f *Forge) PendingCommits(ctx context.Context, repo string) ([]core.Commit, error) {
+// Branches set with SetBranch follow the commits from SetCommits.
+func (f *Forge) PendingCommits(ctx context.Context, repo string, branches ...string) ([]core.Commit, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.call(MPendingCommits, repo); err != nil {
 		return nil, err
 	}
-	return append([]core.Commit(nil), f.commits[repo]...), nil
+	out := append([]core.Commit(nil), f.commits[repo]...)
+	for _, b := range branches {
+		if sha, ok := f.branches[repo][b]; ok {
+			out = append(out, core.Commit{Repo: repo, SHA: sha, Ref: b})
+		}
+	}
+	return out, nil
 }
 
 // FileAt implements core.StatusForge.

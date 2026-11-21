@@ -26,7 +26,8 @@ tentmaker schedule list|add|remove
     add --name N --days mon-fri|sat,sun|daily --from HH:MM --to HH:MM --profile everyday|boost|off
 tentmaker repo list
 tentmaker repo add OWNER/NAME [--forge github|forgejo|gitlab] [--mode runner|checks]
-                   [--allow-public] [--workflow PATH]... [--author LOGIN]... [--enable]
+                   [--allow-public] [--workflow PATH]... [--author LOGIN]... [--branch NAME]...
+                   [--enable]
 tentmaker repo remove OWNER/NAME
 tentmaker connect github|forgejo|gitlab [--url URL] [--token-stdin]
 tentmaker devices add HOST [--channel stable|dev] [--memory S] [--boost-memory S] [--repo R]...
