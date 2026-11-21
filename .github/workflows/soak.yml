@@ -9,7 +9,8 @@
 # final success, that RSS, goroutines and open fds grow by less than 20%
 # after the first 10 minutes (a least-squares slope; heap is reported), that
 # nothing is left behind, and that the state dir stays bounded (check logs
-# pruned at 200; 210 old ones are planted first). metrics/soak.json has the
+# pruned at 200 once the first job's log is written; 210 old ones are
+# planted first). metrics/soak.json has the
 # series and verdicts.
 #
 # The throwaway commits are pushed with the GITHUB_TOKEN, so they start no
@@ -121,7 +122,9 @@ jobs:
           num() { jq -r "$1 // -1" <<<"$st" 2>/dev/null || echo -1; }
           fds=$(sudo timeout 10 find "/proc/$pid/fd" -mindepth 1 -maxdepth 1 2>/dev/null | wc -l)
           units=$(timeout 20 systemctl list-units --all --plain --no-legend 'tentmaker-job-*' 2>/dev/null | wc -l)
-          cgroups=$(find /sys/fs/cgroup/tentmaker.slice -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)
+          # The runner user's manager (user@<uid>.service) lives in the slice on
+          # purpose, so its podman counts against the pool; containers are counted below.
+          cgroups=$(find /sys/fs/cgroup/tentmaker.slice -mindepth 1 -maxdepth 1 -type d ! -name 'user@*.service' 2>/dev/null | wc -l)
           ruid=$(id -u tentmaker-runner 2>/dev/null || echo 0)
           containers=$(sudo timeout 30 runuser -u tentmaker-runner -- env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin \
             HOME="$STATE/linux" XDG_RUNTIME_DIR="/run/user/$ruid" XDG_CONFIG_HOME="$STATE/linux/.config" \
@@ -244,6 +247,7 @@ jobs:
           kill "$sampler" 2>/dev/null || true
           wait "$sampler" 2>/dev/null || true
           "$RUNNER_TEMP/sample.sh" | tee metrics/last.json
+          find /sys/fs/cgroup/tentmaker.slice -mindepth 1 -maxdepth 1 -type d -printf '%f\n' >metrics/slice-children.txt 2>/dev/null || true
           git config --unset credential.helper || true
 
       - name: read the commit statuses
@@ -345,7 +349,10 @@ jobs:
           verdicts["no_leftover_containers"] = left["containers"] == 0
           verdicts["no_leftover_job_dirs"] = left["job_dirs"] == 0
 
-          logs = [s["check_logs"] for s in samples] + [last.get("check_logs", -1)]
+          # The broker prunes when it writes a log, so the 210 planted ones stand
+          # until the first job ends; judge the cap from then on.
+          logs = [s["check_logs"] for s in samples + [last]
+                  if s.get("check_logs", -1) >= 0 and s["check_logs"] > s.get("seed_logs", 0)]
           sb = [s for s in samples if s["t"] >= 600]
           state = {"check_logs_max": max(logs) if logs else None, "check_logs_end": last.get("check_logs"),
                    "seed_logs_end": last.get("seed_logs"),
