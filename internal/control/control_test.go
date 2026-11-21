@@ -63,7 +63,16 @@ func (f *fakeHandler) Reload(ctx context.Context) error {
 	return nil
 }
 
+// reader is an ordinary local user: not a CI job, not an admin.
+var reader = Caller{Who: "uid 1000"}
+
 func start(t *testing.T) (*fakeHandler, *Client, string) {
+	t.Helper()
+	return startAs(t, func(net.Conn) (Caller, error) { return reader, nil })
+}
+
+// startAs serves the control API with ident naming every caller.
+func startAs(t *testing.T, ident Identify) (*fakeHandler, *Client, string) {
 	t.Helper()
 	dir := t.TempDir()
 	tokPath := TokenPath(dir)
@@ -78,7 +87,7 @@ func start(t *testing.T) (*fakeHandler, *Client, string) {
 	h := &fakeHandler{}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- NewServer(h, tok, nil).Serve(ctx, ln) }()
+	go func() { done <- NewServer(h, tok, ident, nil).Serve(ctx, ln) }()
 	t.Cleanup(func() {
 		cancel()
 		if err := <-done; err != nil {
@@ -113,8 +122,11 @@ func TestTokenFile(t *testing.T) {
 	}
 }
 
-func TestGetsNeedNoToken(t *testing.T) {
+// An ordinary user reads status and pool with no token; doctor, which
+// makes the daemon call the forges, needs the token or an admin.
+func TestReadersGetStatusAndPool(t *testing.T) {
 	_, c, _ := start(t)
+	tokPath := c.TokenPath
 	c.TokenPath = filepath.Join(t.TempDir(), "none")
 	var st map[string]string
 	if err := c.Get(context.Background(), "/v1/status", &st); err != nil || st["device"] != "box" {
@@ -124,10 +136,55 @@ func TestGetsNeedNoToken(t *testing.T) {
 	if err := c.Get(context.Background(), "/v1/pool", &pool); err != nil || len(pool) != 1 {
 		t.Fatalf("pool %v %v", pool, err)
 	}
-	err := c.Get(context.Background(), "/v1/doctor", nil)
 	var e *Error
-	if !errors.As(err, &e) || e.Status != 500 || e.Message != "doctor broke" {
-		t.Fatalf("doctor error %v", err)
+	if err := c.Get(context.Background(), "/v1/doctor", nil); !errors.As(err, &e) || e.Status != http.StatusUnauthorized {
+		t.Fatalf("doctor without the token: %v", err)
+	}
+	c.TokenPath = tokPath
+	if err := c.Get(context.Background(), "/v1/doctor", nil); !errors.As(err, &e) || e.Status != 500 || e.Message != "doctor broke" {
+		t.Fatalf("doctor with the token: %v", err)
+	}
+	_, admin, _ := startAs(t, func(net.Conn) (Caller, error) { return Caller{Admin: true, Who: "uid 0"}, nil })
+	admin.TokenPath = filepath.Join(t.TempDir(), "none")
+	if err := admin.Get(context.Background(), "/v1/doctor", nil); !errors.As(err, &e) || e.Status != 500 {
+		t.Fatalf("doctor as an admin: %v", err)
+	}
+}
+
+// A CI job gets 403 on every route, token or not, and the daemon is never
+// called (review r1 fence verification, item 18).
+func TestRunnerGetsNothing(t *testing.T) {
+	h, c, _ := startAs(t, func(net.Conn) (Caller, error) { return Caller{Runner: true, Who: "uid 900"}, nil })
+	ctx := context.Background()
+	var e *Error
+	for _, path := range []string{"/v1/status", "/v1/pool", "/v1/doctor"} {
+		if err := c.Get(ctx, path, nil); !errors.As(err, &e) || e.Status != http.StatusForbidden {
+			t.Errorf("GET %s as a CI job: %v, want 403", path, err)
+		}
+	}
+	for _, path := range []string{"/v1/pause", "/v1/resume", "/v1/reload"} {
+		if err := c.Post(ctx, path, nil); !errors.As(err, &e) || e.Status != http.StatusForbidden {
+			t.Errorf("POST %s as a CI job with the token: %v, want 403", path, err)
+		}
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.paused != "" || h.reloads != 0 {
+		t.Fatalf("the daemon acted for a CI job: paused %q, reloads %d", h.paused, h.reloads)
+	}
+}
+
+// A caller the server can't name is refused, and so is every caller of a
+// server with no way to name them.
+func TestUnnamedCallerRefused(t *testing.T) {
+	var e *Error
+	_, c, _ := startAs(t, func(net.Conn) (Caller, error) { return Caller{}, errors.New("no such socket") })
+	if err := c.Get(context.Background(), "/v1/status", nil); !errors.As(err, &e) || e.Status != http.StatusForbidden {
+		t.Fatalf("status for an unnamed caller: %v", err)
+	}
+	_, c, _ = startAs(t, nil)
+	if err := c.Get(context.Background(), "/v1/status", nil); !errors.As(err, &e) || e.Status != http.StatusForbidden {
+		t.Fatalf("status with no identify: %v", err)
 	}
 }
 

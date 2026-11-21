@@ -140,16 +140,25 @@ Running setup again is safe: it keeps existing values unless a flag overrides th
 
 ## Control API (internal/control)
 
-The daemon serves HTTP on 127.0.0.1:7434 (loopback only). GET /v1/status, /v1/pool,
-/v1/doctor need nothing. POST /v1/pause {reason, for_s}, /v1/resume, /v1/reload need the
-token in `Authorization: Bearer`, read from `<state>/control.token` (32 random bytes hex,
-mode 0600 root, or SYSTEM+Administrators on Windows), created by the daemon at start. The
+The daemon serves HTTP on the Unix socket `/var/run/tentmaker/control.sock` (mode 0666) on Linux
+and macOS, and on 127.0.0.1:7434 on Windows. The server names every caller from the connection,
+never from what it sends: the socket's peer uid (SO_PEERCRED, LOCAL_PEERCRED), or on Windows the
+account of the process that owns the TCP connection (GetExtendedTcpTable, then its token). A CI
+job (`tentmaker-runner`, and on Linux its subordinate uids) gets 403 on every route; so does a
+caller it can't name, and everyone but root and SYSTEM when the runner's ids can't be read. Any
+other local user reads GET /v1/status and /v1/pool. GET /v1/doctor makes the daemon call the
+forges, so it needs the token or an admin caller (root, SYSTEM or an elevated Administrator); a
+`tentmaker doctor` that can't use it runs doctor locally. POST /v1/pause {reason, for_s},
+/v1/resume, /v1/reload need the token in `Authorization: Bearer`, read from
+`<state>/control.token` (32 random bytes hex, mode 0600 root, or SYSTEM+Administrators on
+Windows), created by the daemon at start. The client sends the token on GETs too when it can
+read it. The
 CLI writes config itself and then calls /v1/reload. If the daemon isn't running, read-only
 commands fall back to computing what they can locally and say "service not running".
 
 The source archive relay listens apart, on 127.0.0.1:7435, and serves only GET
-/v1/relay/<id> (everything else is 404). CI jobs may reach 7435 and never 7434, so a job
-can't read status or pool data or make the daemon call the forge through /v1/doctor.
+/v1/relay/<id> (everything else is 404). CI jobs reach 7435. The caller check, not the fence, keeps them off
+the control API: Windows Firewall doesn't filter loopback.
 
 ## Daemon (internal/daemon)
 

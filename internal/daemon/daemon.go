@@ -39,6 +39,10 @@ const (
 	meshCheckEvery = 30 * time.Second
 )
 
+// RunnerUser is the account CI jobs run as on Linux and Windows
+// (linux.User, windows.User); the control API refuses it.
+const RunnerUser = "tentmaker-runner"
+
 // ErrRestart is what Run returns after a self-update: the service manager
 // restarts the new binary.
 var ErrRestart = errors.New("updated; restarting into the new binary")
@@ -90,6 +94,9 @@ type Options struct {
 	Secrets     secrets.Store
 	Tailscale   mesh.Tailscale
 	ControlAddr string // default control.DefaultAddr; "-" serves no control API
+	// Identify names each control API caller; default
+	// control.HostIdentify(RunnerUser). A CI job gets 403.
+	Identify    control.Identify
 	RelayAddr   string // default control.DefaultRelayAddr; "-" serves no relay (check offers are declined)
 	Updater     Updater
 	Service     func(ctx context.Context) (service.State, error) // for doctor; nil = the daemon is the service
@@ -145,6 +152,9 @@ func (o *Options) defaults() {
 	}
 	if o.ControlAddr == "" {
 		o.ControlAddr = control.DefaultAddr
+	}
+	if o.Identify == nil {
+		o.Identify = control.HostIdentify(RunnerUser)
 	}
 	if o.RelayAddr == "" {
 		o.RelayAddr = control.DefaultRelayAddr
@@ -452,8 +462,11 @@ func (d *Daemon) startControl(ctx context.Context) *comp {
 	}
 	d.mu.Lock()
 	d.ctlAddr = ln.Addr().String()
+	if ln.Addr().Network() == "unix" {
+		d.ctlAddr = "unix:" + d.ctlAddr
+	}
 	d.mu.Unlock()
-	srv := control.NewServer(d.Handler(), tok, d.log)
+	srv := control.NewServer(d.Handler(), tok, d.o.Identify, d.log)
 	return startComp(ctx, d.log, "control", func(ctx context.Context) error { return srv.Serve(ctx, ln) })
 }
 

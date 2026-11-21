@@ -1,14 +1,22 @@
-// Package control is the daemon's loopback control API. The daemon serves
-// HTTP on 127.0.0.1:7434 only. GETs (status, pool, doctor) need nothing;
-// POSTs (pause, resume, reload) need the token from <state>/control.token,
-// which only root (or SYSTEM and Administrators on Windows) can read.
+// Package control is the daemon's local control API. On Linux and macOS
+// the daemon serves HTTP on the Unix socket /var/run/tentmaker/control.sock;
+// on Windows on 127.0.0.1:7434.
 //
-// The source archive relay has its own listener, 127.0.0.1:7435, which
+// The server names every caller from the connection, never from anything
+// it sends: the socket's peer uid on Linux and macOS, and on Windows the
+// account of the process that owns the TCP connection. A CI job (the
+// runner user, or on Linux one of its subordinate uids) gets 403 on every
+// route, wherever the job fence leaks; Windows Firewall doesn't filter
+// loopback at all. Anyone else may read status and pool. Doctor makes the
+// daemon call the forges, so it needs the token or an admin caller (root,
+// SYSTEM or an elevated Administrator). POSTs (pause, resume, reload) need
+// the token from <state>/control.token, which only root (or SYSTEM and
+// Administrators on Windows) can read.
+//
+// The source archive relay has its own TCP listener, 127.0.0.1:7435, which
 // serves GET /v1/relay/<id> and nothing else: it streams a running check
 // job's source archive, and the id is 32 random bytes the worker minted for
-// that job alone, so it needs no token. CI jobs may reach 7435 and never
-// 7434, so a job can't read status or pool data or make the daemon call
-// the forge through /v1/doctor.
+// that job alone, so it needs no token and names no caller.
 package control
 
 import (
@@ -35,8 +43,11 @@ import (
 	"github.com/baney75/tentmaker/internal/httpsafe"
 )
 
-// DefaultAddr is where the daemon serves the control API.
-const DefaultAddr = "127.0.0.1:7434"
+// TCPAddr is the control API's address on Windows (DefaultAddr there).
+const TCPAddr = "127.0.0.1:7434"
+
+// unixPrefix marks a control address that is a Unix socket path.
+const unixPrefix = "unix:"
 
 // DefaultRelayAddr is where the daemon serves the source archive relay. The
 // job fence allows this port and blocks DefaultAddr; keep it in step with
@@ -110,8 +121,12 @@ func ReadToken(path string) (string, error) {
 	return tok, nil
 }
 
-// Listen opens a TCP listener on addr, which must be a loopback IP.
+// Listen opens a listener on addr: "unix:<absolute path>" for a Unix
+// socket anyone may connect to, or a loopback IP and port.
 func Listen(addr string) (net.Listener, error) {
+	if path, ok := strings.CutPrefix(addr, unixPrefix); ok {
+		return listenUnix(path)
+	}
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
 		return nil, err
@@ -127,17 +142,22 @@ func Listen(addr string) (net.Listener, error) {
 type Server struct {
 	relayer Relayer
 	token   string
+	ident   Identify
+	guarded bool // the control API: every request needs a named caller that is not a CI job
 	log     *slog.Logger
 	mux     *http.ServeMux
 }
 
-// NewServer returns a Server for the control API that requires token on
-// POSTs. It serves no relay; see NewRelayServer.
-func NewServer(h Handler, token string, log *slog.Logger) *Server {
+// NewServer returns a Server for the control API. ident names each
+// connection's caller (HostIdentify in the daemon); a CI job gets 403 on
+// every route, and so does every caller when ident is nil or fails. Doctor
+// needs token or an admin caller, and POSTs need token. It serves no relay;
+// see NewRelayServer.
+func NewServer(h Handler, token string, ident Identify, log *slog.Logger) *Server {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	s := &Server{token: token, log: log, mux: http.NewServeMux()}
+	s := &Server{token: token, ident: ident, guarded: true, log: log, mux: http.NewServeMux()}
 	get := func(f func(ctx context.Context) (any, error)) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
 			v, err := f(r.Context())
@@ -146,7 +166,7 @@ func NewServer(h Handler, token string, log *slog.Logger) *Server {
 	}
 	s.mux.HandleFunc("GET /v1/status", get(h.Status))
 	s.mux.HandleFunc("GET /v1/pool", get(h.Pool))
-	s.mux.HandleFunc("GET /v1/doctor", get(h.Doctor))
+	s.mux.HandleFunc("GET /v1/doctor", s.tokenOrAdmin(get(h.Doctor)))
 	s.mux.HandleFunc("POST /v1/pause", s.auth(func(w http.ResponseWriter, r *http.Request) {
 		var req PauseRequest
 		if err := json.NewDecoder(io.LimitReader(r.Body, maxBody)).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
@@ -192,6 +212,19 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if ip, err := netip.ParseAddr(host); !(host == "localhost" || (err == nil && ip.IsLoopback())) {
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "the control API answers only on loopback"})
 		return
+	}
+	if s.guarded {
+		c, err := callerOf(r.Context())
+		switch {
+		case err != nil:
+			s.log.Warn("control: refused a caller it can't name", "err", err)
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden: " + err.Error()})
+			return
+		case c.Runner:
+			s.log.Warn("control: refused a CI job", "caller", c.Who, "path", r.URL.Path)
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden: CI jobs can't use the control API"})
+			return
+		}
 	}
 	s.mux.ServeHTTP(w, r)
 }
@@ -258,6 +291,17 @@ func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// tokenOrAdmin serves an admin caller, or anyone with the token.
+func (s *Server) tokenOrAdmin(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if c, err := callerOf(r.Context()); err == nil && c.Admin {
+			next(w, r)
+			return
+		}
+		s.auth(next)(w, r)
+	}
+}
+
 func (s *Server) reply(w http.ResponseWriter, v any, err error) {
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
@@ -284,6 +328,7 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 		WriteTimeout:      60 * time.Second,
 		IdleTimeout:       60 * time.Second,
 		ErrorLog:          slog.NewLogLogger(s.log.Handler(), slog.LevelDebug),
+		ConnContext:       s.ConnContext,
 	}
 	done := make(chan struct{})
 	go func() {
@@ -317,22 +362,39 @@ func (e *Error) Error() string { return e.Message }
 
 // Client talks to the daemon.
 type Client struct {
-	Addr      string // default DefaultAddr
-	TokenPath string // read for POSTs
+	Addr      string // default DefaultAddr; "unix:<path>" for a Unix socket
+	TokenPath string // read for POSTs, and sent on GETs when readable
 	HTTP      *http.Client
+}
+
+func (c *Client) addr() string {
+	if c.Addr == "" {
+		return DefaultAddr
+	}
+	return c.Addr
 }
 
 func (c *Client) http() *http.Client {
 	if c.HTTP != nil {
 		return c.HTTP
 	}
-	return httpsafe.Guard(&http.Client{Timeout: ClientTimeout})
+	hc := &http.Client{Timeout: ClientTimeout}
+	if path, ok := strings.CutPrefix(c.addr(), unixPrefix); ok {
+		hc.Transport = &http.Transport{
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				var d net.Dialer
+				return d.DialContext(ctx, "unix", path)
+			},
+			DisableKeepAlives: true,
+		}
+	}
+	return httpsafe.Guard(hc)
 }
 
 func (c *Client) url(path string) string {
-	addr := c.Addr
-	if addr == "" {
-		addr = DefaultAddr
+	addr := c.addr()
+	if strings.HasPrefix(addr, unixPrefix) {
+		addr = "localhost"
 	}
 	return "http://" + addr + path
 }
@@ -372,6 +434,12 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 		}
 		req.Header.Set("Authorization", "Bearer "+tok)
 		req.Header.Set("Content-Type", "application/json")
+	} else if c.TokenPath != "" {
+		// Doctor needs the token unless the caller is an admin; a reader
+		// who can't read the token is served the rest.
+		if tok, err := ReadToken(c.TokenPath); err == nil {
+			req.Header.Set("Authorization", "Bearer "+tok)
+		}
 	}
 	resp, err := c.http().Do(req)
 	if err != nil {

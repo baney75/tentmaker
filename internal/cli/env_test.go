@@ -363,7 +363,14 @@ func (f *fixture) serveControl() {
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	srv := httptest.NewServer(control.NewServer(f.daemon, tok, nil))
+	// Callers are named as the real server names them: an admin when the
+	// fixture runs as root, an ordinary user otherwise.
+	ctl := control.NewServer(f.daemon, tok, func(net.Conn) (control.Caller, error) {
+		return control.Caller{Admin: f.isRoot, Who: "test user"}, nil
+	}, nil)
+	srv := httptest.NewUnstartedServer(ctl)
+	srv.Config.ConnContext = ctl.ConnContext
+	srv.Start()
 	f.t.Cleanup(srv.Close)
 	f.env.Control.Addr = strings.TrimPrefix(srv.URL, "http://")
 }

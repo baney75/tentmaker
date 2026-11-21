@@ -187,7 +187,7 @@ setup`), idempotent and safe to rerun.
 the runner user off and every `Start` checks the fence first; no rules means no job (fail closed).
 Jobs may reach the internet, the DNS servers the host is configured with, and the source archive
 relay on 127.0.0.1:7435. Always blocked: the tailnet (100.64.0.0/10, fd7a:115c:a1e0::/48), link-local
-(169.254/16, fe80::/10), unique local (fc00::/7), loopback and this host's own addresses (so the control API on 7434), and port
+(169.254/16, fe80::/10), unique local (fc00::/7), loopback and this host's own addresses (on Linux; Windows Firewall doesn't filter loopback, so the control and peer APIs name their callers, see below), and port
 7433 on any address. RFC 1918 (10/8, 172.16/12, 192.168/16) is blocked unless `[guards] allow_lan`.
 
 - Linux (`netrules.go`): nftables table `inet tentmaker`, an output hook that sends every packet
@@ -351,7 +351,7 @@ func New(o Options) *Client                            // implements core.Status
   the job and dropped when the job ends or the worker restarts, and rewrites the bundle's
   `ArchiveURL` to `http://127.0.0.1:7435/v1/relay/<id>` (the relay listener). The daemon serves
   `GET /v1/relay/<id>` there, on loopback without a token, and nothing else (404); an unknown or
-  expired id is 404. The control API on 7434 serves no relay, and the job fence blocks it.
+  expired id is 404. The control API serves no relay.
   Linux and Windows jobs run on the host and fetch that URL directly. A Tart VM can't reach the
   host, so the darwin executor downloads it on the host, pipes it in with `tart exec -i <vm> sh -c
   'cat > /tmp/tentmaker-src.tar.gz'`, and rewrites `ArchiveURL` to
@@ -551,6 +551,20 @@ section is rewritten.
   and loop `/v1/doctor`, which calls the forge with its token for every repo and drains the rate
   limit (review r1 first-F1). A host whose rules predate this keeps the old fence until `sudo
   tentmaker setup` runs again.
+- The control API names its caller instead of trusting the network (fence verification, item
+  18): Windows Firewall doesn't filter loopback, so a job reached 7434 whatever the rules said.
+  Linux and macOS serve it on the Unix socket `control.DefaultAddr`
+  (`unix:/var/run/tentmaker/control.sock`, mode 0666) and read the peer uid; Windows keeps
+  `control.TCPAddr` and maps the connection to its owning PID (GetExtendedTcpTable), then to that
+  process's SID and elevation. `control.HostIdentify(daemon.RunnerUser)` marks the runner user
+  (and on Linux its `/etc/subuid` ranges, which rootless containers run as) as a CI job, and the
+  server answers it 403 on every route. A caller it can't name gets 403, and when the runner's
+  ids can't be read only root or SYSTEM is served. Status and pool stay open to other local
+  users (and so to agents through `tentmaker mcp`); doctor needs the token or an admin caller.
+  `control.NewServer` takes the `Identify`; a nil one refuses everyone.
+- A device refuses peer API requests from itself (fence verification, item 19): loopback, its
+  own tailnet IPs, or an address `WhoIs` ties to them. WhoIs called such a caller this device,
+  the most trusted peer.
 - `CheckBundle.ArchiveRef` replaces the forge URL and header the broker used to send (review finding: a check job could read the forge token from its bundle). `Header` stays in the struct only so a worker can recognize and refuse an older broker's bundle.
 - An empty `Platform.Arch` means any arch. Hosted `runs-on` labels (ubuntu-latest, macos-15,
   windows-2022) name an OS, not an arch, so Plan leaves Arch empty for them; only `-arm`/`-arm64`

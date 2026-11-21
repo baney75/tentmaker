@@ -190,6 +190,7 @@ func (r *rig) launch() {
 		Secrets:     r.store,
 		Tailscale:   r.ts,
 		ControlAddr: "127.0.0.1:0",
+		Identify:    func(net.Conn) (control.Caller, error) { return control.Caller{Who: "uid 1000"}, nil },
 		RelayAddr:   "127.0.0.1:0",
 		Updater:     r.up,
 		Hostname:    func() (string, error) { return "box", nil },

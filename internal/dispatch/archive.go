@@ -32,7 +32,7 @@ const (
 	MaxArchiveFetches = 3
 	// DefaultRelayAddr is the daemon's relay listener, which serves GET
 	// /v1/relay/<id> and nothing else (control.DefaultRelayAddr). The job
-	// fence allows it and blocks the control API on 7434.
+	// fence allows it; the control API refuses CI jobs by their account.
 	DefaultRelayAddr = "127.0.0.1:7435"
 )
 

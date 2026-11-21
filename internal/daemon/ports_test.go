@@ -23,7 +23,7 @@ func TestFenceOpensRelayPortNotControlPort(t *testing.T) {
 		n, _ := strconv.Atoi(p)
 		return n
 	}
-	relay, ctl := port(control.DefaultRelayAddr), port(control.DefaultAddr)
+	relay, ctl := port(control.DefaultRelayAddr), port(control.TCPAddr)
 	if relay == ctl {
 		t.Fatalf("relay and control API share port %d", relay)
 	}
@@ -34,5 +34,12 @@ func TestFenceOpensRelayPortNotControlPort(t *testing.T) {
 		if p != relay {
 			t.Errorf("the %s fence opens port %d, the relay listens on %d", name, p, relay)
 		}
+	}
+}
+
+// The control API refuses the account the executors run CI jobs as.
+func TestControlRefusesTheExecutorsRunnerUser(t *testing.T) {
+	if linux.User != RunnerUser || windows.User != RunnerUser {
+		t.Fatalf("runner users: linux %q, windows %q, control refuses %q", linux.User, windows.User, RunnerUser)
 	}
 }
