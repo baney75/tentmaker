@@ -1,0 +1,70 @@
+# The workflow the abuse test (abuse.yml) runs through Tentmaker in checks
+# mode. Each job attacks the device that runs it (scripts/abuse) and prints
+# ATTACK <name> BLOCKED or SUCCEEDED; abuse.yml reads the kept check logs.
+#
+# GitHub's own runners run this file too on every push. There TENTMAKER is
+# unset, so every step only says it is skipping: nothing here attacks a
+# GitHub-hosted runner.
+name: tentmaker-abuse
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # The sibling starts first and holds a secret in its own job directory
+  # while abuse tries to read it.
+  abuse-sibling:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - run: if [ "${TENTMAKER:-}" = 1 ]; then bash scripts/abuse/attack.sh sibling; else echo "not under Tentmaker; skipping"; fi
+
+  abuse:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - run: if [ "${TENTMAKER:-}" = 1 ]; then bash scripts/abuse/attack.sh main; else echo "not under Tentmaker; skipping"; fi
+
+  abuse-oom:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - run: if [ "${TENTMAKER:-}" = 1 ]; then bash scripts/abuse/attack.sh oom; else echo "not under Tentmaker; skipping"; fi
+
+  abuse-pids:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - run: if [ "${TENTMAKER:-}" = 1 ]; then bash scripts/abuse/attack.sh pids; else echo "not under Tentmaker; skipping"; fi
+
+  abuse-sibling-windows:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - shell: pwsh
+        run: if ($env:TENTMAKER -eq '1') { & ./scripts/abuse/attack.ps1 sibling } else { Write-Output 'not under Tentmaker; skipping' }
+
+  abuse-windows:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - shell: pwsh
+        run: if ($env:TENTMAKER -eq '1') { & ./scripts/abuse/attack.ps1 main } else { Write-Output 'not under Tentmaker; skipping' }
+
+  abuse-oom-windows:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - shell: pwsh
+        run: if ($env:TENTMAKER -eq '1') { & ./scripts/abuse/attack.ps1 oom } else { Write-Output 'not under Tentmaker; skipping' }
+
+  abuse-pids-windows:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - shell: pwsh
+        run: if ($env:TENTMAKER -eq '1') { & ./scripts/abuse/attack.ps1 pids } else { Write-Output 'not under Tentmaker; skipping' }

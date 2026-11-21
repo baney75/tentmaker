@@ -1,0 +1,209 @@
+# Attacks a Windows check job makes on the device that runs it, for the
+# abuse test (.github/workflows/abuse.yml, through tentmaker-abuse.yml).
+# Every attack prints exactly one line:
+#
+#   ATTACK <name> BLOCKED [detail]
+#   ATTACK <name> SUCCEEDED [detail]
+#
+# and the harness fails on any SUCCEEDED or any missing line. CONTROL lines
+# show that the job still has what it needs (the internet, DNS), so a
+# blocked attack means the sandbox stopped it, not that nothing works.
+#
+#   attack.ps1 main | sibling | oom | pids
+param([string]$Mode = 'main')
+$ErrorActionPreference = 'Continue'
+$ProgressPreference = 'SilentlyContinue'
+
+function Say([string]$Name, [string]$Result, [string]$Detail = '') {
+    Write-Output (("ATTACK $Name $Result $Detail").TrimEnd())
+}
+function Now { [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() }
+
+# HttpOk: the decoy (or any server) answered 200.
+function HttpOk([string]$Url, [hashtable]$Headers = @{}) {
+    try {
+        $r = Invoke-WebRequest -UseBasicParsing -TimeoutSec 6 -Headers $Headers -Uri $Url -ErrorAction Stop
+        return $r.StatusCode -eq 200
+    } catch { return $false }
+}
+function Reach([string]$Name, [string]$Url, [hashtable]$Headers = @{}) {
+    if (HttpOk $Url $Headers) { Say $Name SUCCEEDED "$Url answered" } else { Say $Name BLOCKED }
+}
+function HostIP {
+    try {
+        $s = [System.Net.Sockets.Socket]::new([System.Net.Sockets.AddressFamily]::InterNetwork, [System.Net.Sockets.SocketType]::Dgram, [System.Net.Sockets.ProtocolType]::Udp)
+        $s.Connect('192.0.2.1', 53)
+        $ip = $s.LocalEndPoint.Address.ToString()
+        $s.Close()
+        return $ip
+    } catch { return '' }
+}
+function CanWrite([string]$Dir) {
+    $f = Join-Path $Dir "tm-abuse-$PID.txt"
+    try {
+        [System.IO.File]::WriteAllText($f, 'tentmaker abuse test')
+        Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue
+        return $true
+    } catch { return $false }
+}
+
+$jobDir = Split-Path -Parent $env:USERPROFILE
+$jobsDir = Split-Path -Parent $jobDir
+$tm = Join-Path $env:ProgramData 'Tentmaker'
+$state = Join-Path $tm 'state'
+
+switch ($Mode) {
+    'sibling' {
+        $secret = 'tm-sibling-secret-' + [Guid]::NewGuid().ToString('N')
+        [System.IO.File]::WriteAllText((Join-Path $env:USERPROFILE 'tm-sibling-secret'), $secret)
+        Write-Output "SIBLING start $(Now) dir $jobDir"
+        Start-Sleep -Seconds 150
+        Write-Output "SIBLING end $(Now)"
+        exit 0
+    }
+    'oom' {
+        # Allocate past the job's limit (2 GiB in the harness). The sandbox
+        # must stop the job; a line here means it didn't.
+        # A failed allocation ends the script with an error, as it would end
+        # any program.
+        $ErrorActionPreference = 'Stop'
+        $chunks = [System.Collections.Generic.List[byte[]]]::new()
+        for ($i = 0; $i -lt 128; $i++) { $chunks.Add([byte[]]::new(64MB)) }
+        if ($chunks.Count -eq 128) { Write-Output "ATTACK memory-limit SUCCEEDED allocated $($chunks.Count * 64) MiB" }
+        exit 0
+    }
+    'pids' {
+        # A process bomb that stops at 3000. Reaching that many means nothing
+        # bounds the job's processes.
+        $procs = [System.Collections.Generic.List[System.Diagnostics.Process]]::new()
+        $err = ''
+        for ($i = 0; $i -lt 3000; $i++) {
+            try {
+                $si = [System.Diagnostics.ProcessStartInfo]::new("$env:SystemRoot\System32\PING.EXE", '-n 120 127.0.0.1')
+                $si.UseShellExecute = $false
+                $si.CreateNoWindow = $true
+                $si.RedirectStandardOutput = $true
+                $procs.Add([System.Diagnostics.Process]::Start($si))
+            } catch {
+                $err = $_.Exception.Message
+                break
+            }
+        }
+        $n = $procs.Count
+        foreach ($p in $procs) { try { $p.Kill() } catch {} }
+        if ($n -ge 3000) { Say fork-bomb SUCCEEDED "started $n processes" } else { Say fork-bomb BLOCKED "after $n processes: $err" }
+        exit 0
+    }
+    'main' {}
+    default { Write-Error 'usage: attack.ps1 main|sibling|oom|pids'; exit 2 }
+}
+
+Write-Output "tentmaker abuse: job dir $jobDir, user $([Security.Principal.WindowsIdentity]::GetCurrent().Name)"
+
+# Controls: a sandbox that blocks everything would pass every attack.
+if (HttpOk 'https://api.github.com/zen') { Write-Output 'CONTROL internet OK' } else { Write-Output 'CONTROL internet FAILED' }
+try { [System.Net.Dns]::GetHostAddresses('github.com') | Out-Null; Write-Output 'CONTROL dns OK' } catch { Write-Output 'CONTROL dns FAILED' }
+
+# Forge tokens and the control token.
+$got = ''
+foreach ($f in @(Get-ChildItem -LiteralPath (Join-Path $tm 'secrets') -File -ErrorAction SilentlyContinue) + @(Get-Item -LiteralPath (Join-Path $tm 'secrets\github-token') -ErrorAction SilentlyContinue)) {
+    if ($f) { try { [System.IO.File]::ReadAllBytes($f.FullName) | Out-Null; $got = $f.FullName } catch {} }
+}
+try { [System.IO.File]::ReadAllBytes((Join-Path $tm 'secrets\github-token')) | Out-Null; $got = 'secrets\github-token' } catch {}
+if ($got) { Say read-secrets SUCCEEDED "read $got" } else { Say read-secrets BLOCKED }
+try { [System.IO.File]::ReadAllText((Join-Path $state 'control.token')) | Out-Null; Say read-control-token SUCCEEDED } catch { Say read-control-token BLOCKED }
+
+# The control API's POSTs need the token.
+function TryPause([string]$Token = '') {
+    $h = @{}
+    if ($Token) { $h['Authorization'] = "Bearer $Token" }
+    try {
+        $r = Invoke-WebRequest -UseBasicParsing -TimeoutSec 6 -Method Post -ContentType 'application/json' -Headers $h `
+            -Body '{"reason":"abuse test","for_s":600}' -Uri 'http://127.0.0.1:7434/v1/pause' -ErrorAction Stop
+        return $r.StatusCode -eq 200
+    } catch { return $false }
+}
+if (TryPause) { Say pause-no-token SUCCEEDED } else { Say pause-no-token BLOCKED }
+$guessed = $false
+foreach ($t in @(('0' * 64), ('f' * 64), [Guid]::NewGuid().ToString('N') + [Guid]::NewGuid().ToString('N'))) {
+    if (TryPause $t) { $guessed = $true }
+}
+if ($guessed) { Say pause-guessed-token SUCCEEDED } else { Say pause-guessed-token BLOCKED }
+
+# The network: tailnet, LAN, link-local, the mesh port, loopback services.
+Reach decoy-tailnet-v4 'http://100.64.77.1:8080/'
+Reach decoy-tailnet-v6 'http://[fd7a:115c:a1e0::77]:8080/'
+Reach decoy-lan-v4 'http://10.77.0.1:8080/'
+Reach cloud-metadata 'http://169.254.169.254/metadata/instance?api-version=2021-02-01' @{ Metadata = 'true' }
+$ip = HostIP
+if ($ip) { Reach mesh-port-host-ip "http://${ip}:7433/" } else { Say mesh-port-host-ip BLOCKED 'no host address found' }
+Reach mesh-port-tailnet 'http://100.64.77.1:7433/'
+Reach mesh-port-loopback 'http://127.0.0.1:7433/'
+Reach loopback-other-port 'http://127.0.0.1:8766/'
+
+# Privilege.
+$admin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+& net.exe session *> $null
+if ($admin -or $LASTEXITCODE -eq 0 -or (CanWrite "$env:SystemRoot")) { Say admin SUCCEEDED } else { Say admin BLOCKED }
+$wrote = ''
+foreach ($h in Get-ChildItem -LiteralPath 'C:\Users' -Directory -Force -ErrorAction SilentlyContinue) {
+    if ($h.Name -in @('Public', 'Default', 'Default User', 'All Users')) { continue }
+    if (CanWrite $h.FullName) { $wrote = $h.FullName }
+}
+if ($wrote) { Say write-other-home SUCCEEDED "wrote in $wrote" } else { Say write-other-home BLOCKED }
+$wrote = ''
+foreach ($d in @($tm, $state, (Join-Path $state 'checks'), (Join-Path $tm 'logs'), (Join-Path $tm 'secrets'), $jobsDir, (Join-Path $env:ProgramFiles 'Tentmaker'))) {
+    if (CanWrite $d) { $wrote = $d }
+}
+if ($wrote) { Say write-state-dir SUCCEEDED "wrote in $wrote" } else { Say write-state-dir BLOCKED }
+
+# The daemon runs as SYSTEM.
+$svc = Get-CimInstance Win32_Service -Filter "Name='Tentmaker'" -ErrorAction SilentlyContinue
+if (-not $svc -or -not $svc.ProcessId) {
+    Say signal-daemon BLOCKED 'daemon pid not visible'
+} else {
+    try { Stop-Process -Id $svc.ProcessId -Force -ErrorAction Stop; Say signal-daemon SUCCEEDED "stopped $($svc.ProcessId)" } catch { Say signal-daemon BLOCKED }
+}
+
+# Leftovers: the harness checks after the job that these are gone.
+try {
+    Start-Process -WindowStyle Hidden -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `
+        -ArgumentList '-NoProfile', '-Command', "Start-Sleep -Seconds 600; 'tm-abuse-leftover'" -ErrorAction Stop
+} catch { Write-Output "start leftover: $($_.Exception.Message)" }
+try {
+    $r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -ErrorAction Stop -Arguments @{
+        CommandLine = "`"$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe`" -NoProfile -Command `"Start-Sleep -Seconds 600; 'tm-abuse-leftover-wmi'`""
+    }
+    Write-Output "wmi leftover: return $($r.ReturnValue) pid $($r.ProcessId)"
+} catch { Write-Output "wmi leftover: $($_.Exception.Message)" }
+Write-Output 'PLANTED background-process'
+
+# Another running job's files: found through the process list.
+$t0 = Now
+$found = ''
+$seen = 'no'
+while ((Now) - $t0 -lt 100 -and -not $found) {
+    $cands = @()
+    foreach ($d in Get-ChildItem -LiteralPath $jobsDir -Directory -ErrorAction SilentlyContinue) {
+        if ($d.FullName -ne $jobDir) { $cands += $d.FullName }
+    }
+    foreach ($p in Get-CimInstance Win32_Process -ErrorAction SilentlyContinue) {
+        if ($p.CommandLine -match '--out\s+"?([^"\s]+)\\out') {
+            $d = $Matches[1]
+            if ($d -ne $jobDir) { $cands += $d }
+        }
+    }
+    foreach ($d in $cands | Select-Object -Unique) {
+        $seen = 'yes'
+        try {
+            $v = [System.IO.File]::ReadAllText((Join-Path $d 'home\tm-sibling-secret'))
+            if ($v.StartsWith('tm-sibling-secret-')) { $found = $d; break }
+        } catch {}
+    }
+    if (-not $found) { Start-Sleep -Seconds 2 }
+}
+Write-Output "READ-OTHER-JOB window $t0 $(Now) sibling-visible $seen"
+if ($found) { Say read-other-job SUCCEEDED "read $found" } else { Say read-other-job BLOCKED }
+
+Write-Output 'tentmaker abuse: done'
+exit 0
