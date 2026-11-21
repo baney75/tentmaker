@@ -169,6 +169,10 @@ pause() { # pause [TOKEN]
 		${1:+-H "Authorization: Bearer $1"} -d '{"reason":"abuse test","for_s":600}' http://127.0.0.1:7434/v1/pause 2>/dev/null)
 	[ "$code" = 200 ]
 }
+# The relay port answers the job (a 401 for no token), so the pause attacks
+# are refused by the API, not cut off by the network.
+relay_code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 6 -X POST http://127.0.0.1:7434/v1/pause 2>/dev/null)
+case "$relay_code" in "" | 000) echo "CONTROL relay FAILED" ;; *) echo "CONTROL relay OK ($relay_code)" ;; esac
 if pause; then say pause-no-token SUCCEEDED; else say pause-no-token BLOCKED; fi
 guessed=""
 for t in "$(printf '0%.0s' $(seq 64))" "$(printf 'f%.0s' $(seq 64))" "$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"; do

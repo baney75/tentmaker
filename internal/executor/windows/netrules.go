@@ -2,36 +2,37 @@ package windows
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"maps"
 	"net/netip"
 	"slices"
-	"strconv"
 	"strings"
 )
 
 // Network isolation: Windows Firewall outbound rules in the "Tentmaker"
 // group, scoped to the runner user, keep CI jobs off the tailnet, the LAN,
-// link-local, loopback and the mesh port. They are the Windows half of the
-// Linux nftables rules (internal/executor/linux/netrules.go); keep the
-// ranges in step.
+// link-local and the mesh port on other hosts. Windows Firewall does not
+// filter traffic to this host (loopback and the host's own addresses), so
+// Tentmaker's WFP filters (wfp.go) do. Together they are the Windows half
+// of the Linux rules (internal/executor/linux/netrules.go); keep the ranges
+// in step.
 const (
 	FirewallGroup = "Tentmaker"
 	RelayPort     = 7434
 	MeshPort      = 7433
 	// netVersion changes when the rules change, so a host with older rules
 	// refuses jobs until setup runs again.
-	netVersion = "net-v2"
+	netVersion = "net-v3"
 )
 
-// Blocked ranges. Windows Firewall has no "this host" match, so the host's
-// own addresses outside these ranges (its global IPv6 address, its LAN
-// address under allow_lan) get a rule of their own, Tentmaker-Block-Self,
-// which the check keeps in step with the host; the mesh port is blocked on
-// every address. Unlike
-// the Linux rules there is no ::1: Windows Firewall refuses an IPv6
-// loopback, unspecified or multicast remote address, and the whole rule
-// with it (see windowsRefuses).
+// Blocked ranges. The host's own addresses need no rule here: Windows
+// Firewall would not apply one, and the WFP filters block all traffic to
+// this host. Unlike the Linux rules there is no ::1: Windows Firewall
+// refuses an IPv6 loopback, unspecified or multicast remote address, and
+// the whole rule with it (see windowsRefuses).
 var (
 	TailnetV4 = "100.64.0.0/10"
 	TailnetV6 = "fd7a:115c:a1e0::/48"
@@ -45,20 +46,16 @@ type NetPolicy struct {
 	SID       string
 	Resolvers []netip.Addr
 	AllowLAN  bool
-	// Self are this host's own unicast addresses, on every interface.
-	Self []netip.Addr
 }
 
-// selfRule is the name of the rule for the host's own addresses.
-const selfRule = "Tentmaker-Block-Self"
-
-// errStaleNet means the rules are in force but Tentmaker-Block-Self names
-// other addresses than the host has now. Start rewrites that one rule;
-// every other checkNet error refuses the job.
+// errStaleNet means rules for this user, allow_lan and version are in
+// force but differ from what this host needs now (its DNS servers changed,
+// or a rule or filter is gone). Start writes them again; every other
+// checkNet error refuses the job.
 type errStaleNet struct{ what string }
 
 func (e *errStaleNet) Error() string {
-	return "the network rule for this host's own addresses is out of date: " + e.what
+	return "the network rules for CI jobs are out of date: " + e.what
 }
 
 // FirewallRule is one outbound rule.
@@ -94,49 +91,6 @@ func (p NetPolicy) ranges() []netip.Prefix {
 	return out
 }
 
-// self is the host's own addresses the fixed ranges miss and a rule can
-// name: sorted, without repeats, zones or ::1.
-func (p NetPolicy) self() []netip.Addr {
-	var out []netip.Addr
-	for _, a := range p.Self {
-		a = a.Unmap()
-		if a.Zone() != "" || windowsRefuses(a) || !a.IsValid() || a.IsMulticast() ||
-			slices.ContainsFunc(p.ranges(), func(b netip.Prefix) bool { return b.Contains(a) }) {
-			continue
-		}
-		out = append(out, a)
-	}
-	slices.SortFunc(out, func(x, y netip.Addr) int { return x.Compare(y) })
-	return slices.Compact(out)
-}
-
-// blocked is every blocked destination: the fixed ranges and the host's
-// own addresses.
-func (p NetPolicy) blocked() []netip.Prefix {
-	out := p.ranges()
-	for _, a := range p.self() {
-		out = append(out, netip.PrefixFrom(a, a.BitLen()))
-	}
-	return out
-}
-
-// selfAddresses is what Tentmaker-Block-Self names: the host's own
-// addresses, less those that are DNS servers (their own rules block every
-// port but 53).
-func (p NetPolicy) selfAddresses() []string {
-	var holes []netip.Addr
-	for _, h := range p.holes() {
-		holes = append(holes, h.addr)
-	}
-	var out []string
-	for _, a := range p.self() {
-		if !slices.Contains(holes, a) {
-			out = append(out, a.String())
-		}
-	}
-	return out
-}
-
 // windowsRefuses is an address New-NetFirewallRule will not take as a
 // remote address: "An unspecified, multicast, broadcast, or loopback IPv6
 // address was specified."
@@ -158,7 +112,7 @@ func (p NetPolicy) resolvers() []netip.Addr {
 func (p NetPolicy) holes() []hole {
 	hs := []hole{{addr: Loopback, tcp: []uint16{RelayPort}}}
 	for _, r := range p.resolvers() {
-		if !slices.ContainsFunc(p.blocked(), func(b netip.Prefix) bool { return b.Contains(r) }) {
+		if !slices.ContainsFunc(p.ranges(), func(b netip.Prefix) bool { return b.Contains(r) }) {
 			continue
 		}
 		if r == Loopback {
@@ -177,8 +131,21 @@ func (p NetPolicy) holes() []hole {
 
 // FirewallRules is every rule Install creates. Block rules win over allow
 // rules in Windows Firewall, so the blocked ranges leave out the hole
-// addresses, which get their own rules that block every other port.
+// addresses, which get their own rules that block every other port. Each
+// name ends in a hash of the rule and netDescription, so a rule that
+// changes gets a new name: setup adds the new rules before it removes the
+// old ones, and nothing is unblocked in between.
 func FirewallRules(p NetPolicy) []FirewallRule {
+	rules := firewallRules(p)
+	desc := netDescription(p)
+	for i, r := range rules {
+		h := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%s\x00%s\x00%s\x00%q\x00%q", desc, r.Display, r.Action, r.Protocol, r.RemoteAddress, r.RemotePort)))
+		rules[i].Name = r.Name + "-" + hex.EncodeToString(h[:5])
+	}
+	return rules
+}
+
+func firewallRules(p NetPolicy) []FirewallRule {
 	var holes []netip.Addr
 	hs := p.holes()
 	for _, h := range hs {
@@ -191,12 +158,7 @@ func FirewallRules(p NetPolicy) []FirewallRule {
 	rules := []FirewallRule{
 		{Name: "Tentmaker-Block-Mesh-TCP", Display: "Tentmaker: CI jobs never reach the mesh port (TCP)", Action: "Block", Protocol: "TCP", RemotePort: []string{fmt.Sprint(MeshPort)}},
 		{Name: "Tentmaker-Block-Mesh-UDP", Display: "Tentmaker: CI jobs never reach the mesh port (UDP)", Action: "Block", Protocol: "UDP", RemotePort: []string{fmt.Sprint(MeshPort)}},
-		{Name: "Tentmaker-Block-Ranges", Display: "Tentmaker: CI jobs never reach the tailnet, the LAN, link-local or loopback", Action: "Block", RemoteAddress: ranges},
-	}
-	// No addresses would mean every address, so no rule then.
-	if self := p.selfAddresses(); len(self) > 0 {
-		rules = append(rules, FirewallRule{Name: selfRule, Display: "Tentmaker: CI jobs never reach this host's own addresses",
-			Action: "Block", RemoteAddress: self})
+		{Name: "Tentmaker-Block-Ranges", Display: "Tentmaker: CI jobs never reach " + map[bool]string{false: "the tailnet, the LAN or link-local", true: "the tailnet or link-local"}[p.AllowLAN] + " on other hosts", Action: "Block", RemoteAddress: ranges},
 	}
 	for i, h := range hs {
 		for _, pr := range []struct {
@@ -311,7 +273,7 @@ func lastAddr(p netip.Prefix) netip.Addr {
 // for another user (a recreated account has a new SID), another allow_lan
 // or an older Tentmaker refuse jobs until setup runs again.
 func netDescription(p NetPolicy) string {
-	return fmt.Sprintf("Written by tentmaker setup (%s, user %s, allow_lan=%t). CI jobs never reach the tailnet, %sthis host, loopback, link-local or the mesh port.",
+	return fmt.Sprintf("Written by tentmaker setup (%s, user %s, allow_lan=%t). CI jobs never reach the tailnet, %slink-local or the mesh port on other hosts. Windows Firewall does not filter traffic to this host; Tentmaker's WFP filters do.",
 		netVersion, p.SID, p.AllowLAN, map[bool]string{false: "the LAN, ", true: ""}[p.AllowLAN])
 }
 
@@ -326,16 +288,26 @@ func psList(xs []string) string {
 	return "@(" + strings.Join(q, ", ") + ")"
 }
 
-// FirewallScript replaces the group's rules with FirewallRules(p).
+// FirewallScript brings the group's rules to FirewallRules(p): it adds
+// each rule that is not there yet and only then removes the group's other
+// rules, so a rerun never leaves a job unblocked, even for a moment. A
+// rule's name changes with its content (FirewallRules), so a rule already
+// there by name is already right.
 func FirewallScript(p NetPolicy) string {
 	var b strings.Builder
+	rules := FirewallRules(p)
+	var names []string
+	for _, r := range rules {
+		names = append(names, r.Name)
+	}
 	b.WriteString("# tentmaker: install network rules\n")
-	b.WriteString("Get-NetFirewallRule -Group " + psQuote(FirewallGroup) + " -ErrorAction SilentlyContinue | Remove-NetFirewallRule\n")
 	b.WriteString("$u = " + psQuote("D:(A;;CC;;;"+p.SID+")") + "\n")
 	b.WriteString("$d = " + psQuote(netDescription(p)) + "\n")
-	for _, r := range FirewallRules(p) {
-		b.WriteString(newRule(r) + "\n")
+	b.WriteString("$want = " + psList(names) + "\n")
+	for _, r := range rules {
+		b.WriteString("if (-not (Get-NetFirewallRule -Name " + psQuote(r.Name) + " -ErrorAction SilentlyContinue)) { " + newRule(r) + " }\n")
 	}
+	b.WriteString("Get-NetFirewallRule -Group " + psQuote(FirewallGroup) + " -ErrorAction SilentlyContinue | Where-Object { $want -notcontains $_.Name } | Remove-NetFirewallRule\n")
 	return b.String()
 }
 
@@ -357,48 +329,19 @@ func newRule(r FirewallRule) string {
 	return b.String()
 }
 
-// SelfRuleScript brings Tentmaker-Block-Self in step with p's addresses
-// and leaves every other rule alone. An existing rule is changed in place,
-// so the addresses it still names stay blocked throughout.
-func SelfRuleScript(p NetPolicy) string {
-	var b strings.Builder
-	b.WriteString("# tentmaker: host address rule\n")
-	b.WriteString("$r = Get-NetFirewallRule -Name " + psQuote(selfRule) + " -ErrorAction SilentlyContinue\n")
-	self := p.selfAddresses()
-	if len(self) == 0 {
-		b.WriteString("if ($r) { $r | Remove-NetFirewallRule }\n")
-		return b.String()
-	}
-	b.WriteString("if ($r) { Set-NetFirewallRule -Name " + psQuote(selfRule) + " -RemoteAddress " + psList(self) + " } else {\n")
-	b.WriteString("$u = " + psQuote("D:(A;;CC;;;"+p.SID+")") + "\n")
-	b.WriteString("$d = " + psQuote(netDescription(p)) + "\n")
-	for _, r := range FirewallRules(p) {
-		if r.Name == selfRule {
-			b.WriteString(newRule(r) + "\n")
-		}
-	}
-	b.WriteString("}\n")
-	return b.String()
-}
-
 const removeFirewallScript = "# tentmaker: remove network rules\n" +
 	"Get-NetFirewallRule -Group 'Tentmaker' -ErrorAction SilentlyContinue | Remove-NetFirewallRule\n"
 
 // checkFirewallScript prints one line per profile and per rule in the group,
-// as the firewall enforces them now, the addresses Tentmaker-Block-Self
-// names, and the host's addresses and DNS servers it should name.
+// as the firewall enforces them now, and the host's DNS servers, which
+// decide the rules it should have.
 const checkFirewallScript = "# tentmaker: check network rules\n" +
 	"Get-NetFirewallProfile -PolicyStore ActiveStore | ForEach-Object { 'profile {0} {1} {2}' -f $_.Name, $_.Enabled, $_.AllowLocalFirewallRules }\n" +
 	"Get-NetFirewallRule -Group 'Tentmaker' -PolicyStore ActiveStore -ErrorAction SilentlyContinue | ForEach-Object { 'rule {0} {1} {2} {3} {4}' -f $_.Name, $_.Enabled, $_.Direction, $_.Action, $_.Description }\n" +
-	"Get-NetFirewallRule -Name 'Tentmaker-Block-Self' -PolicyStore ActiveStore -ErrorAction SilentlyContinue | Get-NetFirewallAddressFilter | ForEach-Object { 'selfrule ' + ($_.RemoteAddress -join ' ') }\n" +
-	"Get-NetIPAddress -ErrorAction SilentlyContinue | ForEach-Object { 'addr ' + $_.IPAddress }\n" +
 	"Get-DnsClientServerAddress | ForEach-Object { $_.ServerAddresses } | Sort-Object -Unique | ForEach-Object { 'dns ' + $_ }\n"
 
 const resolversScript = "# tentmaker: DNS servers\n" +
 	"Get-DnsClientServerAddress | ForEach-Object { $_.ServerAddresses } | Sort-Object -Unique\n"
-
-const addressesScript = "# tentmaker: host addresses\n" +
-	"Get-NetIPAddress -ErrorAction SilentlyContinue | ForEach-Object { $_.IPAddress }\n"
 
 // parseAddrs reads one address per line (after prefix, when given): no
 // zoned (link-local) addresses, no repeats, in order.
@@ -422,21 +365,17 @@ func parseAddrs(out, prefix string) []netip.Addr {
 }
 
 // policy reads what the rules depend on from the host: the DNS servers
-// Windows is configured with and its own addresses.
+// Windows is configured with. checkNet reads them with the same command.
 func (e *Executor) policy(ctx context.Context, sid string) (NetPolicy, error) {
 	out, err := e.api.PowerShell(ctx, resolversScript)
 	if err != nil {
 		return NetPolicy{}, fmt.Errorf("read the DNS servers: %w", err)
 	}
-	addrs, err := e.api.PowerShell(ctx, addressesScript)
-	if err != nil {
-		return NetPolicy{}, fmt.Errorf("read this host's addresses: %w", err)
-	}
-	return NetPolicy{SID: sid, Resolvers: parseAddrs(out, ""), AllowLAN: e.o.AllowLAN, Self: parseAddrs(addrs, "")}, nil
+	return NetPolicy{SID: sid, Resolvers: parseAddrs(out, ""), AllowLAN: e.o.AllowLAN}, nil
 }
 
-// installNet writes the rules for the runner user and checks them.
-func (e *Executor) installNet(ctx context.Context, sid string) error {
+// writeNet writes the firewall rules and the WFP filters for this host.
+func (e *Executor) writeNet(ctx context.Context, sid string) error {
 	p, err := e.policy(ctx, sid)
 	if err != nil {
 		return err
@@ -444,34 +383,42 @@ func (e *Executor) installNet(ctx context.Context, sid string) error {
 	if _, err := e.api.PowerShell(ctx, FirewallScript(p)); err != nil {
 		return fmt.Errorf("add the Windows Firewall rules for CI jobs: %w", err)
 	}
+	if err := e.api.SetWFP(WFPFilters(sid, p.Resolvers)); err != nil {
+		return fmt.Errorf("add the WFP filters that keep CI jobs off this host: %w", err)
+	}
+	return nil
+}
+
+// installNet writes the rules for the runner user and checks them.
+func (e *Executor) installNet(ctx context.Context, sid string) error {
+	if err := e.writeNet(ctx, sid); err != nil {
+		return err
+	}
 	return e.checkNet(ctx, sid)
 }
 
-// ensureNet is Start's gate: the rules must be in force. When only the
-// host's own addresses changed (errStaleNet), it brings that rule in step
-// and checks again; anything else refuses the job.
+// ensureNet is Start's gate: the rules must be in force. When they are
+// out of date for this host (errStaleNet), it writes them again and checks
+// once more; anything else refuses the job.
 func (e *Executor) ensureNet(ctx context.Context, sid string) error {
 	err := e.checkNet(ctx, sid)
 	var stale *errStaleNet
 	if !errors.As(err, &stale) {
 		return err
 	}
-	e.log.Warn("updating the network rule for this host's own addresses", "executor", Name, "why", stale.what)
-	p, perr := e.policy(ctx, sid)
-	if perr != nil {
-		return perr
-	}
-	if _, perr := e.api.PowerShell(ctx, SelfRuleScript(p)); perr != nil {
-		return fmt.Errorf("update the Windows Firewall rule for this host's own addresses: %w", perr)
+	e.log.Warn("updating the network rules for CI jobs", "executor", Name, "why", trunc(stale.what, 500))
+	if err := e.writeNet(ctx, sid); err != nil {
+		return err
 	}
 	return e.checkNet(ctx, sid)
 }
 
-// checkNet fails unless Windows Firewall is on for every profile and every
-// rule for this runner user and allow_lan is there, enabled and outbound.
-// The rule set's addresses depend on the DNS servers, so only the names
-// and descriptions are compared; the description carries the user and
-// allow_lan.
+// checkNet fails unless Windows Firewall is on for every profile, the
+// group holds exactly the rules installNet writes for this user, allow_lan
+// and the host's DNS servers (enabled and outbound), and the WFP filters
+// are in place. Rules or filters for another user, allow_lan or version
+// are a plain error; the right ones with a piece missing or extra are
+// *errStaleNet.
 func (e *Executor) checkNet(ctx context.Context, sid string) error {
 	out, err := e.api.PowerShell(ctx, checkFirewallScript)
 	if err != nil {
@@ -479,8 +426,6 @@ func (e *Executor) checkNet(ctx context.Context, sid string) error {
 	}
 	profiles := map[string]bool{}
 	rules := map[string]string{}
-	var selfNow []string
-	selfSeen := false
 	var problems []string
 	for _, line := range strings.Split(out, "\n") {
 		f := strings.SplitN(strings.TrimSpace(line), " ", 6)
@@ -492,9 +437,6 @@ func (e *Executor) checkNet(ctx context.Context, sid string) error {
 			} else if len(f) >= 4 && f[3] == "False" {
 				problems = append(problems, "policy makes Windows Firewall ignore local rules for the "+f[1]+" profile")
 			}
-		case len(f) >= 1 && f[0] == "selfrule":
-			selfSeen = true
-			selfNow = append(selfNow, strings.Fields(strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "selfrule")))...)
 		case len(f) == 6 && f[0] == "rule":
 			if f[2] != "True" || f[3] != "Outbound" {
 				problems = append(problems, fmt.Sprintf("rule %s is %s, %s", f[1], f[2], f[3]))
@@ -508,73 +450,57 @@ func (e *Executor) checkNet(ctx context.Context, sid string) error {
 			problems = append(problems, "Windows Firewall reports no "+p+" profile")
 		}
 	}
-	// Rule names but the self rule don't depend on the host's addresses or
-	// DNS servers (an address or resolver change must not refuse jobs).
-	p := NetPolicy{SID: sid, AllowLAN: e.o.AllowLAN}
+	// The same policy installNet used: the DNS servers come from the same
+	// command, so a new DNS server shows up as missing rules.
+	p := NetPolicy{SID: sid, AllowLAN: e.o.AllowLAN, Resolvers: parseAddrs(out, "dns ")}
 	desc := netDescription(p)
-	missing := 0
-	for _, r := range FirewallRules(p) {
-		got, ok := rules[r.Name]
-		switch {
-		case !ok:
-			missing++
-		case got != r.Action+" "+desc:
-			problems = append(problems, fmt.Sprintf("rule %s is out of date (%s)", r.Name, trunc(got, 200)))
+	if len(rules) == 0 {
+		problems = append(problems, "the network rules for CI jobs are missing")
+	}
+	for _, n := range slices.Sorted(maps.Keys(rules)) {
+		if _, d, _ := strings.Cut(rules[n], " "); d != desc {
+			problems = append(problems, fmt.Sprintf("rule %s is out of date (%s)", n, trunc(rules[n], 200)))
 		}
 	}
-	if missing > 0 {
-		problems = append(problems, fmt.Sprintf("%d of the network rules for CI jobs are missing", missing))
+	have, err := e.api.WFPInstalled()
+	if err != nil {
+		problems = append(problems, fmt.Sprintf("read the WFP filters: %v", err))
 	}
-	if got, ok := rules[selfRule]; ok && got != "Block "+desc {
-		problems = append(problems, fmt.Sprintf("rule %s is out of date (%s)", selfRule, trunc(got, 200)))
+	werr := checkWFP(WFPFilters(sid, p.Resolvers), have)
+	var wstale *errStaleNet
+	if werr != nil && !errors.As(werr, &wstale) {
+		problems = append(problems, werr.Error())
 	}
 	if len(problems) > 0 {
 		return errors.New(strings.Join(problems, "; "))
 	}
-	host := NetPolicy{SID: sid, AllowLAN: e.o.AllowLAN, Resolvers: parseAddrs(out, "dns "), Self: parseAddrs(out, "addr ")}
-	want := host.selfAddresses()
-	var have []string
-	for _, a := range selfNow {
-		have = append(have, normAddr(a))
+	var stale []string
+	for _, r := range FirewallRules(p) {
+		got, ok := rules[r.Name]
+		delete(rules, r.Name)
+		if !ok || got != r.Action+" "+desc {
+			stale = append(stale, "no rule "+r.Name)
+		}
 	}
-	if _, ok := rules[selfRule]; !ok || !selfSeen {
-		have = nil
+	for _, n := range slices.Sorted(maps.Keys(rules)) {
+		stale = append(stale, "extra rule "+n)
 	}
-	slices.Sort(have)
-	if w := slices.Sorted(slices.Values(want)); !slices.Equal(have, w) {
-		return &errStaleNet{fmt.Sprintf("it names %s; this host has %s", orNone(have), orNone(w))}
+	if wstale != nil {
+		stale = append(stale, wstale.what)
+	}
+	if len(stale) > 0 {
+		return &errStaleNet{strings.Join(stale, "; ")}
 	}
 	return nil
 }
 
-// normAddr spells one address the firewall lists the way selfAddresses
-// does. Windows may list a single address with a full-length mask
-// ("192.0.2.7/255.255.255.255", "2001:db8::7/128").
-func normAddr(s string) string {
-	a, mask, _ := strings.Cut(s, "/")
-	x, err := netip.ParseAddr(a)
-	if err != nil {
-		return s
-	}
-	x = x.Unmap()
-	switch mask {
-	case "", "255.255.255.255", strconv.Itoa(x.BitLen()):
-		return x.String()
-	}
-	return s
-}
-
-func orNone(xs []string) string {
-	if len(xs) == 0 {
-		return "none"
-	}
-	return strings.Join(xs, " ")
-}
-
-// uninstallNet removes every rule in the group.
+// uninstallNet removes every rule in the group and the WFP filters.
 func (e *Executor) uninstallNet(ctx context.Context) error {
 	if _, err := e.api.PowerShell(ctx, removeFirewallScript); err != nil {
 		return fmt.Errorf("remove the Windows Firewall rules: %w", err)
+	}
+	if err := e.api.RemoveWFP(); err != nil {
+		return fmt.Errorf("remove the WFP filters: %w", err)
 	}
 	return nil
 }

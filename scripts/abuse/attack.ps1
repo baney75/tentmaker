@@ -158,6 +158,16 @@ function TryPause([string]$Token = '') {
         return $r.StatusCode -eq 200
     } catch { return $false }
 }
+# The relay port answers the job, so the pause attacks are refused by the
+# API, not cut off by the network (Tentmaker's WFP filters permit only it on
+# this host).
+$relayOk = $false
+try {
+    $c = [System.Net.Sockets.TcpClient]::new([System.Net.Sockets.AddressFamily]::InterNetwork)
+    $relayOk = $c.ConnectAsync('127.0.0.1', 7434).Wait(4000) -and $c.Connected
+    $c.Close()
+} catch { $relayOk = $false }
+if ($relayOk) { Write-Output 'CONTROL relay OK' } else { Write-Output 'CONTROL relay FAILED' }
 if (TryPause) { Say pause-no-token SUCCEEDED } else { Say pause-no-token BLOCKED }
 $guessed = $false
 foreach ($t in @(('0' * 64), ('f' * 64), [Guid]::NewGuid().ToString('N') + [Guid]::NewGuid().ToString('N'))) {

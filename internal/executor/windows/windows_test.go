@@ -91,19 +91,20 @@ type fakeAPI struct {
 	fw       map[string]string
 	profiles map[string]string
 	dns      []string
-	// addrs are the host's addresses (Get-NetIPAddress); self is what
-	// Tentmaker-Block-Self names.
-	addrs   []string
-	self    []string
-	scripts []string
+	// WFP: Tentmaker's filters by key; wfpErr fails SetWFP.
+	wfp    map[GUID]WFPState
+	wfpErr error
+	// installSteps records, per install script, each rule added ("+name")
+	// and removed ("-name") in order.
+	installSteps [][]string
+	scripts      []string
 }
 
 func newFakeAPI() *fakeAPI {
 	return &fakeAPI{admin: true, users: map[string]string{}, rights: map[string][]string{},
 		hidden: map[string]bool{}, dacls: map[string][]ACE{}, free: 100 << 30,
 		fw: map[string]string{}, profiles: map[string]string{"Domain": "True", "Private": "True", "Public": "True"},
-		dns:   []string{"168.63.129.16", "fe80::1%4", "192.168.1.1"},
-		addrs: []string{"127.0.0.1", "::1", "fe80::5%4", "192.168.1.20", "2001:db8:1::20"}}
+		dns: []string{"168.63.129.16", "fe80::1%4", "192.168.1.1"}, wfp: map[GUID]WFPState{}}
 }
 
 // PowerShell plays the firewall scripts netrules.go runs.
@@ -116,46 +117,42 @@ func (f *fakeAPI) PowerShell(ctx context.Context, script string) (string, error)
 	switch first {
 	case "# tentmaker: DNS servers":
 		return strings.Join(f.dns, "\r\n") + "\r\n", nil
-	case "# tentmaker: host addresses":
-		return strings.Join(f.addrs, "\r\n") + "\r\n", nil
-	case "# tentmaker: host address rule":
-		_, ok := f.fw["Tentmaker-Block-Self"]
-		for _, l := range strings.Split(script, "\n") {
-			switch {
-			case strings.HasPrefix(l, "if ($r) { $r | Remove-NetFirewallRule }"):
-				delete(f.fw, "Tentmaker-Block-Self")
-				f.self = nil
-			case strings.HasPrefix(l, "if ($r) { Set-NetFirewallRule") && ok,
-				strings.HasPrefix(l, "New-NetFirewallRule -Name 'Tentmaker-Block-Self'") && !ok:
-				f.self = fakeAddrs(l)
-			}
-			if v, found := strings.CutPrefix(l, "$d = '"); found && !ok {
-				f.fw["Tentmaker-Block-Self"] = "Block " + strings.ReplaceAll(strings.TrimSuffix(v, "'"), "''", "'")
-			}
-		}
-		return "", nil
 	case "# tentmaker: install network rules":
-		clear(f.fw)
-		f.self = nil
 		desc := ""
+		var want []string
+		var steps []string
 		for _, l := range strings.Split(script, "\n") {
 			if v, ok := strings.CutPrefix(l, "$d = '"); ok {
 				desc = strings.ReplaceAll(strings.TrimSuffix(v, "'"), "''", "'")
 			}
-			if v, ok := strings.CutPrefix(l, "New-NetFirewallRule -Name '"); ok {
+			if v, ok := strings.CutPrefix(l, "$want = "); ok {
+				want = fakeList(v)
+			}
+			if v, ok := strings.CutPrefix(l, "if (-not (Get-NetFirewallRule -Name '"); ok {
 				name, _, _ := strings.Cut(v, "'")
 				_, act, _ := strings.Cut(l, "-Action ")
 				act, _, _ = strings.Cut(act, " ")
-				f.fw[name] = act + " " + desc
-				if name == "Tentmaker-Block-Self" {
-					f.self = fakeAddrs(l)
+				if _, there := f.fw[name]; !there {
+					f.fw[name] = act + " " + desc
+					steps = append(steps, "+"+name)
+				}
+			}
+			if strings.HasPrefix(l, "Get-NetFirewallRule -Group 'Tentmaker'") && strings.Contains(l, "Remove-NetFirewallRule") {
+				if !strings.Contains(l, "Where-Object { $want -notcontains $_.Name }") {
+					return "", errors.New("fake PowerShell: an install script removes the whole group")
+				}
+				for n := range f.fw {
+					if !slices.Contains(want, n) {
+						delete(f.fw, n)
+						steps = append(steps, "-"+n)
+					}
 				}
 			}
 		}
+		f.installSteps = append(f.installSteps, steps)
 		return "", nil
 	case "# tentmaker: remove network rules":
 		clear(f.fw)
-		f.self = nil
 		return "", nil
 	case "# tentmaker: check network rules":
 		var b strings.Builder
@@ -172,12 +169,6 @@ func (f *fakeAPI) PowerShell(ctx context.Context, script string) (string, error)
 		for _, n := range names {
 			fmt.Fprintf(&b, "rule %s True Outbound %s\r\n", n, f.fw[n])
 		}
-		if _, ok := f.fw["Tentmaker-Block-Self"]; ok {
-			fmt.Fprintf(&b, "selfrule %s\r\n", strings.Join(f.self, " "))
-		}
-		for _, a := range f.addrs {
-			fmt.Fprintf(&b, "addr %s\r\n", a)
-		}
 		for _, a := range f.dns {
 			fmt.Fprintf(&b, "dns %s\r\n", a)
 		}
@@ -186,18 +177,50 @@ func (f *fakeAPI) PowerShell(ctx context.Context, script string) (string, error)
 	return "", errors.New("fake PowerShell: unknown script " + first)
 }
 
-// fakeAddrs reads the -RemoteAddress @('a', 'b') list of a script line.
-func fakeAddrs(l string) []string {
-	_, v, ok := strings.Cut(l, "-RemoteAddress @(")
-	if !ok {
-		return nil
-	}
-	v, _, _ = strings.Cut(v, ")")
+// fakeList reads a PowerShell @('a', 'b') list.
+func fakeList(v string) []string {
+	v = strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(v), "@("), ")")
 	var out []string
 	for _, a := range strings.Split(v, ", ") {
-		out = append(out, strings.Trim(a, "'"))
+		out = append(out, strings.ReplaceAll(strings.Trim(a, "'"), "''", "'"))
 	}
 	return out
+}
+
+// SetWFP plays WFP: the filters replace Tentmaker's, all or nothing.
+func (f *fakeAPI) SetWFP(fs []WFPFilter) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, "SetWFP")
+	if f.wfpErr != nil {
+		return f.wfpErr
+	}
+	clear(f.wfp)
+	for _, x := range fs {
+		f.wfp[x.Key] = WFPState{Key: x.Key, Description: x.Description(), V6: x.V6, Permit: x.Permit, Block: !x.Permit,
+			Persistent: true, Hard: !x.Permit, Sublayer: true}
+	}
+	return nil
+}
+
+func (f *fakeAPI) WFPInstalled() ([]WFPState, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []WFPState
+	for _, k := range WFPKeys() {
+		if st, ok := f.wfp[k]; ok {
+			out = append(out, st)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeAPI) RemoveWFP() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, "RemoveWFP")
+	clear(f.wfp)
+	return nil
 }
 
 func (f *fakeAPI) rec(s string) {
