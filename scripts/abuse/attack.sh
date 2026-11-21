@@ -248,28 +248,46 @@ if timeout 180 podman pull -q "$img" >/dev/null 2>&1; then
 		done
 		if [ -n "$got" ]; then say "$name" SUCCEEDED "$got"; else say "$name" BLOCKED; fi
 	done
-	got=""
-	if timeout 180 podman --remote --url "${DOCKER_HOST:-unix:///nonexistent}" pull -q "$curl_img" >/dev/null 2>&1; then
-		for how in podman "podman --remote --url ${DOCKER_HOST:-unix:///nonexistent}"; do
+	# The curl image: through the job's own podman, and through the service.
+	ways=""
+	timeout 180 podman pull -q "$curl_img" >/dev/null 2>&1 && ways="podman"
+	if pull_err=$(timeout 180 podman --remote --url "${DOCKER_HOST:-unix:///nonexistent}" pull -q "$curl_img" 2>&1 >/dev/null); then
+		ways="$ways|podman --remote --url ${DOCKER_HOST:-unix:///nonexistent}"
+		echo "CONTROL podman-remote OK"
+	else
+		echo "CONTROL podman-remote FAILED (could not pull $curl_img through the podman service at ${DOCKER_HOST:-no DOCKER_HOST}: $(printf '%s' "$pull_err" | tail -n 3 | tr '\n' ' '))"
+		ls -la "${XDG_RUNTIME_DIR:-/nonexistent}" "${XDG_RUNTIME_DIR:-/nonexistent}/podman" 2>&1 | sed 's/^/PODMAN-REMOTE /'
+	fi
+	ways=${ways#|}
+	if [ -n "$ways" ]; then
+		got=""
+		IFS='|'
+		for how in $ways; do
+			unset IFS
 			if timeout 30 $how run --rm -v /run/tailscale:/ts "$curl_img" -fsS --max-time 5 -H 'Sec-Tailscale: localapi' --unix-socket /ts/tailscaled.sock \
 				http://local-tailscaled.sock/localapi/v0/status >/dev/null 2>&1; then
 				got="$how"
 				break
 			fi
 		done
+		unset IFS
 		if [ -n "$got" ]; then say podman-tailscaled-socket SUCCEEDED "mounted /run/tailscale ($got)"; else say podman-tailscaled-socket BLOCKED; fi
 		# The curl image runs as its own user (uid 100): a subordinate uid on the host.
 		got=""
-		for url in http://100.64.77.1:8080/ http://10.77.0.1:8080/ http://127.0.0.1:8766/ "http://${ip:-192.0.2.1}:7433/"; do
-			if timeout 30 podman --remote --url "${DOCKER_HOST:-unix:///nonexistent}" run --rm --network host "$curl_img" \
-				-fsS -o /dev/null --max-time 5 "$url" >/dev/null 2>&1; then
-				got="$url answered"
-				break
-			fi
+		IFS='|'
+		for how in $ways; do
+			unset IFS
+			for url in http://100.64.77.1:8080/ http://10.77.0.1:8080/ http://127.0.0.1:8766/ "http://${ip:-192.0.2.1}:7433/"; do
+				if timeout 30 $how run --rm --network host "$curl_img" -fsS -o /dev/null --max-time 5 "$url" >/dev/null 2>&1; then
+					got="$url answered ($how)"
+					break 2
+				fi
+			done
 		done
+		unset IFS
 		if [ -n "$got" ]; then say podman-hostnet-image-user SUCCEEDED "$got"; else say podman-hostnet-image-user BLOCKED; fi
 	else
-		echo "CONTROL podman-remote FAILED (could not pull $curl_img through the podman service)"
+		echo "CONTROL podman-curl FAILED (could not pull $curl_img)"
 	fi
 else
 	echo "CONTROL podman FAILED (could not pull $img)"

@@ -53,8 +53,11 @@ class Server6(Server4):
         super().server_bind()
 
 
-class ServerUnix(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
-    daemon_threads = True
+# Windows Python has no Unix stream server; the unix: kind is Linux only.
+if hasattr(socketserver, "UnixStreamServer"):
+
+    class ServerUnix(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
+        daemon_threads = True
 
 
 def udp(host, port, group=None):
