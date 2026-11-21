@@ -146,6 +146,10 @@ jobs:
           }
           # The LAN: 10.78.0.0/24 and 2001:db8:78::/64 are on-link.
           netdev tmlan tmlan0 10.78.0.2/24 2001:db8:78::2/64 -- 10.78.0.1/24 2001:db8:78::1/64
+          # pasta gives a job IPv6 only when the host has an IPv6 default
+          # route, and this runner has none, so every IPv6 attack would be
+          # blocked for free. Route IPv6 into the LAN (job-ipv6 checks it).
+          ip -6 route show default | grep -q . || sudo ip -6 route add default via 2001:db8:78::1 dev tmlan0
           # A subnet route another tailnet device advertises: 10.99.0.0/24
           # through tailscale0, as tailscaled routes it.
           sudo ip link del tailscale0 2>/dev/null || true

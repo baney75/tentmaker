@@ -136,6 +136,12 @@ echo "tentmaker abuse: job dir $job_dir, uid $(id -u), groups $(id -G)"
 # Controls: a sandbox that blocks everything would pass every attack.
 if http_ok https://api.github.com/zen; then echo "CONTROL internet OK"; else echo "CONTROL internet FAILED"; fi
 if getent hosts github.com >/dev/null; then echo "CONTROL dns OK"; else echo "CONTROL dns FAILED"; fi
+# Without IPv6 in the job every IPv6 attack below is blocked for free.
+if awk '$1 ~ /^0+$/ && $2 == "00" && $10 != "lo" { f = 1 } END { exit !f }' /proc/net/ipv6_route 2>/dev/null; then
+	echo "CONTROL job-ipv6 OK"
+else
+	echo "CONTROL job-ipv6 FAILED"
+fi
 # The job's own loopback works: a test that starts a server on 127.0.0.1
 # or ::1 (httptest, a database) reaches it, as on GitHub's runners. The
 # host's loopback stays closed (loopback-other-port and the rest below).
@@ -252,7 +258,7 @@ if [ -n "$got" ]; then say tailscaled-socket SUCCEEDED "read$got"; else say tail
 # runs outside the job's unit and can mount any path this user can read.
 img=docker.io/library/busybox:1.36
 curl_img=docker.io/curlimages/curl:8.11.1
-if timeout 180 podman pull -q "$img" >/dev/null 2>&1; then
+if pod_err=$(timeout 180 podman pull -q "$img" 2>&1 >/dev/null); then
 	in_pod() { timeout 30 podman run --rm "$img" wget -q -O /dev/null -T 5 "$1" >/dev/null 2>&1; }
 	if in_pod http://example.com/; then echo "CONTROL podman OK"; else echo "CONTROL podman FAILED"; fi
 	for t in "podman-decoy-tailnet-v4 http://100.64.77.1:8080/" "podman-decoy-lan-v4 http://10.77.0.1:8080/" \
@@ -321,7 +327,7 @@ if timeout 180 podman pull -q "$img" >/dev/null 2>&1; then
 		echo "CONTROL podman-curl FAILED (could not pull $curl_img)"
 	fi
 else
-	echo "CONTROL podman FAILED (could not pull $img)"
+	echo "CONTROL podman FAILED (could not pull $img: $(printf '%s' "$pod_err" | tail -n 3 | tr '\n' ' '))"
 fi
 
 # Privilege.

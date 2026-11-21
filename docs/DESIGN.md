@@ -203,7 +203,8 @@ physical LAN only, never what the tailnet routes.
   rules below match them; pasta started as root and dropping privileges cannot join a namespace
   owned by the initial user namespace, hence the runner-owned holder. pasta forwards only the
   relay (`-T 7434`: the job's own 127.0.0.1:7434 reaches the host's), maps no other host loopback
-  (`--no-map-gw`) and publishes no job port (`-t none -u none`). `Start` waits until the holder's
+  (`--no-map-gw`) and publishes no job port (`-t none -u none`). pasta copies the host's addresses
+  and routes, so a host with no IPv6 default route gives its jobs no IPv6 at all. `Start` waits until the holder's
   process has left the host's namespace (`/proc/<pid>/ns/net` differs from the daemon's), starts
   pasta, then the job unit with `NetworkNamespacePath=/proc/<pid>/ns/net` and
   `BindReadOnlyPaths=<private>/resolv.conf:/etc/resolv.conf`, which names the host's resolvers or,

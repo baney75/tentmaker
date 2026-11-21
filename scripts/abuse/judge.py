@@ -93,7 +93,7 @@ def main():
             problems.append("tentmaker/%s is %s: %s" % (job[k], st.get("state", "missing"), st.get("description", "")))
 
     main_log = logs[""]
-    for c in ("internet", "dns", "relay") + (("podman", "own-loopback-v4", "own-loopback-v6") if a.os == "linux" else ()):
+    for c in ("internet", "dns", "relay") + (("podman", "own-loopback-v4", "own-loopback-v6", "job-ipv6") if a.os == "linux" else ()):
         if "CONTROL %s OK" % c not in main_log:
             problems.append("control %s failed: the job could not reach what it needs, so blocked attacks prove nothing" % c)
 
