@@ -44,7 +44,7 @@ log() { printf '%s %s\n' "$(date -u +%H:%M:%S)" "$*" >&2; }
 SCENARIO=""
 die() {
 	local msg="$*"
-	printf '::error::%s\n' "${msg//$'\n'/%0A}"
+	printf '::error::%s\n' "${msg//$'\n'/%0A}" >&2
 	if [ -n "$SCENARIO" ] && [ ! -s "$METRICS/team-$SCENARIO.json" ]; then
 		jq -n --arg s "$SCENARIO" --arg e "$msg" '{scenario: $s, result: "fail", error: $e}' >"$METRICS/team-$SCENARIO.json"
 	fi
@@ -266,7 +266,7 @@ wait_mesh() {
 # pool_check ROLE: this device's `tentmaker pool --json` lists a, b and c,
 # each answering with platforms, within 2 minutes of the last setup.
 pool_check() {
-	local me=$1 since t0 lines ok r d plats
+	local me=$1 since t0 lines r
 	SCENARIO=pool
 	since=0
 	for r in a b c; do
@@ -276,40 +276,29 @@ pool_check() {
 	done
 	log "last setup finished at $(date -u -d "@$since" +%T)"
 	probe $(for r in a b c; do [ "$r" = "$me" ] || printf '%s ' "$r"; done)
-	local deadline=$((since + 120)) why=""
+	local deadline=$((since + 120)) summary=""
 	while :; do
 		tm pool --json >"$TEAM_TMP/pool.json" 2>"$TEAM_TMP/pool.err" || true
-		ok=1
-		why=""
-		for r in a b c; do
-			d=$(host "$r")
-			plats=$(jqr -r --arg d "$d" '[.devices[]? | select(.device == $d and ((.error // "") == "")) | .status.worker.executors[]?.platforms[]?] | unique | join(",")' "$TEAM_TMP/pool.json" 2>/dev/null || true)
-			if [ -z "$plats" ]; then
-				ok=0
-				why="$why $d"
-			fi
-		done
-		if [ "$ok" = 1 ]; then
+		summary=$(jqr -r '[.devices[]? | "\(.device | split("-") | last)=\([.status.worker.executors[]?.platforms[]?] | unique | join("+"))\(if .broker then "(broker)" else "" end)\(if (.error // "") != "" then "(error)" else "" end)"] | join(" ")' "$TEAM_TMP/pool.json" 2>/dev/null || true)
+		# All three answer; Linux on a and b, Windows on c; only a is a
+		# broker. A peer's broker flag comes from its hello, which is
+		# refreshed every 30 s, so it can lag A's connect for that long.
+		if jqr -e --arg a "$(host a)" --arg b "$(host b)" --arg c "$(host c)" '
+			def dev($d): [.devices[]? | select(.device == $d and ((.error // "") == ""))] | first;
+			def plats($d): [dev($d) | .status.worker.executors[]?.platforms[]?];
+			(plats($a) | any(startswith("linux/"))) and (plats($b) | any(startswith("linux/"))) and (plats($c) | any(startswith("windows/")))
+			and dev($a).broker == true and dev($b).broker == false and dev($c).broker == false' "$TEAM_TMP/pool.json" >/dev/null 2>&1; then
 			break
 		fi
 		if [ "$(now)" -gt "$deadline" ]; then
 			cat "$TEAM_TMP/pool.json" "$TEAM_TMP/pool.err" >&2 || true
-			sig_post "pool-$me" failure "missing or no platforms:$why after $(($(now) - since)) s" || true
-			die "pool on $(host "$me"): missing or without platforms:$why, $(($(now) - since)) s after the last setup"
+			sig_post "pool-$me" failure "incomplete after $(($(now) - since)) s: ${summary:-no devices}" || true
+			die "pool on $(host "$me") is incomplete $(($(now) - since)) s after the last setup (want a=linux(broker) b=linux c=windows): ${summary:-no devices}"
 		fi
 		sleep 5
 	done
 	local took=$(($(now) - since))
 	jqr '.' "$TEAM_TMP/pool.json" >&2
-	local summary
-	summary=$(jqr -r '[.devices[] | "\(.device | split("-") | last)=\([.status.worker.executors[]?.platforms[]?] | unique | join("+"))\(if .broker then "(broker)" else "" end)"] | join(" ")' "$TEAM_TMP/pool.json")
-	# Linux on a and b, Windows on c; only a is a broker.
-	jqr -e --arg a "$(host a)" --arg b "$(host b)" --arg c "$(host c)" '
-		def plats($d): [.devices[] | select(.device == $d) | .status.worker.executors[]?.platforms[]?];
-		def broker($d): [.devices[] | select(.device == $d) | .broker] | first;
-		(plats($a) | any(startswith("linux/"))) and (plats($b) | any(startswith("linux/"))) and (plats($c) | any(startswith("windows/")))
-		and broker($a) == true and broker($b) == false and broker($c) == false' "$TEAM_TMP/pool.json" >/dev/null ||
-		{ sig_post "pool-$me" failure "wrong platforms or broker flags: $summary" || true; die "pool on $(host "$me"): wrong platforms or broker flags: $summary"; }
 	sig_post "pool-$me" success "t=${took}s $summary"
 	cp "$TEAM_TMP/pool.json" "$METRICS/pool-$me.raw.json"
 	log "pool on $(host "$me") is complete after ${took} s: $summary"
