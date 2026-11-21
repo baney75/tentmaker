@@ -3,6 +3,7 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -52,7 +53,9 @@ func TestSetupCopiesUserWritableBinary(t *testing.T) {
 	if err != nil || string(got) != "tentmaker build 1" {
 		t.Fatalf("copy %q %v", got, err)
 	}
-	if st, _ := os.Stat(want); st.Mode().Perm() != 0o755 {
+	// Windows has no mode bits: os.Stat reports 0666 for any file without
+	// an executable extension, and ACLs guard the folder instead.
+	if st, _ := os.Stat(want); runtime.GOOS != "windows" && st.Mode().Perm() != 0o755 {
 		t.Errorf("copy mode %v", st.Mode())
 	}
 	out := f.stdout.String()
