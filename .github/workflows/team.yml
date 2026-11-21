@@ -489,6 +489,6 @@ jobs:
           refs=$(timeout 30 gh api "repos/$REPO/git/matching-refs/heads/$BR_PREFIX-" --jq '.[].ref') || refs=""
           for r in $refs; do
             case $r in
-              "refs/heads/$BR_PREFIX-"*) timeout 30 gh api -X DELETE "repos/$REPO/git/${r#refs/}" && echo "deleted $r" ;;
+              "refs/heads/$BR_PREFIX-"*) timeout 30 gh api -X DELETE "repos/$REPO/git/$r" && echo "deleted $r" ;;
             esac
           done
