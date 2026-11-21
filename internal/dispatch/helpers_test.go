@@ -146,6 +146,9 @@ type source struct {
 	inner core.WorkSource
 	fail  error
 	reqs  []core.WorkRequest
+	// loseOffers is how many responses with offers are lost on the way
+	// back: the broker granted them, the worker sees only an error.
+	loseOffers int
 }
 
 func (s *source) Name() string { return s.inner.Name() }
@@ -158,7 +161,14 @@ func (s *source) Work(ctx context.Context, req core.WorkRequest) (core.WorkRespo
 	if fail != nil {
 		return core.WorkResponse{}, fail
 	}
-	return s.inner.Work(ctx, req)
+	resp, err := s.inner.Work(ctx, req)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err == nil && len(resp.Offers) > 0 && s.loseOffers > 0 {
+		s.loseOffers--
+		return core.WorkResponse{}, errors.New("the response was lost")
+	}
+	return resp, err
 }
 
 // FetchArchive passes the relay through to the wrapped broker.

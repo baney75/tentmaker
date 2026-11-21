@@ -325,6 +325,12 @@ func New(o Options) *Client                            // implements core.Status
   sha, check, state, device and runner, to `<state>/checks/<owner>_<repo>-<sha12>-<job>.log` (mode
   0600, newest 200 kept), since the worker deletes the job dir when the job ends. A worker that goes silent for 2 minutes gets its
   pending statuses set to `error` ("device went offline") so they can be retried by a re-run.
+  A check grant its worker has not reported running 15 minutes (`startGrace`, longer than the
+  worker's 10-minute `startTimeout`) after it was granted never reached the worker (a lost
+  response) or never started: the broker posts `error` ("never started on <device>"), drops the
+  grant, which revokes its archive ref, releases its claim, and offers the check again, at most
+  twice per check (memory only). A worker that starts it late runs a runner the broker doesn't
+  know, which it stops (review r1 partA sol-F5).
 - **Source archive relay.** Forge tokens never leave the broker. The bundle the broker sends has an
   `ArchiveRef` (32 random bytes, hex) and no URL or header. The broker keeps, in memory only, ref
   -> (runner, granted device, forge, repo, sha) while that check is active and drops it when the

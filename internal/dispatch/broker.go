@@ -64,6 +64,10 @@ type Broker struct {
 	errs      errorLog
 	closed    bool
 	lastSaved []byte
+
+	// retries counts check grants that expired before their worker ran
+	// them, by checkKey; memory only.
+	retries map[string]*checkRetry
 }
 
 type repoState struct {
@@ -187,6 +191,7 @@ func NewBroker(o BrokerOptions) *Broker {
 		plans:    map[string][]core.CheckJob{},
 		archives: map[string]*archiveRec{},
 		noted:    map[string]string{},
+		retries:  map[string]*checkRetry{},
 	}
 	if b.idleTTL <= 0 {
 		b.idleTTL = 90 * time.Second
@@ -299,6 +304,19 @@ func (b *Broker) Work(ctx context.Context, req core.WorkRequest) (core.WorkRespo
 		}
 	}
 
+	// A check grant the worker never reported running within the start
+	// window never reached it (the response was lost) or never started.
+	// Nothing else ends it: monitor skips checks, and only started grants
+	// count as ended when omitted.
+	var expired []*grantRec
+	for _, rec := range b.grants {
+		if rec.Device == req.Device && rec.Kind == core.KindCheck && !rec.pending && rec.Started.IsZero() &&
+			!running[rec.Name] && !ended[rec.Name] && now.Sub(rec.Granted) >= startGrace {
+			b.expireCheckLocked(rec, now)
+			expired = append(expired, rec)
+		}
+	}
+
 	// Stops: deliver while the worker still runs them.
 	var keep []string
 	for _, name := range dev.Stop {
@@ -335,9 +353,12 @@ func (b *Broker) Work(ctx context.Context, req core.WorkRequest) (core.WorkRespo
 	if req.Free > 0 && blocked == "" {
 		picks = b.pickLocked(req, now)
 	}
-	b.pruneArchivesLocked()
+	b.pruneArchivesLocked() // revokes the archive refs of expired grants too
 	b.mu.Unlock()
 
+	for _, rec := range expired {
+		b.releaseCheck(rec)
+	}
 	b.saveCheckLogs(logs)
 	if len(picks) > 0 {
 		for _, rec := range picks {
@@ -486,7 +507,8 @@ func (b *Broker) pickLocked(req core.WorkRequest, now time.Time) []*grantRec {
 					return picks
 				}
 				ctxName := CheckContext(cj)
-				if _, ok := h.statuses[ctxName]; ok {
+				retry := b.retries[checkKey(r.forge, r.cfg.Name, h.commit.SHA, ctxName)]
+				if _, ok := h.statuses[ctxName]; ok && (retry == nil || !retry.open) {
 					continue
 				}
 				if b.checkTakenLocked(r, h.commit.SHA, ctxName) {
@@ -503,6 +525,9 @@ func (b *Broker) pickLocked(req core.WorkRequest, now time.Time) []*grantRec {
 					Forge: r.forge, Repo: r.cfg.Name, Job: job, Platform: p, Labels: job.Labels,
 					Granted: now, SHA: h.commit.SHA, Ref: h.commit.Ref, PR: h.commit.PR, Context: ctxName,
 					pending: true}
+				if retry != nil {
+					retry.open = false
+				}
 				b.grants[rec.Name] = rec
 				picks = append(picks, rec)
 			}
@@ -655,6 +680,43 @@ func (b *Broker) realizeCheck(ctx context.Context, req core.WorkRequest, rec *gr
 	g := core.Grant{Forge: rec.Forge, Repo: rec.Repo, RunnerName: rec.Name, Labels: rec.Labels,
 		Secret: secret, ExpiresAt: now.Add(time.Hour)}
 	return core.WorkOffer{Job: rec.Job, Grant: g, Secret: secret, Platform: rec.Platform}, true
+}
+
+// maxCheckRetries is how many times a check whose grant expired unstarted
+// is offered again.
+const maxCheckRetries = 2
+
+type checkRetry struct {
+	expired int
+	open    bool // offer it again despite the error status this broker posted
+}
+
+func checkKey(forge, repo, sha, ctxName string) string {
+	return forge + ":" + repo + "@" + sha + "#" + ctxName
+}
+
+// expireCheckLocked ends a check grant its worker never ran: it posts an
+// error status, forgets the grant (pruneArchivesLocked then revokes its
+// archive ref) and, up to maxCheckRetries times, lets pickLocked offer the
+// check again. A worker that starts it late runs an unknown runner, which
+// the broker stops, and its archive ref is gone.
+func (b *Broker) expireCheckLocked(rec *grantRec, now time.Time) {
+	k := checkKey(rec.Forge, rec.Repo, rec.SHA, rec.Context)
+	retry := b.retries[k]
+	if retry == nil {
+		retry = &checkRetry{}
+		b.retries[k] = retry
+	}
+	retry.expired++
+	retry.open = retry.expired <= maxCheckRetries
+	desc := "never started on " + rec.Device
+	if retry.open {
+		desc += "; offering it again"
+	}
+	b.queuePost(rec, "error", desc, now)
+	b.log.Warn("check grant never started; expired", "runner", rec.Name, "device", rec.Device, "repo", rec.Repo,
+		"sha", rec.SHA, "context", rec.Context, "again", retry.open)
+	delete(b.grants, rec.Name)
 }
 
 func (b *Broker) claimTTL() time.Duration { return b.idleTTL + 2*time.Minute }
@@ -1381,6 +1443,11 @@ func (b *Broker) pollChecks(ctx context.Context, r *repoState, now time.Time) {
 	for k := range b.plans {
 		if strings.HasPrefix(k, r.key()+"@") && !live[k] {
 			delete(b.plans, k)
+		}
+	}
+	for k := range b.retries {
+		if head, _, ok := strings.Cut(k, "#"); ok && strings.HasPrefix(k, r.key()+"@") && !live[head] {
+			delete(b.retries, k)
 		}
 	}
 	// Forget ignored commits the forge no longer lists (a closed fork PR,
