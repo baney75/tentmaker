@@ -251,6 +251,29 @@ for sock in /run/tailscale/tailscaled.sock /var/run/tailscale/tailscaled.sock; d
 done
 if [ -n "$got" ]; then say tailscaled-socket SUCCEEDED "read$got"; else say tailscaled-socket BLOCKED; fi
 
+# Rootless podman runs every command in its pause process's user and mount
+# namespaces, which the job did not make. They must hide what the job's unit
+# hides: tailscaled's socket, and the user bus, through which a process
+# outside the job's unit (its limits and network namespace) could start.
+pu() { timeout 30 podman unshare "$@" </dev/null 2>/dev/null; }
+if pu true; then echo "CONTROL podman-unshare OK"; else echo "CONTROL podman-unshare FAILED"; fi
+got=""
+for sock in /run/tailscale/tailscaled.sock /var/run/tailscale/tailscaled.sock; do
+	code=$(pu curl -sS -o /dev/null -w '%{http_code}' --max-time 6 -H 'Sec-Tailscale: localapi' --unix-socket "$sock" \
+		'http://local-tailscaled.sock/localapi/v0/whois?addr=100.100.100.100:53') || code=000
+	[ -n "$code" ] && [ "$code" != 000 ] && got="$got $sock:whois answered $code"
+done
+if [ -n "$got" ]; then say podman-unshare-tailscaled SUCCEEDED "read$got"; else say podman-unshare-tailscaled BLOCKED; fi
+if pu systemd-run --user --quiet --wait --collect -- true; then
+	if pu systemd-run --user --quiet --wait --collect -- curl -fsS -o /dev/null --max-time 5 http://127.0.0.1:8766/; then
+		say podman-unshare-user-unit SUCCEEDED "a user unit started outside the job and reached http://127.0.0.1:8766/"
+	else
+		say podman-unshare-user-unit SUCCEEDED "a user unit started outside the job (host loopback stayed shut)"
+	fi
+else
+	say podman-unshare-user-unit BLOCKED
+fi
+
 # Rootless podman: a container's traffic leaves through pasta or
 # slirp4netns, which run as this job's user, so the same rules must stop it.
 # A container on the host network opens its own sockets, as a subordinate
