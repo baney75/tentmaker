@@ -389,6 +389,8 @@ jobs:
             sudo systemctl --user -M tentmaker-runner@ status podman.socket podman.service --no-pager -n 30 || true
             sudo ls -la "/run/user/$u" "/run/user/$u/podman" || true
             sudo ss -xlp | grep -i podman || true
+            sudo journalctl --no-pager -n 40 _UID="$u" _SYSTEMD_USER_UNIT=podman.service || true
+            sudo journalctl --no-pager -n 20 -u tentmaker-podns.service || true
           }
 
       - name: uninstall --purge

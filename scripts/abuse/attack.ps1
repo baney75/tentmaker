@@ -91,23 +91,40 @@ switch ($Mode) {
     }
     'pids' {
         # A process bomb that stops at 3000. Reaching that many means nothing
-        # bounds the job's processes.
-        $procs = [System.Collections.Generic.List[System.Diagnostics.Process]]::new()
-        $err = ''
-        for ($i = 0; $i -lt 3000; $i++) {
-            try {
-                $si = [System.Diagnostics.ProcessStartInfo]::new("$env:SystemRoot\System32\PING.EXE", '-n 120 127.0.0.1')
-                $si.UseShellExecute = $false
-                $si.CreateNoWindow = $true
-                $si.RedirectStandardOutput = $true
-                $procs.Add([System.Diagnostics.Process]::Start($si))
-            } catch {
-                $err = $_.Exception.Message
-                break
+        # bounds the job's processes. It runs in a child shell: when the job's
+        # memory runs out, that shell can die (stack overflow), and this one
+        # still reports.
+        $count = Join-Path $env:TEMP "tm-bomb-$PID.txt"
+        $bomb = {
+            param($count)
+            $procs = [System.Collections.Generic.List[System.Diagnostics.Process]]::new()
+            $err = ''
+            for ($i = 0; $i -lt 3000; $i++) {
+                try {
+                    $si = [System.Diagnostics.ProcessStartInfo]::new("$env:SystemRoot\System32\PING.EXE", '-n 120 127.0.0.1')
+                    $si.UseShellExecute = $false
+                    $si.CreateNoWindow = $true
+                    $si.RedirectStandardOutput = $true
+                    $procs.Add([System.Diagnostics.Process]::Start($si))
+                    if ($procs.Count % 50 -eq 0) { Set-Content -Path $count -Value $procs.Count }
+                } catch {
+                    $err = $_.Exception.Message
+                    break
+                }
             }
+            Set-Content -Path $count -Value "$($procs.Count) $err"
+            foreach ($p in $procs) { try { $p.Kill() } catch {} }
         }
-        $n = $procs.Count
-        foreach ($p in $procs) { try { $p.Kill() } catch {} }
+        $shell = (Get-Process -Id $PID).Path
+        & $shell -NoProfile -NonInteractive -Command $bomb -args $count *> $null
+        $code = $LASTEXITCODE
+        Get-Process PING -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+        $line = ''
+        try { $line = (Get-Content -Path $count -Raw -ErrorAction Stop).Trim() } catch {}
+        $n = 0
+        $err = ''
+        if ($line -match '^(\d+)\s*(.*)$') { $n = [int]$Matches[1]; $err = $Matches[2] }
+        if ($code -ne 0) { $err = "its shell died (exit $code) $err".Trim() }
         if ($n -ge 3000) { Say fork-bomb SUCCEEDED "started $n processes" } else { Say fork-bomb BLOCKED "after $n processes: $err" }
         exit 0
     }
