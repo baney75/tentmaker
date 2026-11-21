@@ -28,8 +28,9 @@ Sleep 800ms
 Type "tentmaker status"
 Sleep 400ms
 Enter
+# demo.yml cuts status.png from the GIF at 6.2 s, inside this pause. VHS's
+# own Screenshot (0.11.0 and 0.12.1) saves an early frame instead.
 Sleep 4.5s
-Screenshot status.png
 
 Ctrl+L
 Sleep 400ms
@@ -40,7 +41,7 @@ Sleep 4s
 
 Ctrl+L
 Sleep 400ms
-Type "tentmaker doctor"
+Type "tentmaker pool"
 Sleep 400ms
 Enter
 Sleep 4.5s

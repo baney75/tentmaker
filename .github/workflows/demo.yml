@@ -157,6 +157,9 @@ jobs:
           cd "$out"
           tentmaker status --json | jq -e '.worker.running | length > 0' >/dev/null || { echo "::error::the job ended before recording"; exit 1; }
           timeout 300 vhs "$GITHUB_WORKSPACE/scripts/demo/demo.tape"
+          # The tape shows status from about 3 s to 6.7 s. VHS's Screenshot
+          # command saves an early frame, so the PNG is cut from the GIF.
+          ffmpeg -v error -y -ss 6.2 -i demo.gif -frames:v 1 -update 1 status.png
           # The plain output of each command, right after the recording.
           tentmaker status >status.txt
           tentmaker budget >budget.txt
@@ -176,7 +179,8 @@ jobs:
           echo "demo.gif: $size bytes, ${dur}s; status.png: $(stat -c %s status.png) bytes"
           test "$size" -lt 3000000 || { echo "::error::demo.gif is $size bytes, over 3 MB"; exit 1; }
           awk -v d="$dur" 'BEGIN { exit !(d >= 12 && d <= 20) }' || { echo "::error::demo.gif runs ${dur}s, not 12 to 20"; exit 1; }
-          test -s status.png || { echo "::error::no status.png"; exit 1; }
+          # A blank prompt frame is under 10 KB; the status frame is far larger.
+          test "$(stat -c %s status.png)" -gt 50000 || { echo "::error::status.png looks blank"; exit 1; }
           grep -q '^service *running' status.txt || { echo "::error::status does not show the service running"; exit 1; }
           grep -qE "^jobs +$GITHUB_REPOSITORY +demo " status.txt || { echo "::error::status shows no demo job"; exit 1; }
           # Nothing secret or personal: not the token (read from the env,
