@@ -29,7 +29,7 @@ sleep 15
 old=$(daemon_pid)
 r0=$(daemon_restarts)
 tk=$(now_s)
-if [ "$OS" = linux ]; then sudo systemctl kill -s KILL tentmaker; else ps1 Kill-Daemon >/dev/null; fi
+if [ "$OS" = linux ]; then timeout 60 sudo systemctl kill -s KILL tentmaker; else ps1 Kill-Daemon >/dev/null; fi
 log "a: killed daemon $old"
 if wait_new_daemon "$old" 120; then
 	measure a_restart_s $(($(now_s) - tk))
@@ -55,7 +55,7 @@ running=$(tm_status | jqr '(.worker.running // []) | length')
 measure b_running_at_restart "$running"
 old=$(daemon_pid)
 tr0=$(now_s)
-if [ "$OS" = linux ]; then sudo systemctl restart tentmaker; else ps1 Restart-Daemon >/dev/null; fi
+if [ "$OS" = linux ]; then timeout 120 sudo systemctl restart tentmaker; else ps1 Restart-Daemon >/dev/null; fi
 wait_new_daemon "$old" 120 || die "b: the service did not come back within 120 s"
 measure b_restart_s $(($(now_s) - tr0))
 for j in one two; do

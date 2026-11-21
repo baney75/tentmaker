@@ -152,6 +152,37 @@ func TestRunContinueOnError(t *testing.T) {
 	}
 }
 
+// A pwsh step's own exit code reaches the log, and pass or fail is what
+// GitHub's pwsh wrapper decides. Dot-sourcing the script (as GitHub does)
+// turns `exit 3` into a bare 1 unless the code is carried out.
+func TestRunPwshKeepsTheExitCode(t *testing.T) {
+	if _, err := exec.LookPath("pwsh"); err != nil {
+		t.Skip("pwsh is not installed")
+	}
+	for _, tc := range []struct {
+		name, run, state, want string
+	}{
+		{"exit", "echo fine\nexit 3", "failure", "the step failed (exit 3)"},
+		{"native", "sh -c 'exit 2'", "failure", "the step failed (exit 2)"},
+		{"throw", "throw 'boom'", "failure", "the step failed (exit 1)"},
+		{"cmdlet", "Get-Item ./no-such-file", "failure", "the step failed (exit 1)"},
+		{"native then exit 0", "sh -c 'exit 2'\nexit 0", "success", "pwsh-ok"},
+		{"fine", "echo pwsh-ok", "success", "pwsh-ok"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t, nil)
+			steps := []core.CheckStep{{Name: "step", Run: tc.run, Shell: "pwsh"}}
+			if tc.state == "success" {
+				steps = append(steps, core.CheckStep{Name: "after", Run: "echo pwsh-ok", Shell: "pwsh"})
+			}
+			res, log := h.run(core.CheckJob{Steps: steps})
+			if res.State != tc.state || !strings.Contains(log, tc.want) {
+				t.Fatalf("state %q, want %q with %q in the log:\n%s", res.State, tc.state, tc.want, log)
+			}
+		})
+	}
+}
+
 func TestRunTimeoutKillsTheProcessGroup(t *testing.T) {
 	h := newHarness(t, nil)
 	start := time.Now()
