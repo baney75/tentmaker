@@ -180,6 +180,17 @@ func checkExecutors(ctx context.Context, in DoctorInput) []Finding {
 			out = append(out, Finding{Check: p.Check, Status: Fail, What: p.What, Fix: p.Fix})
 		}
 	}
+	// Notes are worth knowing but block nothing (macOS guests off for lack
+	// of disk).
+	for _, e := range in.Executors {
+		if n, ok := e.(interface {
+			Notes(ctx context.Context) []core.Problem
+		}); ok {
+			for _, p := range n.Notes(ctx) {
+				out = append(out, Finding{Check: p.Check, Status: Warn, What: p.What, Fix: p.Fix})
+			}
+		}
+	}
 	return out
 }
 

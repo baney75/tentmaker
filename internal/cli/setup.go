@@ -40,12 +40,15 @@ missing value takes its default.
   --no-mesh              single device, no Tailscale
   --channel stable|dev   update channel
   --no-service           don't install the service
+  --macos-guests         macOS: pull the macOS VM image even without the
+                         usual disk margin (it needs about 80 GiB)
   --json`
 
 var poolRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$`)
 
 type setupOpts struct {
 	yes                 bool
+	macOSGuests         bool
 	device              string
 	memory, boostMemory string
 	cpus, boostCPUs     float64
@@ -116,6 +119,7 @@ func (a *app) cmdSetup(args []string) (any, error) {
 	f.BoolVar(&o.noMesh, "no-mesh", false, "no Tailscale mesh")
 	f.StringVar(&o.channel, "channel", "", "stable or dev")
 	f.BoolVar(&o.noService, "no-service", false, "don't install the service")
+	f.BoolVar(&o.macOSGuests, "macos-guests", false, "pull the macOS VM image even without the usual disk margin")
 	pos, err := a.parse(f, args)
 	if err != nil {
 		return nil, err
@@ -186,7 +190,7 @@ func (a *app) cmdSetup(args []string) (any, error) {
 	}
 	rc := a.resolved(cfg)
 	binary := daemon.NewBinary(daemon.BinaryOptions{Version: a.env.Version, CacheDir: rc.CacheDir, Executable: a.env.Executable})
-	if err := a.env.InstallExecutors(a.ctx, rc, binary); err != nil {
+	if err := a.env.InstallExecutors(a.ctx, rc, binary, InstallOptions{MacOSGuests: o.macOSGuests}); err != nil {
 		a.step(v, "save", daemon.OK, "config saved to %s", a.env.ConfigPath)
 		a.step(v, "sandbox", daemon.Fail, "%v", err)
 	} else {

@@ -78,6 +78,9 @@ type Options struct {
 	// Images maps "macos/arm64" and "linux/arm64" to digest-pinned images.
 	// Nil means both pinned defaults.
 	Images map[string]string
+	// MacOSGuests makes Install pull the macOS image even when free disk
+	// doesn't cover it with the usual margin (setup --macos-guests).
+	MacOSGuests bool
 	// AgentTimeout bounds the wait for the guest agent. Default 5 minutes.
 	AgentTimeout time.Duration
 	// HostArch is runtime.GOARCH unless set (tests).
@@ -170,8 +173,9 @@ func (e *Executor) Platforms() []core.Platform {
 		return nil
 	}
 	var out []core.Platform
+	images := e.images()
 	for _, p := range []core.Platform{{OS: "macos", Arch: "arm64"}, {OS: "linux", Arch: "arm64"}} {
-		if e.o.Images[p.String()] != "" {
+		if images[p.String()] != "" {
 			out = append(out, p)
 		}
 	}
@@ -221,7 +225,7 @@ func (e *Executor) Start(ctx context.Context, spec core.ExecSpec) error {
 	if kind != core.KindRunner && kind != core.KindCheck {
 		return fmt.Errorf("unknown job kind %q", trunc(kind, 20))
 	}
-	image := e.o.Images[spec.Platform.String()]
+	image := e.images()[spec.Platform.String()]
 	if image == "" || e.o.HostArch != "arm64" {
 		return fmt.Errorf("%s does not run %s here", Name, spec.Platform)
 	}

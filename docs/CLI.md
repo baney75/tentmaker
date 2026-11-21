@@ -72,6 +72,8 @@ Flags (all optional; with `--yes` every missing value takes its default):
 --no-mesh                single device, no Tailscale
 --channel stable|dev     update channel, default: the channel this binary came from
 --no-service             write config and install executors, don't install the service
+--macos-guests           macOS: pull the macOS VM image (about 80 GiB) even when free disk
+                         doesn't cover it plus room for a job; it still has to fit
 ```
 
 Steps, each reported as one line on a TTY and as an entry in `steps` with `--json`:
@@ -86,7 +88,13 @@ Steps, each reported as one line on a TTY and as an entry in `steps` with `--jso
    and read it without echo. Store as secret `<forge>-token` (`forgejo-token` keyed by
    host when a URL is set: `forgejo-<host>-token`). No token is fine: the device becomes a
    worker that takes work from brokers in its pool.
-4. Validate and save config (config.Save), then `executor.Install` for this OS.
+4. Validate and save config (config.Save), then `executor.Install` for this OS. On a Mac the
+   Linux guest image is always installed when it fits; the macOS image only when free disk
+   covers it with room for a job, or with `--macos-guests`. When it is skipped, the Mac offers
+   only linux/arm64 jobs, setup still succeeds, and doctor says: "macOS guests are off: the
+   macOS image needs N GiB, M GiB free; run sudo tentmaker setup --macos-guests when you have
+   room". When not even the Linux image fits, setup downloads nothing, still installs the
+   service and exits 0, and doctor reports the problem.
 5. Install and start the service (internal/service), wait up to 20 s for the control API.
 6. Run doctor and print its result plus the next step.
 

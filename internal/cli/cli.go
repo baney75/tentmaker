@@ -79,7 +79,7 @@ type Env struct {
 	ServiceWait time.Duration
 
 	Executors          daemon.ExecutorFactory
-	InstallExecutors   func(ctx context.Context, cfg config.Config, binary func(core.Platform) (string, error)) error
+	InstallExecutors   func(ctx context.Context, cfg config.Config, binary func(core.Platform) (string, error), o InstallOptions) error
 	UninstallExecutors func(ctx context.Context, cfg config.Config, purge bool) error
 
 	// GHToken runs `gh auth token`, as user when it is not empty (sudo).
@@ -133,8 +133,8 @@ func DefaultEnv() *Env {
 		Service:     service.Default(),
 		ServiceWait: 20 * time.Second,
 		Executors:   executor.ForHost,
-		InstallExecutors: func(ctx context.Context, cfg config.Config, binary func(core.Platform) (string, error)) error {
-			return installExecutors(ctx, runtime.GOOS, cfg, binary)
+		InstallExecutors: func(ctx context.Context, cfg config.Config, binary func(core.Platform) (string, error), o InstallOptions) error {
+			return installExecutors(ctx, runtime.GOOS, cfg, binary, o)
 		},
 		UninstallExecutors: func(ctx context.Context, cfg config.Config, purge bool) error {
 			return uninstallExecutors(ctx, runtime.GOOS, cfg, purge)

@@ -103,13 +103,20 @@ func ghToken(ctx context.Context, user string) (string, error) {
 	return tok, nil
 }
 
+// InstallOptions are setup's choices for the executor install.
+type InstallOptions struct {
+	// MacOSGuests pulls the macOS VM image even when free disk doesn't
+	// cover it with the usual margin (setup --macos-guests).
+	MacOSGuests bool
+}
+
 // installExecutors runs this OS's executor Install.
-func installExecutors(ctx context.Context, goos string, cfg config.Config, binary func(core.Platform) (string, error)) error {
+func installExecutors(ctx context.Context, goos string, cfg config.Config, binary func(core.Platform) (string, error), o InstallOptions) error {
 	switch goos {
 	case "linux":
 		return linux.Install(ctx, linux.Options{StateDir: cfg.StateDir, CacheDir: cfg.CacheDir, Binary: binary})
 	case "darwin":
-		return darwin.Install(ctx, darwin.Options{StateDir: cfg.StateDir, CacheDir: cfg.CacheDir, Binary: binary})
+		return darwin.Install(ctx, darwin.Options{StateDir: cfg.StateDir, CacheDir: cfg.CacheDir, Binary: binary, MacOSGuests: o.MacOSGuests})
 	case "windows":
 		return windows.Install(ctx, windows.Options{StateDir: cfg.StateDir, CacheDir: cfg.CacheDir, Binary: binary})
 	}

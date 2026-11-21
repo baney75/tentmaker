@@ -87,17 +87,14 @@ jobs:
           rc=0
           sudo tentmaker setup --yes --json --no-mesh --no-gh --memory 2GiB --boost-memory 4GiB >"$RUNNER_TEMP/setup.json" || rc=$?
           cat "$RUNNER_TEMP/setup.json"
-          if [ "$RUNNER_OS" = macOS ] && [ "$rc" = 1 ]; then
-            # A hosted Mac has far less than the ~130 GiB the Tart VM images
-            # need, so setup must refuse the sandbox before downloading
-            # anything, fail only that step, and still start the service.
-            jq -e '[.steps[] | select(.status == "fail")] | length == 1' "$RUNNER_TEMP/setup.json" >/dev/null &&
-              jq -e '.steps[] | select(.step == "sandbox") | .status == "fail" and (.detail | test("GiB free where Tart keeps VMs"))' "$RUNNER_TEMP/setup.json" >/dev/null ||
-              { echo "::error::setup failed for a reason other than the disk room for the Tart images"; exit 1; }
-            echo "setup refused the Tart sandbox for lack of disk, as it should on a hosted Mac"
-          else
-            test "$rc" = 0 || { echo "::error::setup exited $rc"; exit 1; }
-            jq -e '.ok == true' "$RUNNER_TEMP/setup.json" >/dev/null || { echo "::error::setup ok is not true"; exit 1; }
+          test "$rc" = 0 || { echo "::error::setup exited $rc"; exit 1; }
+          jq -e '.ok == true' "$RUNNER_TEMP/setup.json" >/dev/null || { echo "::error::setup ok is not true"; exit 1; }
+          if [ "$RUNNER_OS" = macOS ]; then
+            # A hosted Mac has far less than the ~130 GiB the macOS image
+            # plus a job need, so setup skips the macOS guests, succeeds,
+            # and its doctor says how to turn them on.
+            jq -e '[.doctor.checks[] | select(.what | test("^macOS guests are off: the macOS image needs [0-9]+ GiB, [0-9]+ GiB free; run sudo tentmaker setup --macos-guests when you have room"))] | length == 1' "$RUNNER_TEMP/setup.json" >/dev/null ||
+              { echo "::error::setup's doctor did not say macOS guests are off"; exit 1; }
           fi
           jq -e '.service == "running"' "$RUNNER_TEMP/setup.json" >/dev/null || { echo "::error::setup says the service is not running"; exit 1; }
           jq -e --arg v "$TM_VERSION" '.doctor.version == $v' "$RUNNER_TEMP/setup.json" >/dev/null || { echo "::error::setup's doctor reports another version"; exit 1; }
@@ -131,9 +128,10 @@ jobs:
           if [ "$ok" = true ]; then want=0; else want=1; fi
           test "$rc" = "$want" || { echo "::error::doctor exit $rc does not match ok=$ok"; exit 1; }
           if [ "$RUNNER_OS" = macOS ]; then
-            # No Tart here: doctor must say so, with a fix.
-            jq -e '[.checks[] | select(.status == "fail" and .check == "tart" and (.what | test("not installed")) and (.fix // "") != "")] | length > 0' "$RUNNER_TEMP/doctor.json" >/dev/null ||
-              { echo "::error::doctor did not report Tart missing with a fix"; exit 1; }
+            # macOS guests are off for lack of disk: a warning with a fix,
+            # not a failure.
+            jq -e '[.checks[] | select(.status == "warn" and (.what | test("^macOS guests are off: the macOS image needs [0-9]+ GiB, [0-9]+ GiB free")) and (.fix // "") != "")] | length == 1' "$RUNNER_TEMP/doctor.json" >/dev/null ||
+              { echo "::error::doctor did not say macOS guests are off"; exit 1; }
           else
             test "$ok" = true || { echo "::error::doctor found problems"; exit 1; }
           fi

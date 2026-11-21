@@ -264,6 +264,20 @@ func TestDoctorFindings(t *testing.T) {
 	if len(rep.ProblemList()) != rep.Problems+rep.Warnings {
 		t.Error("problem list count")
 	}
+	// An executor's notes show as warnings, not problems.
+	noted := Doctor(context.Background(), DoctorInput{
+		Version: "1.0.0", ConfigPath: "/etc/tentmaker/config.toml", ConfigExists: true, Config: cfg,
+		Executors: []core.Executor{notedExec{ex}},
+	})
+	var note *Finding
+	for i, f := range noted.Checks {
+		if f.Check == "macos guests" {
+			note = &noted.Checks[i]
+		}
+	}
+	if note == nil || note.Status != Warn || !strings.HasPrefix(note.What, "macOS guests are off") || note.Fix == "" {
+		t.Errorf("executor note: %+v", note)
+	}
 	rep = Doctor(context.Background(), DoctorInput{ConfigPath: "/x", Config: cfg})
 	if rep.OK || !strings.Contains(fmt.Sprint(rep.Checks), "not set up yet") {
 		t.Errorf("not set up: %+v", rep)
@@ -280,4 +294,11 @@ func TestChannel(t *testing.T) {
 	if goos, goarch := GoPlatform(core.Platform{OS: "macos", Arch: "x64"}); goos != "darwin" || goarch != "amd64" {
 		t.Error("go platform")
 	}
+}
+
+// notedExec is an executor with a doctor note.
+type notedExec struct{ core.Executor }
+
+func (notedExec) Notes(context.Context) []core.Problem {
+	return []core.Problem{{Check: "macos guests", What: "macOS guests are off: the macOS image needs 130 GiB, 60 GiB free; run sudo tentmaker setup --macos-guests when you have room", Fix: "sudo tentmaker setup --macos-guests"}}
 }

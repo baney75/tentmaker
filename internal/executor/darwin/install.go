@@ -2,6 +2,7 @@ package darwin
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -13,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/baney75/tentmaker/internal/config"
 	"github.com/baney75/tentmaker/internal/core"
 )
 
@@ -24,6 +26,46 @@ const (
 	diskImageLinux  = 10 << 30
 	minMacOSRelease = 26
 )
+
+// The guest images Install pulled, so the executor offers only those.
+const guestsFile = "guests.json"
+
+type guestState struct {
+	Platforms []string `json:"platforms"`
+}
+
+func (e *Executor) guestsPath() string { return filepath.Join(e.base, guestsFile) }
+
+// images is the pinned images this Mac runs: the platforms Install pulled
+// (guests.json), or every pinned image when no install recorded any.
+func (e *Executor) images() map[string]string {
+	b, err := os.ReadFile(e.guestsPath())
+	if err != nil {
+		return e.o.Images
+	}
+	var g guestState
+	if json.Unmarshal(b, &g) != nil {
+		return e.o.Images
+	}
+	out := map[string]string{}
+	for _, p := range g.Platforms {
+		if img := e.o.Images[p]; img != "" {
+			out[p] = img
+		}
+	}
+	return out
+}
+
+func (e *Executor) writeGuests(images map[string]string) error {
+	if err := os.MkdirAll(e.base, 0o700); err != nil {
+		return err
+	}
+	b, err := json.Marshal(guestState{Platforms: sortedKeys(images)})
+	if err != nil {
+		return err
+	}
+	return config.WriteAtomic(e.guestsPath(), b, 0o644)
+}
 
 func (e *Executor) softnetPath() string { return filepath.Join(e.o.LibDir, "bin", "softnet") }
 func (e *Executor) tartApp() string     { return filepath.Join(e.o.LibDir, "tart", "tart.app") }
@@ -60,7 +102,18 @@ func (e *Executor) Preflight(ctx context.Context) []core.Problem {
 	if err != nil {
 		add("images", err.Error(), setup)
 	}
-	for plat, img := range e.o.Images {
+	images := e.images()
+	free, ferr := e.freeDisk(ctx)
+	if len(images) == 0 {
+		what := "no VM image is installed, so this Mac runs no jobs"
+		if ferr == nil {
+			what = fmt.Sprintf("no VM image is installed: the Linux image needs %d GiB, %d GiB free where Tart keeps VMs",
+				e.diskNeed(e.only("linux/arm64"), pulled)>>30, free>>30)
+		}
+		add("images", what, "free disk space, then run sudo tentmaker setup")
+		return ps
+	}
+	for plat, img := range images {
 		if img == "" {
 			continue
 		}
@@ -71,20 +124,52 @@ func (e *Executor) Preflight(ctx context.Context) []core.Problem {
 			add("images", plat+" image is not pulled yet", setup)
 		}
 	}
-	need := e.diskNeed(pulled)
-	if free, err := e.freeDisk(ctx); err != nil {
-		add("disk", "can't read free disk space: "+err.Error(), "check that df works")
+	need := e.diskNeed(images, pulled)
+	if ferr != nil {
+		add("disk", "can't read free disk space: "+ferr.Error(), "check that df works")
 	} else if free < need {
 		add("disk", fmt.Sprintf("%d GiB free where Tart keeps VMs; want %d GiB", free>>30, need>>30), "free disk space")
 	}
 	return ps
 }
 
-// diskNeed is the room on Tart's volume for one job VM plus every pinned
-// image not in pulled.
-func (e *Executor) diskNeed(pulled []string) int64 {
+// Notes implements the doctor's optional notes: macOS guests that are off
+// for lack of disk. Not a problem: the Mac still runs Linux guests.
+func (e *Executor) Notes(ctx context.Context) []core.Problem {
+	mac := e.o.Images["macos/arm64"]
+	if e.o.HostArch != "arm64" || mac == "" || e.images()["macos/arm64"] != "" {
+		return nil
+	}
+	fix := "sudo tentmaker setup --macos-guests"
+	what := "macOS guests are off; run sudo tentmaker setup --macos-guests when you have room"
+	pulled, _ := e.pulledImages(ctx)
+	if free, err := e.freeDisk(ctx); err == nil {
+		with := map[string]string{"macos/arm64": mac}
+		for k, v := range e.images() {
+			with[k] = v
+		}
+		if len(e.images()) == 0 {
+			with = e.o.Images
+		}
+		what = fmt.Sprintf("macOS guests are off: the macOS image needs %d GiB, %d GiB free; run sudo tentmaker setup --macos-guests when you have room",
+			e.diskNeed(with, pulled)>>30, free>>30)
+	}
+	return []core.Problem{{Check: "macos guests", What: what, Fix: fix}}
+}
+
+// only is the pinned image for plat, as a map.
+func (e *Executor) only(plat string) map[string]string {
+	if img := e.o.Images[plat]; img != "" {
+		return map[string]string{plat: img}
+	}
+	return map[string]string{}
+}
+
+// diskNeed is the room on Tart's volume for one job VM plus every image in
+// images not in pulled.
+func (e *Executor) diskNeed(images map[string]string, pulled []string) int64 {
 	need := int64(diskPerVM)
-	for plat, img := range e.o.Images {
+	for plat, img := range images {
 		if img == "" || contains(pulled, img) {
 			continue
 		}
@@ -188,8 +273,30 @@ func Install(ctx context.Context, o Options) error {
 	if err != nil {
 		return fmt.Errorf("read free disk space: %v", err)
 	}
-	if need := e.diskNeed(pulled); free < need {
-		return fmt.Errorf("%d GiB free where Tart keeps VMs, and the VM images plus one job need %d GiB; free disk space, then run setup again", free>>30, need>>30)
+	want := e.o.Images
+	needAll := e.diskNeed(want, pulled)
+	switch {
+	case e.o.Images["macos/arm64"] == "" || free >= needAll:
+	case e.o.MacOSGuests:
+		// Asked for: skip the room for a job, but never start a pull the
+		// disk can't hold.
+		if imgs := needAll - diskPerVM; free < imgs {
+			return fmt.Errorf("%d GiB free where Tart keeps VMs, and the VM images need %d GiB; free disk space, then run setup again", free>>30, imgs>>30)
+		}
+	default:
+		want = e.only("linux/arm64")
+		e.log.Warn("macOS guests are off: not enough disk for the macOS image", "need_gib", needAll>>30, "free_gib", free>>30)
+	}
+	forced := e.o.MacOSGuests && want["macos/arm64"] != ""
+	if len(want) > 0 && !forced && free < e.diskNeed(want, pulled) {
+		want = map[string]string{}
+	}
+	if len(want) == 0 {
+		// Nothing fits: download nothing. Setup still installs the service,
+		// and doctor says what to free.
+		e.log.Warn("no VM image fits; this Mac runs no jobs until there is room", "free_gib", free>>30,
+			"need_gib", e.diskNeed(e.only("linux/arm64"), pulled)>>30)
+		return e.writeGuests(want)
 	}
 	for _, d := range []struct {
 		path string
@@ -282,8 +389,8 @@ func Install(ctx context.Context, o Options) error {
 
 	// Pull the pinned images (each is large), then delete older pulls of
 	// exactly the same repositories.
-	for _, plat := range sortedKeys(e.o.Images) {
-		img := e.o.Images[plat]
+	for _, plat := range sortedKeys(want) {
+		img := want[plat]
 		if img == "" {
 			continue
 		}
@@ -300,7 +407,10 @@ func Install(ctx context.Context, o Options) error {
 			return fmt.Errorf("delete superseded image %s: %v", old, err)
 		}
 	}
-	e.log.Info("installed", "executor", Name, "tart", TartVersion, "softnet", SoftnetVersion)
+	if err := e.writeGuests(want); err != nil {
+		return err
+	}
+	e.log.Info("installed", "executor", Name, "tart", TartVersion, "softnet", SoftnetVersion, "guests", strings.Join(sortedKeys(want), ","))
 	return nil
 }
 

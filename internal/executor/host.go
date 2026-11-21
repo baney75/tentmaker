@@ -40,7 +40,9 @@ func forHost(goos, goarch string, cfg config.Config, binary func(core.Platform) 
 			Fix:   "run Tentmaker on Linux, macOS or Windows",
 		}}
 	}
-	if len(e.Platforms()) == 0 {
+	// An Apple silicon Mac keeps its executor even with no guest image
+	// installed (no disk room yet): its Preflight says what to free.
+	if len(e.Platforms()) == 0 && !(goos == "darwin" && goarch == "arm64") {
 		fix := "use an x64 or arm64 machine"
 		if goos == "darwin" {
 			fix = "use a Mac with Apple silicon; Tart needs it"

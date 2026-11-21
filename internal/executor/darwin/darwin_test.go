@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -790,33 +791,141 @@ func TestInstallAndUninstall(t *testing.T) {
 	}
 }
 
-// A Mac without room for the images is refused before anything is
-// downloaded; a pull that runs out of space would fill the user's disk.
-func TestInstallNeedsDiskFirst(t *testing.T) {
-	v := newTenv(t)
-	v.readyHost()
-	v.f.images = nil
+// dfFree makes df report gib GiB free.
+func (v *tenv) dfFree(gib int64) {
 	inner := v.f.respond
 	v.f.respond = func(c Cmd) (Result, bool, error) {
 		if c.Path == "/bin/df" {
-			return Result{Stdout: "Filesystem 1024-blocks Used Available Capacity Mounted\n/dev/x 1 1 31457280 1% /\n"}, true, nil
+			return Result{Stdout: fmt.Sprintf("Filesystem 1024-blocks Used Available Capacity Mounted\n/dev/x 1 1 %d 1%% /\n", gib<<20)}, true, nil
 		}
 		return inner(c)
 	}
-	v.f.fetchBody[TartURL] = []byte("tart tarball")
-	err := Install(context.Background(), v.o)
-	if err == nil || !strings.Contains(err.Error(), "30 GiB free") || !strings.Contains(err.Error(), "need 130 GiB") {
-		t.Fatalf("Install = %v, want a refusal naming the free and needed space", err)
+}
+
+func (v *tenv) installable(t *testing.T) {
+	t.Helper()
+	tartTar, snTar := []byte("tart tarball"), []byte("softnet tarball")
+	v.f.fetchBody[TartURL] = tartTar
+	v.f.fetchBody[SoftnetURL] = snTar
+	v.o.Pins = &Pins{TartSHA256: sum(tartTar), SoftnetSHA256: sum(snTar)}
+	inner := v.f.respond
+	v.f.respond = func(c Cmd) (Result, bool, error) {
+		if c.Path == "/usr/bin/tar" {
+			dir := c.Args[3]
+			if strings.Contains(c.Args[1], "softnet") {
+				os.WriteFile(filepath.Join(dir, "softnet"), []byte("softnet-bin"), 0o755)
+			} else {
+				os.MkdirAll(filepath.Join(dir, "tart.app", "Contents", "MacOS"), 0o755)
+				os.WriteFile(filepath.Join(dir, "tart.app", "Contents", "MacOS", "tart"), []byte("tart-bin"), 0o775)
+			}
+			return Result{}, true, nil
+		}
+		if len(c.Args) > 1 && c.Args[0] == "pull" {
+			v.f.images = append(v.f.images, c.Args[1])
+		}
+		return inner(c)
 	}
+}
+
+func (v *tenv) pulls() []string {
 	v.f.mu.Lock()
 	defer v.f.mu.Unlock()
-	if len(v.f.fetches) != 0 {
-		t.Fatalf("downloaded %v before checking the disk", v.f.fetches)
-	}
+	var out []string
 	for _, c := range v.f.cmds {
-		if strings.Contains(strings.Join(c.Args, " "), "pull") {
-			t.Fatalf("ran %v", c)
+		if len(c.Args) > 1 && c.Args[0] == "pull" {
+			out = append(out, c.Args[1])
 		}
+	}
+	return out
+}
+
+// A normal Mac has room for the Linux image but not the macOS one: setup
+// installs Linux guests only, and doctor says how to add macOS ones.
+func TestInstallSkipsMacOSWithoutRoom(t *testing.T) {
+	v := newTenv(t)
+	ctx := context.Background()
+	v.readyHost()
+	v.f.images = nil
+	v.dfFree(60)
+	v.installable(t)
+	must(t, Install(ctx, v.o))
+	if got := v.pulls(); len(got) != 1 || got[0] != ImageLinux {
+		t.Fatalf("pulled %v, want only the Linux image", got)
+	}
+	e := New(v.o)
+	if got := e.Platforms(); len(got) != 1 || got[0] != (core.Platform{OS: "linux", Arch: "arm64"}) {
+		t.Fatalf("platforms %v", got)
+	}
+	for _, p := range e.Preflight(ctx) {
+		if p.Check == "images" || p.Check == "disk" {
+			t.Errorf("preflight: %+v", p)
+		}
+	}
+	notes := e.Notes(ctx)
+	if len(notes) != 1 || notes[0].What != "macOS guests are off: the macOS image needs 120 GiB, 60 GiB free; run sudo tentmaker setup --macos-guests when you have room" || notes[0].Fix == "" {
+		t.Fatalf("notes %+v", notes)
+	}
+	if err := e.Start(ctx, spec("mac-job", core.KindRunner, "macos")); err == nil {
+		t.Fatal("started a macOS job without the image")
+	}
+
+	// --macos-guests pulls it once the image itself fits, margin or not.
+	v.o.MacOSGuests = true
+	if err := Install(ctx, v.o); err == nil || !strings.Contains(err.Error(), "60 GiB free") {
+		t.Fatalf("forced without room for the image: %v", err)
+	}
+	v.dfFree(100)
+	must(t, Install(ctx, v.o))
+	if got := v.pulls(); got[len(got)-1] != ImageMacOS {
+		t.Fatalf("pulls %v", got)
+	}
+	e = New(v.o)
+	if len(e.Platforms()) != 2 || len(e.Notes(ctx)) != 0 {
+		t.Fatalf("platforms %v notes %v", e.Platforms(), e.Notes(ctx))
+	}
+	// Plenty of room: both, with no flag.
+	w := newTenv(t)
+	w.readyHost()
+	w.f.images = nil
+	w.dfFree(500)
+	w.installable(t)
+	must(t, Install(ctx, w.o))
+	if got := w.pulls(); len(got) != 2 {
+		t.Fatalf("pulled %v with room for both", got)
+	}
+}
+
+// Without room even for the Linux image, Install downloads nothing and
+// succeeds, so setup still installs the service; doctor names the problem.
+func TestInstallWithoutRoomForAnyImage(t *testing.T) {
+	v := newTenv(t)
+	ctx := context.Background()
+	v.readyHost()
+	v.f.images = nil
+	v.dfFree(30)
+	v.f.fetchBody[TartURL] = []byte("tart tarball")
+	must(t, Install(ctx, v.o))
+	v.f.mu.Lock()
+	fetches := len(v.f.fetches)
+	v.f.mu.Unlock()
+	if fetches != 0 || len(v.pulls()) != 0 {
+		t.Fatalf("downloaded without room: fetches %d pulls %v", fetches, v.pulls())
+	}
+	e := New(v.o)
+	if got := e.Platforms(); len(got) != 0 {
+		t.Fatalf("platforms %v", got)
+	}
+	var found bool
+	for _, p := range e.Preflight(ctx) {
+		if p.Check == "images" && strings.Contains(p.What, "the Linux image needs 50 GiB, 30 GiB free") && p.Fix != "" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("preflight %+v", e.Preflight(ctx))
+	}
+	if n := e.Notes(ctx); len(n) != 1 || !strings.HasPrefix(n[0].What, "macOS guests are off: the macOS image needs 130 GiB, 30 GiB free") {
+		t.Fatalf("notes %+v", n)
 	}
 }
 

@@ -915,3 +915,17 @@ func TestMCPUpdateSwitchesChannel(t *testing.T) {
 		t.Fatalf("a rolled-back update switched the channel to %q", got)
 	}
 }
+
+func TestSetupMacOSGuestsFlag(t *testing.T) {
+	f := newFixture(t)
+	f.isRoot = true
+	if code := f.run("", "setup", "--yes", "--json", "--no-mesh", "--no-gh", "--no-service", "--macos-guests"); code != ExitOK {
+		t.Fatalf("exit %d %s %s", code, f.stdout, f.stderr)
+	}
+	if !f.installOpts.MacOSGuests {
+		t.Fatal("--macos-guests did not reach the executor install")
+	}
+	if code := f.run("", "setup", "--yes", "--json", "--no-mesh", "--no-gh", "--no-service"); code != ExitOK || f.installOpts.MacOSGuests {
+		t.Fatalf("without the flag: exit %d opts %+v", code, f.installOpts)
+	}
+}

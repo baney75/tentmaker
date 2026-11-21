@@ -184,24 +184,25 @@ func (d *fakeDaemon) Reload(ctx context.Context) error {
 
 // fixture is one fake host.
 type fixture struct {
-	t        *testing.T
-	root     string
-	env      *Env
-	store    *memStore
-	svc      *fakeService
-	forge    *fakeforge.Forge
-	ex       *fakeexec.Executor
-	up       *fakeUpdater
-	stdout   *bytes.Buffer
-	stderr   *bytes.Buffer
-	isRoot   bool
-	verified []string // credentials VerifyToken saw
-	ghValue  string
-	remote   []mesh.InstallArgs
-	execInst int
-	execUnin int
-	daemon   *fakeDaemon
-	mu       sync.Mutex
+	t           *testing.T
+	root        string
+	env         *Env
+	store       *memStore
+	svc         *fakeService
+	forge       *fakeforge.Forge
+	ex          *fakeexec.Executor
+	up          *fakeUpdater
+	stdout      *bytes.Buffer
+	stderr      *bytes.Buffer
+	isRoot      bool
+	verified    []string // credentials VerifyToken saw
+	ghValue     string
+	remote      []mesh.InstallArgs
+	execInst    int
+	installOpts InstallOptions
+	execUnin    int
+	daemon      *fakeDaemon
+	mu          sync.Mutex
 }
 
 // deadAddr is a loopback port with nothing listening.
@@ -255,9 +256,10 @@ func newFixture(t *testing.T) *fixture {
 		Executors: func(cfg config.Config, bin func(core.Platform) (string, error), log *slog.Logger) ([]core.Executor, []core.Problem) {
 			return []core.Executor{f.ex}, nil
 		},
-		InstallExecutors: func(ctx context.Context, cfg config.Config, bin func(core.Platform) (string, error)) error {
+		InstallExecutors: func(ctx context.Context, cfg config.Config, bin func(core.Platform) (string, error), o InstallOptions) error {
 			f.mu.Lock()
 			f.execInst++
+			f.installOpts = o
 			f.mu.Unlock()
 			return nil
 		},
