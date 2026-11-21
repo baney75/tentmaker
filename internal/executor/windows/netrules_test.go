@@ -247,3 +247,39 @@ func TestFirewallRulesAvoidRefusedIPv6(t *testing.T) {
 		}
 	}
 }
+
+// Windows Firewall refuses a rule whose remote address is an IPv6
+// loopback, unspecified or multicast address ("An unspecified, multicast,
+// broadcast, or loopback IPv6 address was specified"), and setup then
+// fails. No rule may carry one, even when Windows lists ::1 as a resolver.
+func TestFirewallRulesWindowsAccepts(t *testing.T) {
+	bad := func(a netip.Addr) bool {
+		return a.Is6() && (a.IsLoopback() || a.IsUnspecified() || a.IsMulticast())
+	}
+	for _, lan := range []bool{false, true} {
+		p := NetPolicy{SID: testSID, AllowLAN: lan, Resolvers: []netip.Addr{
+			netip.MustParseAddr("168.63.129.16"), netip.MustParseAddr("::1"), netip.MustParseAddr("::"),
+			netip.MustParseAddr("fec0:0:0:ffff::1"), netip.MustParseAddr("fd7a:115c:a1e0::53"),
+		}}
+		for _, r := range FirewallRules(p) {
+			for _, s := range r.RemoteAddress {
+				var ends []netip.Addr
+				if pr, err := netip.ParsePrefix(s); err == nil {
+					ends = []netip.Addr{pr.Masked().Addr(), lastAddr(pr)}
+					if pr.Addr().Is6() && (pr.Contains(netip.IPv6Loopback()) || pr.Contains(netip.IPv6Unspecified())) {
+						t.Errorf("allow_lan=%t: rule %s covers ::1 or :: with %s", lan, r.Name, s)
+					}
+				} else if lo, hi, ok := strings.Cut(s, "-"); ok {
+					ends = []netip.Addr{netip.MustParseAddr(lo), netip.MustParseAddr(hi)}
+				} else {
+					ends = []netip.Addr{netip.MustParseAddr(s)}
+				}
+				for _, a := range ends {
+					if bad(a) {
+						t.Errorf("allow_lan=%t: rule %s has %s, which Windows Firewall refuses", lan, r.Name, s)
+					}
+				}
+			}
+		}
+	}
+}
