@@ -213,7 +213,7 @@ func toolAlias(s string) string {
 // toolFinder finds tools on the job's PATH or under the tools folder,
 // as local-ci.nu's find-tool does.
 type toolFinder struct {
-	dir string // <state>/tools or $TENTMAKER_TOOLS
+	dir string // $TENTMAKER_TOOLS: <state>/tools, set by the executor
 	src string // the checkout, for file: specs
 }
 
@@ -248,7 +248,7 @@ func (f toolFinder) find(ctx context.Context, tool, spec, pathList string) (dir,
 	if w.series == "" {
 		example = "<version>"
 	}
-	msg := fmt.Sprintf("%s %s is not installed on this device.\nFix: put %s %s on PATH, or unpack it so %s exists (set TENTMAKER_TOOLS to use another folder).",
+	msg := fmt.Sprintf("%s %s is not installed on this device.\nFix: put %s %s on PATH, or unpack it (as root or Administrator) so %s exists.",
 		tool, w.desc, tool, w.desc, filepath.Join(f.dir, tool+"-"+example, "bin", exeName(bin)))
 	if len(seen) > 0 {
 		msg += "\nFound, but not a fit: " + strings.Join(seen, "; ")

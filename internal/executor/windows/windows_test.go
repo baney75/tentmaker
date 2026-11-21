@@ -436,6 +436,10 @@ func TestInstall(t *testing.T) {
 	if !slices.Equal(a.dacls[v.e.libDir()], libACL(testSID)) {
 		t.Fatalf("lib ACL = %v", a.dacls[v.e.libDir()])
 	}
+	// The runner user reads and runs toolchains from the tools folder.
+	if !slices.Equal(a.dacls[v.e.toolsDir()], libACL(testSID)) {
+		t.Fatalf("tools ACL = %v", a.dacls[v.e.toolsDir()])
+	}
 	for _, f := range []string{
 		filepath.Join(v.e.template(), "run.cmd"),
 		filepath.Join(v.e.template(), "externals", "node20", "node.exe"),
@@ -607,6 +611,10 @@ func TestStartCheck(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(jd, "out")); err != nil {
 		t.Fatal(err)
+	}
+	// Setup actions find toolchains in <state>\tools, the folder the docs name.
+	if got := envMap(p.Env)["TENTMAKER_TOOLS"]; got != v.e.toolsDir() || got != filepath.Join(v.e.o.StateDir, "tools") {
+		t.Fatalf("TENTMAKER_TOOLS = %q, want %q", got, filepath.Join(v.e.o.StateDir, "tools"))
 	}
 	v.assertNoSecret()
 }

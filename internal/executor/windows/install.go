@@ -136,6 +136,12 @@ func Install(ctx context.Context, o Options) error {
 	if err := e.api.SetDACL(e.libDir(), libACL(sid)); err != nil {
 		return fmt.Errorf("protect %s: %w", e.libDir(), err)
 	}
+	if err := os.MkdirAll(e.toolsDir(), 0o755); err != nil {
+		return err
+	}
+	if err := e.api.SetDACL(e.toolsDir(), libACL(sid)); err != nil {
+		return fmt.Errorf("protect %s: %w", e.toolsDir(), err)
+	}
 	if err := config.WriteAtomic(e.script(), []byte(jobRunnerPS1), 0o644); err != nil {
 		return err
 	}

@@ -278,6 +278,7 @@ func Install(ctx context.Context, o Options) error {
 		{filepath.Join(e.p.Lib, "guest"), 0o755, 0, 0},
 		{e.p.Opt, 0o755, 0, 0},
 		{filepath.Join(e.o.CacheDir, "dist"), 0o755, 0, 0},
+		{e.toolsDir(), 0o755, 0, 0},
 	}
 	for _, d := range dirs {
 		if err := os.MkdirAll(d.path, d.mode); err != nil {

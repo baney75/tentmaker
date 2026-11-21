@@ -32,7 +32,8 @@ const (
 // copy of the log. The job's timeout covers the download too.
 //
 // Tools for setup steps come from PATH or $TENTMAKER_TOOLS/<tool>-<version>/
-// (default <outDir>/../../tools); checks mode never downloads toolchains.
+// (the executors set it to <state>/tools; without it, <outDir>/../../tools);
+// checks mode never downloads toolchains.
 func RunBundle(ctx context.Context, b core.CheckBundle, outDir string, log io.Writer) core.CheckResult {
 	start := time.Now()
 	host, _ := os.Hostname()
