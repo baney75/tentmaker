@@ -366,7 +366,9 @@ func (e *Executor) unitArgs(spec core.ExecSpec, kind string, uid, gid int, stdin
 	dir := e.jobDir(spec.Name)
 	rt := e.runtimeDir(uid)
 	args := []string{
-		"--quiet", "--collect", "--no-ask-password",
+		// No --collect: a failed unit stays loaded until Clean, so
+		// CheckResult can read why it ended (Result=oom-kill).
+		"--quiet", "--no-ask-password",
 		"--unit=" + unitName(spec.Name),
 		"--slice=" + Slice,
 		"--uid=" + strconv.Itoa(uid),
@@ -374,6 +376,8 @@ func (e *Executor) unitArgs(spec core.ExecSpec, kind string, uid, gid int, stdin
 		"-p", "Type=exec",
 		"-p", "MemoryMax=" + strconv.FormatInt(spec.Limits.MemoryBytes, 10),
 		"-p", "MemorySwapMax=0",
+		// The kernel's OOM kill ends the whole job, not one process of it.
+		"-p", "OOMPolicy=stop",
 		"-p", "CPUQuota=" + cpuQuota(spec.Limits.CPUs),
 		"-p", "TasksMax=4096",
 		"-p", "Nice=10",
@@ -594,6 +598,8 @@ func (e *Executor) Clean(ctx context.Context, name string) error {
 		return fmt.Errorf("job %s still runs; stop it first", name)
 	}
 	os.Remove(e.secretPath(name))
+	// A failed unit stays loaded (no --collect) until this.
+	e.h.Run(ctx, Cmd{Path: "systemctl", Args: []string{"reset-failed", unitName(name)}, Timeout: 30 * time.Second})
 	return e.removeJobDir(ctx, e.jobDir(name))
 }
 
@@ -800,7 +806,26 @@ func (e *Executor) CheckResult(ctx context.Context, name string) (core.CheckResu
 	if err := checkName(name); err != nil {
 		return core.CheckResult{}, err
 	}
-	return readCheckResult(e.jobsDir(), name+"/out", name), nil
+	res := readCheckResult(e.jobsDir(), name+"/out", name)
+	// The OOM stop either killed check-run before it wrote a result or made
+	// it report "cancelled"; say what happened instead.
+	out, err := e.h.Run(ctx, Cmd{Path: "systemctl", Args: []string{"show", "--property=Result", "--property=MemoryMax", unitName(name)}, Timeout: 30 * time.Second})
+	if err == nil {
+		props := map[string]string{}
+		for _, line := range strings.Split(out.Stdout, "\n") {
+			if k, v, ok := strings.Cut(strings.TrimSpace(line), "="); ok {
+				props[k] = v
+			}
+		}
+		if props["Result"] == "oom-kill" {
+			res.State = "failure"
+			res.Description = "ran out of memory"
+			if n, err := strconv.ParseInt(props["MemoryMax"], 10, 64); err == nil && n > 0 {
+				res.Description += fmt.Sprintf(" (the job's limit is %.1f GiB)", float64(n)/(1<<30))
+			}
+		}
+	}
+	return res, nil
 }
 
 // redact removes a secret from text bound for an error or a log.

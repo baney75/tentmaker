@@ -333,9 +333,9 @@ func TestStartRunner(t *testing.T) {
 	jd := v.e.jobDir("job-abc")
 	rt := filepath.Join(v.dir, "run-user", "1234")
 	want := []string{
-		"--quiet", "--collect", "--no-ask-password",
+		"--quiet", "--no-ask-password",
 		"--unit=tentmaker-job-job-abc.service", "--slice=tentmaker.slice", "--uid=1234", "--gid=1235",
-		"-p", "Type=exec", "-p", "MemoryMax=2147483648", "-p", "MemorySwapMax=0", "-p", "CPUQuota=150%",
+		"-p", "Type=exec", "-p", "MemoryMax=2147483648", "-p", "MemorySwapMax=0", "-p", "OOMPolicy=stop", "-p", "CPUQuota=150%",
 		"-p", "TasksMax=4096", "-p", "Nice=10", "-p", "IOSchedulingClass=idle", "-p", "RuntimeMaxSec=5400",
 		"-p", "TimeoutStopSec=30", "-p", "NoNewPrivileges=yes", "-p", "PrivateTmp=yes",
 		"-p", "InaccessiblePaths=-" + rt + "/bus", "-p", "InaccessiblePaths=-" + rt + "/systemd",
@@ -742,5 +742,47 @@ func TestPlatforms(t *testing.T) {
 	pin, _ := PinFor("arm64")
 	if pin.URL() != "https://github.com/actions/runner/releases/download/v"+RunnerVersion+"/actions-runner-linux-arm64-"+RunnerVersion+".tar.gz" {
 		t.Fatal(pin.URL())
+	}
+}
+
+// A job the kernel killed for memory says so. Before this, systemd-run
+// --collect dropped the unit's Result before Tentmaker read it, so the
+// status said "cancelled at step ..." (check-run caught the SIGTERM from
+// OOMPolicy=stop) or "check-run wrote no result.json" (the OOM killer
+// picked check-run itself).
+func TestCheckResultOutOfMemory(t *testing.T) {
+	v := newEnv(t)
+	v.installed(t)
+	ctx := context.Background()
+	if strings.Contains(strings.Join(v.e.unitArgs(spec("job-x", "runner"), core.KindCheck, 1234, 1234, "/in"), " "), "--collect") {
+		t.Fatal("--collect unloads a failed unit before CheckResult reads its Result")
+	}
+	v.f.respond = func(c Cmd) (Result, error) {
+		if c.Path == "systemctl" && strings.Join(c.Args, " ") == "show --property=Result --property=MemoryMax "+unitName("chk-oom") {
+			return Result{Stdout: "Result=oom-kill\nMemoryMax=2147483648\n"}, nil
+		}
+		return Result{}, nil
+	}
+	out := filepath.Join(v.e.jobDir("chk-oom"), "out")
+	must(t, os.MkdirAll(out, 0o700))
+	r, err := v.e.CheckResult(ctx, "chk-oom")
+	must(t, err)
+	if r.State != "failure" || r.Description != "ran out of memory (the job's limit is 2.0 GiB)" {
+		t.Fatalf("no result.json after an OOM kill: %+v", r)
+	}
+	b, _ := json.Marshal(core.CheckResult{State: "error", Description: "cancelled at step Run x, 1s", Duration: time.Second})
+	must(t, os.WriteFile(filepath.Join(out, "result.json"), b, 0o600))
+	r, err = v.e.CheckResult(ctx, "chk-oom")
+	must(t, err)
+	if r.State != "failure" || r.Description != "ran out of memory (the job's limit is 2.0 GiB)" || r.Duration != time.Second {
+		t.Fatalf("cancelled by the OOM stop: %+v", r)
+	}
+
+	// Clean unloads the failed unit the job left.
+	v.f.respond = showResponder("failed", "loaded", false)
+	n := len(v.f.cmds)
+	must(t, v.e.Clean(ctx, "chk-oom"))
+	if !strings.Contains(strings.Join(v.f.commands()[n:], "\n"), "systemctl reset-failed "+unitName("chk-oom")) {
+		t.Error("Clean left the failed unit loaded")
 	}
 }
