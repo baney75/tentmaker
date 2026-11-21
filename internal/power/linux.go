@@ -30,12 +30,19 @@ type supply struct {
 	chargeNow, chargeFull     string
 }
 
-func readFileTrim(fsys fs.FS, name string) string {
+// readField reads one sysfs attribute. A missing optional attribute is
+// empty; any other read error is returned, so the probe fails closed
+// instead of guessing (review r1 partB sol-F6).
+func readField(fsys fs.FS, name string, required bool) (string, error) {
 	b, err := fs.ReadFile(fsys, name)
-	if err != nil {
-		return ""
+	switch {
+	case err == nil:
+		return strings.TrimSpace(string(b)), nil
+	case errors.Is(err, fs.ErrNotExist) && !required:
+		return "", nil
+	default:
+		return "", fmt.Errorf("read power supply %s: %w", name, err)
 	}
-	return strings.TrimSpace(string(b))
 }
 
 // readPowerSupply decides the power state from sysfs. A Mains or USB supply
@@ -54,18 +61,26 @@ func readPowerSupply(fsys fs.FS) (core.PowerState, error) {
 	var supplies []supply
 	for _, e := range entries {
 		n := e.Name()
-		supplies = append(supplies, supply{
-			name:       n,
-			kind:       readFileTrim(fsys, n+"/type"),
-			scope:      readFileTrim(fsys, n+"/scope"),
-			status:     readFileTrim(fsys, n+"/status"),
-			online:     readFileTrim(fsys, n+"/online"),
-			capacity:   readFileTrim(fsys, n+"/capacity"),
-			energyNow:  readFileTrim(fsys, n+"/energy_now"),
-			energyFull: readFileTrim(fsys, n+"/energy_full"),
-			chargeNow:  readFileTrim(fsys, n+"/charge_now"),
-			chargeFull: readFileTrim(fsys, n+"/charge_full"),
-		})
+		// Every supply has a type; one we can't read might be the
+		// machine's own battery, and skipping it would report AC.
+		kind, err := readField(fsys, n+"/type", true)
+		if err != nil {
+			return core.PowerState{}, err
+		}
+		s := supply{name: n, kind: kind}
+		for _, f := range []struct {
+			file string
+			dst  *string
+		}{
+			{"scope", &s.scope}, {"status", &s.status}, {"online", &s.online}, {"capacity", &s.capacity},
+			{"energy_now", &s.energyNow}, {"energy_full", &s.energyFull},
+			{"charge_now", &s.chargeNow}, {"charge_full", &s.chargeFull},
+		} {
+			if *f.dst, err = readField(fsys, n+"/"+f.file, false); err != nil {
+				return core.PowerState{}, err
+			}
+		}
+		supplies = append(supplies, s)
 	}
 	return decideSysfs(supplies)
 }

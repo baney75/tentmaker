@@ -3,8 +3,10 @@ package power
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -72,6 +74,11 @@ func TestReadPowerSupply(t *testing.T) {
 		{"battery with garbage capacity", ps(map[string]string{
 			"AC/type": "Mains", "AC/online": "0", "BAT0/type": "Battery", "BAT0/capacity": "lots",
 		}), core.PowerState{}, true},
+		// A supply with no type might be the machine's battery: unknown,
+		// not AC (review r1 partB sol-F6).
+		{"supply with no type", ps(map[string]string{
+			"BAT0/status": "Discharging", "BAT0/capacity": "12",
+		}), core.PowerState{}, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -83,6 +90,38 @@ func TestReadPowerSupply(t *testing.T) {
 				t.Fatalf("got %+v, want %+v", got, tt.want)
 			}
 		})
+	}
+}
+
+// failFS fails reads of one file with an I/O error.
+type failFS struct {
+	fstest.MapFS
+	bad string
+}
+
+func (f failFS) Open(name string) (fs.File, error) {
+	if name == f.bad {
+		return nil, &fs.PathError{Op: "open", Path: name, Err: syscall.EIO}
+	}
+	return f.MapFS.Open(name)
+}
+
+func (f failFS) ReadFile(name string) ([]byte, error) {
+	if name == f.bad {
+		return nil, &fs.PathError{Op: "read", Path: name, Err: syscall.EIO}
+	}
+	return f.MapFS.ReadFile(name)
+}
+
+// A battery whose type or status can't be read leaves power unknown
+// instead of reporting AC (review r1 partB sol-F6).
+func TestUnreadableSupplyFailsClosed(t *testing.T) {
+	laptop := ps(map[string]string{"BAT0/type": "Battery", "BAT0/status": "Discharging", "BAT0/capacity": "12"})
+	for _, bad := range []string{"BAT0/type", "BAT0/status"} {
+		got, err := sysfsPower{fsys: failFS{laptop, bad}}.Power(context.Background())
+		if err == nil || got.Known {
+			t.Errorf("%s unreadable: got %+v, err %v", bad, got, err)
+		}
 	}
 }
 
