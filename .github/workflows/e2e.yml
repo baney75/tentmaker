@@ -224,6 +224,17 @@ jobs:
           echo "== status"; tentmaker status --json || true
           if [ "$RUNNER_OS" = Linux ]; then
             echo "== daemon log"; sudo journalctl -u tentmaker --no-pager -n 400 || true
+            if uid=$(id -u tentmaker-runner 2>/dev/null); then
+              pid=$(systemctl show -p MainPID --value "user@$uid.service")
+              echo "== user manager $pid"; sudo readlink /proc/1/ns/mnt /proc/1/ns/net "/proc/$pid/ns/mnt" "/proc/$pid/ns/net" || true
+              echo "== runtime dir, host view"; sudo ls -la "/run/user/$uid" "/run/user/$uid/podman" || true
+              findmnt -R "/run/user/$uid" || true
+              echo "== runtime dir, manager view"; sudo nsenter -t "$pid" -m ls -la "/run/user/$uid" "/run/user/$uid/podman" || true
+              sudo nsenter -t "$pid" -m findmnt -R "/run/user/$uid" || true
+              systemctl status --no-pager "user@$uid.service" "user-runtime-dir@$uid.service" tentmaker-podnet.service tentmaker-podnet-uplink.service tentmaker-podns.service || true
+              sudo journalctl --no-pager -n 300 -u "user@$uid.service" -u "user-runtime-dir@$uid.service" -u tentmaker-podnet.service -u tentmaker-podnet-uplink.service -u tentmaker-podns.service -u systemd-logind || true
+              echo "== user journal"; sudo journalctl --no-pager -n 200 "_UID=$uid" || true
+            fi
             state=/var/lib/tentmaker
           else
             echo "== daemon log"; sudo tail -n 400 /Library/Logs/Tentmaker/tentmaker.log || true
