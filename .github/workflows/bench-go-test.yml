@@ -1,0 +1,46 @@
+# Bench workload: this repo's Go tests, as ci.yml's test job runs them (gofmt, vet, go test -race).
+# bench.yml runs it on GitHub's hosted runners (workflow_call, cold then warm
+# with the same cache key) and test/scenarios/bench.sh runs the same file under
+# Tentmaker as .tm-scn/wf.yml. Every timed step goes through
+# scripts/bench/phase.sh so both sides are measured the same way.
+name: bench-go-test
+
+on:
+  # Checks mode plans only push and pull_request workflows. The bench pushes
+  # its tm-scn/ branches with GITHUB_TOKEN, which never starts a GitHub run,
+  # so this trigger is for Tentmaker alone.
+  push:
+    branches: ['tm-scn/**']
+  workflow_call:
+    inputs:
+      key:
+        description: cache key suffix, one per cold and warm pair
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  go-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # setup-go's own cache is keyed by go.sum alone and would be warm from
+      # main on the first run; the cache step below keys it per pair instead.
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: bench-go-test-${{ inputs.key }}
+      - run: scripts/bench/phase.sh run deps go mod download
+      - run: scripts/bench/phase.sh run test bash -c 'test -z "$(gofmt -l .)" && go vet ./... && go test -race ./...'
+      - run: scripts/bench/phase.sh report

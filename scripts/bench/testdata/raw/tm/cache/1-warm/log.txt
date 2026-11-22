@@ -1,0 +1,8 @@
+tentmaker check-run: cache (.tm-scn/wf.yml) at 89abcdef0123 on fv-az1
+$ scripts/bench/phase.sh report
+BENCH_PHASE restore begin 1795341605.000000000
+BENCH_PHASE restore end 1795341605.500000000 268435456
+BENCH_PHASE save begin 1795341609.000000000
+BENCH_PHASE save end 1795341609.010000000 0
+
+tentmaker: success: passed in 9s

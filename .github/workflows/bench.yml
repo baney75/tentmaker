@@ -1,0 +1,278 @@
+# Head-to-head speed benchmark: each workload in .github/workflows/bench-*.yml
+# on GitHub's hosted runners and through Tentmaker, cold then warm, three
+# times each. scripts/bench turns the runs into docs/BENCHMARKS.md and
+# docs/benchmarks.json (the bench-report artifact) and gates the run: it
+# fails when Tentmaker warm is slower than GitHub-hosted warm on any workload
+# but the Docker baseline, or when the median Tentmaker job start latency is
+# over 5 s.
+#
+# The Tentmaker side is test/scenarios/bench.sh: one GitHub-hosted VM per
+# workload becomes the device, as in the dogfood scenario. The hosted side
+# calls the same workload files as reusable workflows, one run at a time per
+# workload so GitHub's queue isn't crowded by the bench itself.
+name: bench
+
+on:
+  push:
+    branches: [test/bench]
+  workflow_dispatch:
+  schedule:
+    - cron: "17 6 * * 1"
+
+# contents: write pushes and deletes the device's throwaway branches;
+# statuses: write is what Tentmaker posts; actions: read lists this run's
+# jobs and their logs.
+permissions:
+  contents: write
+  statuses: write
+  pull-requests: read
+  actions: read
+
+concurrency:
+  group: bench
+  cancel-in-progress: false
+
+jobs:
+  tentmaker:
+    name: tentmaker ${{ matrix.workload }}
+    strategy:
+      fail-fast: false
+      matrix:
+        workload: [go-test, cross-build, node, docker, cache]
+    runs-on: ubuntu-latest
+    timeout-minutes: 100
+    defaults:
+      run:
+        shell: bash
+    env:
+      REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
+      RUN_ID: ${{ github.run_id }}
+      RUN_ATTEMPT: ${{ github.run_attempt }}
+      BENCH_WORKLOAD: ${{ matrix.workload }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+      # As in scenarios.yml: TERM at 90 minutes lets lib.sh record the
+      # timeout and write its metrics before the job's own limit.
+      - name: bench ${{ matrix.workload }} through Tentmaker
+        run: |
+          rc=0
+          timeout -k 6m 90m bash test/scenarios/bench.sh || rc=$?
+          if [ "$rc" = 124 ] || [ "$rc" = 137 ]; then
+            echo "::error title=bench ${{ matrix.workload }}::the bench ran past its 90 minute limit"
+          fi
+          exit "$rc"
+      - name: upload raw runs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: bench-raw-tm-${{ matrix.workload }}
+          path: |
+            bench-raw/
+            metrics/
+          if-no-files-found: warn
+          retention-days: 90
+          overwrite: true
+
+  gh-go-test-cold:
+    name: gh go-test cold ${{ matrix.rep }}
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        rep: [1, 2, 3]
+    uses: ./.github/workflows/bench-go-test.yml
+    with:
+      key: ${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.rep }}
+  gh-go-test-warm:
+    name: gh go-test warm ${{ matrix.rep }}
+    needs: gh-go-test-cold
+    if: always()
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        rep: [1, 2, 3]
+    uses: ./.github/workflows/bench-go-test.yml
+    with:
+      key: ${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.rep }}
+
+  gh-cross-build-cold:
+    name: gh cross-build cold ${{ matrix.rep }}
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        rep: [1, 2, 3]
+    uses: ./.github/workflows/bench-cross-build.yml
+    with:
+      key: ${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.rep }}
+  gh-cross-build-warm:
+    name: gh cross-build warm ${{ matrix.rep }}
+    needs: gh-cross-build-cold
+    if: always()
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        rep: [1, 2, 3]
+    uses: ./.github/workflows/bench-cross-build.yml
+    with:
+      key: ${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.rep }}
+
+  gh-node-cold:
+    name: gh node cold ${{ matrix.rep }}
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        rep: [1, 2, 3]
+    uses: ./.github/workflows/bench-node.yml
+    with:
+      key: ${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.rep }}
+  gh-node-warm:
+    name: gh node warm ${{ matrix.rep }}
+    needs: gh-node-cold
+    if: always()
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        rep: [1, 2, 3]
+    uses: ./.github/workflows/bench-node.yml
+    with:
+      key: ${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.rep }}
+
+  gh-docker-cold:
+    name: gh docker cold ${{ matrix.rep }}
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        rep: [1, 2, 3]
+    uses: ./.github/workflows/bench-docker.yml
+    with:
+      key: ${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.rep }}
+  gh-docker-warm:
+    name: gh docker warm ${{ matrix.rep }}
+    needs: gh-docker-cold
+    if: always()
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        rep: [1, 2, 3]
+    uses: ./.github/workflows/bench-docker.yml
+    with:
+      key: ${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.rep }}
+
+  gh-cache-cold:
+    name: gh cache cold ${{ matrix.rep }}
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        rep: [1, 2, 3]
+    uses: ./.github/workflows/bench-cache.yml
+    with:
+      key: ${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.rep }}
+  gh-cache-warm:
+    name: gh cache warm ${{ matrix.rep }}
+    needs: gh-cache-cold
+    if: always()
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        rep: [1, 2, 3]
+    uses: ./.github/workflows/bench-cache.yml
+    with:
+      key: ${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.rep }}
+
+  report:
+    needs:
+      - tentmaker
+      - gh-go-test-warm
+      - gh-cross-build-warm
+      - gh-node-warm
+      - gh-docker-warm
+      - gh-cache-warm
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      RUN_ID: ${{ github.run_id }}
+      RUN_ATTEMPT: ${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: bench-raw-tm-*
+          path: dl
+          merge-multiple: true
+      - name: collect the hosted jobs
+        run: |
+          set -euo pipefail
+          mkdir -p raw/gh/logs
+          [ -d dl/bench-raw/tm ] && cp -r dl/bench-raw/tm raw/
+          jq -n --arg url "https://github.com/$REPO/actions/runs/$RUN_ID" --arg sha "$GITHUB_SHA" --arg date "$(date -u +%F)" \
+            '{url: $url, sha: $sha, date: $date}' >raw/run.json
+          timeout 120 gh api --paginate "repos/$REPO/actions/runs/$RUN_ID/attempts/$RUN_ATTEMPT/jobs?per_page=100" --jq '.jobs[]' |
+            jq -s '[.[] | {id, name, status, conclusion, created_at, started_at, completed_at, html_url}]' >raw/gh/jobs.json
+          jq -r '.[] | select(.name | startswith("gh ")) | select(.status == "completed") | .id' raw/gh/jobs.json |
+            while read -r id; do
+              timeout 120 gh api "repos/$REPO/actions/jobs/$id/logs" >"raw/gh/logs/$id.txt" || echo "::warning::no log for job $id"
+            done
+      - name: report
+        run: |
+          set -o pipefail
+          go run ./scripts/bench report -raw raw -md out/BENCHMARKS.md -json out/benchmarks.json | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: upload the report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: bench-report
+          path: |
+            out/
+            raw/
+          retention-days: 90
+          overwrite: true
+      - name: gate
+        run: go run ./scripts/bench gate -json out/benchmarks.json
+
+  # bench.sh deletes its branches; this catches the ones a killed job left.
+  cleanup:
+    needs: tentmaker
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      RUN_ID: ${{ github.run_id }}
+    steps:
+      - name: delete this run's throwaway branches
+        run: |
+          refs=$(timeout 30 gh api "repos/$REPO/git/matching-refs/heads/tm-scn/$RUN_ID." --paginate --jq '.[].ref') || exit 0
+          for ref in $refs; do
+            echo "deleting $ref"
+            timeout 30 gh api -X DELETE "repos/$REPO/git/${ref}" >/dev/null || echo "::warning::could not delete $ref"
+          done

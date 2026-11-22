@@ -1,0 +1,1 @@
+{"workload": "cache", "image_os": "ubuntu24", "image_version": "20261116.1", "cpus": 4, "cpu_model": "AMD EPYC 7763 64-Core Processor", "memory_gib": 15.6, "version": "0.0.1-scn.1", "budget": {"slots": 2}}
