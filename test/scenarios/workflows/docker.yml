@@ -1,0 +1,23 @@
+# The docker-cache scenario's check: one timed `docker build` of a pinned
+# two-stage Dockerfile through the device's podman service (DOCKER_HOST).
+name: tm-scn-docker
+on: [push, pull_request]
+jobs:
+  docker:
+    runs-on: @RUNS_ON@
+    timeout-minutes: 15
+    steps:
+      - name: docker build
+        shell: @SHELL@
+        run: |
+          set -eu
+          out=$(mktemp)
+          t0=$(date +%s%3N)
+          if ! docker build -t tm-scn-docker:latest test/scenarios/docker >"$out" 2>&1; then
+            tail -n 60 "$out"
+            exit 1
+          fi
+          t1=$(date +%s%3N)
+          tail -n 15 "$out"
+          echo "TM-DOCKER build_ms=$((t1 - t0)) cached_steps=$(grep -cE 'Using cache|CACHED' "$out" || true) pulls=$(grep -ciE 'trying to pull|copying blob' "$out" || true)"
+          docker run --rm tm-scn-docker:latest

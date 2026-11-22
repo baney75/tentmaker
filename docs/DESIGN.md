@@ -250,6 +250,38 @@ one runs cold at `jobs/<name>` as before.
   an empty root-owned folder. Container steps run in podman.service's mount namespace and don't
   see the bind, so `RUNNER_TOOL_CACHE` and `AGENT_TOOLSDIRECTORY`, which the runner binds into job
   containers, stay at the slot's `toolcache`, a host path that is warm because the slot is.
+- Container store (`store.go`): podman's images, layers and build cache for the repo, so
+  `docker build` and container steps start warm and base image pulls hit the disk. It lives at
+  `<cache_dir>/repos/.containers/<key>/storage`, which belongs to the CI user; `.containers/` and
+  `<key>/` are root's with mode 0700, checked on every use, so a job can't reach another repo's
+  store by path or swap a folder above it for a symlink (a runner-owned parent would let a
+  leftover process point the next bind at another repo's store). Rootless podman is one per
+  device (the podman namespace below), so the store is bound to the device, not to a job: when
+  a job with a repo cache starts on an idle device (no other job starting or running), `Start`
+  writes `<state>/linux-private/container-store.json` (the repo, with `config.WriteAtomic`),
+  restarts podman's namespaces with `BindPaths=<store>:<state>/linux/container-store` in the
+  user manager, `tentmaker-podns.service` and the job unit, and writes the runner's
+  `~/.config/containers/storage.conf` (root's folder) naming that path as podman's graphroot,
+  with a runroot of its own. Then it checks that `podman info` reports that graphroot and removes
+  every container, pod, volume and network a past job left in the store; images stay. The job
+  gets `CONTAINERS_STORAGE_CONF` so its own `podman` uses the same store. Later jobs of the repo
+  use the bound store; `Reset` (when nothing runs) starts podman unbound again and only then
+  wipes the default store. A job that finds the device busy, or a bind that fails, runs without
+  it (a warning); a bind whose podman can't be brought back unbound fails the job's start. On
+  the host `container-store` is an empty root-owned folder.
+- Container store threat model. Who can write it: only jobs vouched safe for the repo (the same
+  rule as the repo cache), and while it is bound any process of the CI user can reach it through
+  `/proc/<pause pid>/root`, so the worker keeps the device to that repo's trusted jobs from the
+  first cached job until the next reset (`WorkRequest.OnlyRepo`, `state.json` `held_cache`). A
+  poisoned image or layer (a tampered base image, a build step that writes a backdoor into a
+  cached layer) can therefore affect only later trusted jobs of the same repo, which could
+  already push code to it and so poison its builds anyway. Forks, other repos and untrusted jobs
+  never run while it is bound and never bind it. The store holds no secret Tentmaker put there;
+  a build secret a workflow bakes into a layer stays in that repo's store, as it would on any
+  builder with a layer cache. A digest in `FROM` doesn't protect against that writer: podman
+  trusts its own store and doesn't hash a cached image's layers again on use. Rejected: a per-job store copy (copying gigabytes per job loses the speed), a
+  store shared across repos (one repo could poison another's base images), and a store that
+  stays bound across other repos' jobs (their processes could read it through `/proc`).
 - Slots: the job folder is `jobs/<key[:12]>-<n>`: the slot the same job name (`CacheRepo.Job`)
   used last time when it is free (jobs of a commit start together and would race for slot 0;
   `<state>/linux-private/slot-affinity/` remembers), else the lowest free one no other job of the
@@ -261,15 +293,18 @@ one runs cold at `jobs/<name>` as before.
   removed after it is gone; `List` reports jobs by name, and a slot folder no record claims by its
   own name so it gets cleaned. `Reset` drops every slot and keeps the caches.
 - Cap: `cache_max` (default 10 GiB, 0 turns caches off). After each job's `Clean` the store
-  measures that repo and deletes whole repos, least recently used first, until the total fits; a
-  repo with a slot record is never deleted, and when slot records can't be read nothing is.
+  measures that repo (its cache folder and its container store) and deletes whole repos, both
+  folders, least recently used first, until the total fits; a repo with a slot record or a bound
+  container store is never deleted, and when either can't be read nothing is. `Reset` evicts
+  again once the store is unbound.
 - A cache that can't be prepared leaves the job cold (a warning), never failed.
 - Who gets one: see `WorkOffer.Cache` under Dispatch. The cache is per repo, not per branch: any
   job of the repo may write what a later job of it reads.
 - One repo per device while a cache is held: every job runs as one user, so a job beside a cached
   job could reach its cache through `/proc/<pid>/root`, `cwd` or `fd`. The worker gives a job its
-  cache only when every job already on the device is vouched safe for that same repo, and while
-  one holds it, it declines any other offer. See `WorkRequest.OnlyRepo` under Dispatch. A job can
+  cache only when every job already on the device is vouched safe for that same repo, and from
+  then until the next reset (the container store may stay bound that long) it declines any
+  other offer. See `WorkRequest.OnlyRepo` under Dispatch. A job can
   also leave a process behind (`systemd-run --user`, a detached container) that only the node
   reset kills, so the worker keeps `dirty_trust` in `state.json`: the trust key every job since the
   last reset had. A cache goes only to that repo, or to any repo on a clean node; after another
@@ -423,7 +458,8 @@ physical LAN only, never what the tailnet routes.
   the service. Its three units run as the runner from `Install` on, between jobs too, so they
   are not a job's leftovers; the failures scenario tells them apart by unit cgroup, never by
   argv (`sleep infinity` is also what a leak looks like). A job's own `podman` CLI keeps the
-  job's namespace. `Reset` fails unless the pause
+  job's namespace. A repo's container store (Repo caches above) is bound by the same restart,
+  with one more `BindPaths` in the manager drop-in, `tentmaker-podns.service` and the job unit. `Reset` fails unless the pause
   process and the user manager are both outside the host's network namespace
   (`/proc/<pid>/ns/net` differs from the daemon's), then checks the mounts through `podman
   unshare` and fails on any difference. Doctor (`Preflight`) reports either one in the host's
@@ -587,9 +623,9 @@ api.github.com) and carries the repo's default branch. The worker grants such a 
 cache (`WorkerOptions.ActionsCache`, an `ActionsCache` interface) only when the service is
 listening and the executor is a `core.ActionsCacher` whose `ActionsCacheReady()` is true:
 write when the job got its repo cache (honored only once confirmed, above), and no grant otherwise,
-so the job keeps GitHub's cache. A drained job gets none: the worker sends `OnlyRepo` and declines
-other trust only while a `Cached` job runs, so a reader without the cache would leave the repo's
-entries open to whatever starts next (review second-S1). When a job of another trust starts beside one
+so the job keeps GitHub's cache. A drained job gets none: the broker drains a device to hand it to
+another repo, and the repo's entries are opened only to jobs that got its cache (review
+second-S1). When a job of another trust starts beside one
 with a grant, the grant is lowered to none (`Limit`): the cache is as private as the least trusted
 job on the device, the same rule as the repo cache. The binding (refs and access, no secret) is
 kept in `state.json` as `jobRec.Actions`, and a restart grants the recorded jobs again with new
@@ -598,16 +634,19 @@ capabilities. A grant that fails leaves `ExecSpec.ActionsCache` empty.
 A cache is only as private as the least trusted job beside it (one user, `/proc`), so the worker
 decides under its admission lock, from the jobs on the device (`jobRec.Trust`, the repo the job
 was vouched safe for, and `jobRec.Cached`, both in state.json):
-- While a job holds repo R's cache, an offer not vouched safe for R (another repo, a fork, an
-  untrusted job of R) is declined.
+- While the device holds repo R's cache, an offer not vouched safe for R (another repo, a fork,
+  an untrusted job of R) is declined. The device holds it from the start of a job that got it
+  until the next successful reset (`held_cache` in state.json), not only while that job runs:
+  R's container store stays bound to podman until the reset.
 - A job gets R's cache only if it is vouched safe for R, its executor is a `core.RepoCacher` that
   `CachesRepos()`, the offer isn't `Drain`, and every job on the device is vouched safe for R.
 - One response with offers of more than one repo (or trusted and untrusted ones) runs them all
   cold, so none is declined for another's cache.
-The worker sends `WorkRequest.OnlyRepo` while it holds a cache. The broker then picks only that
-repo's cache-safe jobs (check jobs of the repo; runner jobs of the repo while it is cache safe);
-when it skipped another repo's job that the device could run, it marks the picks `Drain`, so they
-run cold and the device holds no cache once the cached job ends, and the waiting repo gets in.
+The worker sends `WorkRequest.OnlyRepo` while it holds a cache, and `OnlyRepoIdle` once no job
+holding it runs. The broker then picks only that repo's cache-safe jobs (check jobs of the repo;
+runner jobs of the repo while it is cache safe); when it skipped another repo's job that the
+device could run, it marks the picks `Drain`, so they run cold, and with `OnlyRepoIdle` it picks
+nothing at all, so the device empties, resets and the waiting repo gets in.
 
 Worker: each tick (1 s, or at once after `Kick`) reads `Budget.Decide`, applies `SetPoolLimit`, reports `Running` and
 `Ended`, asks sources for `Free` offers, starts each with the matching executor, honors `Stop`,
@@ -984,8 +1023,8 @@ section is rewritten.
 - `ForHost` takes a `binary func(core.Platform) (string, error)` that returns the tentmaker binary for a sandbox's platform.
 - VM images are package constants; `Options.Images` overrides them.
 - macOS guests are optional. darwin `Install` pulls the Linux image whenever it fits (one job's room plus the image), and the macOS image only when free disk covers everything plus a job, or with `setup --macos-guests` (`Options.MacOSGuests`: skips the job margin, but the image itself still has to fit). It records what it pulled in `<state>/macos-tart/guests.json`; the executor offers only those platforms (all pinned ones when the file is missing). When not even the Linux image fits, Install downloads nothing and returns nil, so setup exits 0 and installs the service; `Preflight` then reports the missing image as a problem, and `forHost` keeps the executor on Apple silicon so doctor can say so. An executor's optional `Notes(ctx) []core.Problem` shows in doctor as warnings: "macOS guests are off: the macOS image needs N GiB, M GiB free; run sudo tentmaker setup --macos-guests when you have room".
-- Linux `Reset` wipes podman images unless `KeepImages`.
-- Linux jobs keep a cache per repo between jobs (Repo caches above); macOS and Windows jobs start cold. `cache_max` caps those caches, not all of `cache_dir`.
+- Linux `Reset` wipes podman images unless `KeepImages`: the default store's. A repo's container store keeps its images (Repo caches above).
+- Linux jobs keep a cache per repo between jobs (Repo caches above); macOS and Windows jobs start cold. `cache_max` caps those caches and their container stores, not all of `cache_dir`.
 - The JIT config reaches the runner as `ACTIONS_RUNNER_INPUT_JITCONFIG`, set inside the sandbox by the job script from its stdin hand-off (the runner reads and clears it); never in the daemon's environment or argv.
 - `SetPoolLimit` is a no-op on macOS and Windows.
 - Linux and Windows keep a copy of the tentmaker binary for check jobs. Setup writes it, and each check `Start` compares it with `Binary(platform)` (size, then sha256; equal pairs are remembered by size and mtime) and replaces it atomically when they differ, so an update never leaves check jobs on the old binary. Linux writes it root-owned 0755; Windows renames the old exe aside first (a running check may hold it) and deletes it once free. (internal/executor/guestbin)

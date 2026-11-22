@@ -30,12 +30,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        scenario: [quickstart, busy-queue, failures, chaos, dogfood, upgrade]
+        scenario: [quickstart, busy-queue, failures, chaos, dogfood, upgrade, docker-cache]
         os: [ubuntu-latest, windows-latest]
         exclude:
           # dogfood runs ci.yml's Linux jobs; Windows has no second Go
           # toolchain story yet (see the README).
           - scenario: dogfood
+            os: windows-latest
+          # Container builds go through rootless podman, which is Linux's.
+          - scenario: docker-cache
             os: windows-latest
     runs-on: ${{ matrix.os }}
     timeout-minutes: ${{ matrix.scenario == 'dogfood' && 75 || 45 }}
@@ -101,7 +104,7 @@ jobs:
         run: |
           set -o pipefail
           python3 test/scenarios/summary.py metrics \
-            quickstart-linux busy-queue-linux failures-linux chaos-linux dogfood-linux upgrade-linux \
+            quickstart-linux busy-queue-linux failures-linux chaos-linux dogfood-linux upgrade-linux docker-cache-linux \
             quickstart-windows busy-queue-windows failures-windows chaos-windows upgrade-windows |
             tee -a "$GITHUB_STEP_SUMMARY"
 

@@ -278,6 +278,7 @@ func Install(ctx context.Context, o Options) error {
 		{e.slotsDir(), 0o700, 0, 0},
 		{e.affinityDir(), 0o700, 0, 0},
 		{e.cacheMount(), 0o755, 0, 0},
+		{e.storeMount(), 0o755, 0, 0},
 		{e.p.Lib, 0o755, 0, 0},
 		{e.shimDir(), 0o755, 0, 0},
 		{filepath.Join(e.p.Lib, "guest"), 0o755, 0, 0},
@@ -309,7 +310,7 @@ func Install(ctx context.Context, o Options) error {
 	if entries, err := os.ReadDir(e.root); err == nil {
 		for _, ent := range entries {
 			switch ent.Name() {
-			case "jobs", "repo-cache", ".config", ".local":
+			case "jobs", "repo-cache", "container-store", ".config", ".local":
 			default:
 				os.RemoveAll(filepath.Join(e.root, ent.Name()))
 			}
@@ -390,7 +391,10 @@ func Install(ctx context.Context, o Options) error {
 	// Restart the manager so the slice drop-in and environment.d apply, in
 	// podman's network namespace, and make podman's namespaces before any
 	// podman command does.
-	if err := e.startPodman(ctx, uid, gid); err != nil {
+	e.podMu.Lock()
+	err = e.unbindLocked(ctx, uid, gid)
+	e.podMu.Unlock()
+	if err != nil {
 		return err
 	}
 	bus := filepath.Join(e.runtimeDir(uid), "bus")

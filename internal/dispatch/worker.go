@@ -114,7 +114,12 @@ type workerState struct {
 	// leave a process behind that only a reset kills, and that process can
 	// read a later job's cache through /proc, so a cache goes only to the
 	// repo whose trusted jobs alone have run since the reset.
-	DirtyTrust  string            `json:"dirty_trust,omitempty"`
+	DirtyTrust string `json:"dirty_trust,omitempty"`
+	// Held is the repo whose cache a job held since the last reset. The
+	// executor may keep that repo's data reachable to every job until the
+	// reset (a Linux container store stays bound to podman), so the device
+	// takes only that repo's trusted jobs until then.
+	Held        *core.CacheRepo   `json:"held_cache,omitempty"`
 	Quarantined map[string]string `json:"quarantined,omitempty"` // source -> why
 	Paused      bool              `json:"paused,omitempty"`
 	PauseReason string            `json:"pause_reason,omitempty"`
@@ -645,7 +650,7 @@ func (w *Worker) maybeReset(ctx context.Context, now time.Time) {
 		return
 	}
 	lifted := len(w.st.Quarantined)
-	w.st.Dirty, w.st.DirtyTrust = false, ""
+	w.st.Dirty, w.st.DirtyTrust, w.st.Held = false, "", nil
 	w.st.Quarantined = nil
 	w.st.Leftovers = nil
 	w.cleanErrs = nil
@@ -794,6 +799,7 @@ func (w *Worker) exchange(ctx context.Context, now time.Time, d core.Decision, a
 			free = 0
 		}
 		only := w.cachedRepoLocked()
+		idle := only != nil && w.runningCacheLocked() == nil
 		var running []string
 		for _, j := range w.st.Jobs {
 			if j.Source == name && !j.starting {
@@ -822,7 +828,7 @@ func (w *Worker) exchange(ctx context.Context, now time.Time, d core.Decision, a
 		w.mu.Unlock()
 
 		req := core.WorkRequest{Device: w.device, Labels: w.labels, Platforms: platforms, Free: free,
-			Limits: w.limits, Running: running, Ended: sent.Ended, Results: sent.Results, OnlyRepo: only}
+			Limits: w.limits, Running: running, Ended: sent.Ended, Results: sent.Results, OnlyRepo: only, OnlyRepoIdle: idle}
 		wctx, cancel := context.WithTimeout(ctx, workTimeout)
 		resp, err := s.Work(wctx, req)
 		cancel()
@@ -1025,6 +1031,9 @@ func (w *Worker) start(ctx context.Context, src core.WorkSource, off core.WorkOf
 		return false
 	}
 	spec.Cache, rec.Trust, rec.Cached = c, trustKey(offerCache(off)), !c.IsZero()
+	if rec.Cached {
+		w.st.Held = &core.CacheRepo{Forge: c.Forge, Repo: c.Repo}
+	}
 	rec.Slot = w.freeSlotLocked()
 	w.limitActionsLocked(rec.Trust)
 	if rec.Actions = w.actionsLocked(e, off, kind, c); rec.Actions != nil {
@@ -1398,9 +1407,21 @@ func trustKey(c core.CacheRepo) string {
 	return c.Forge + "\x00" + strings.ToLower(c.Repo)
 }
 
-// cachedRepoLocked is the repo whose cache a job on the device holds, or
-// nil. cacheDecisionLocked keeps it to one repo at a time.
+// cachedRepoLocked is the repo whose cache the device holds, or nil: a
+// running job's, or else the one held since the last reset (Held).
+// cacheDecisionLocked keeps it to one repo at a time.
 func (w *Worker) cachedRepoLocked() *core.CacheRepo {
+	if c := w.runningCacheLocked(); c != nil {
+		return c
+	}
+	if h := w.st.Held; h != nil {
+		return &core.CacheRepo{Forge: h.Forge, Repo: h.Repo}
+	}
+	return nil
+}
+
+// runningCacheLocked is the repo whose cache a job on the device holds.
+func (w *Worker) runningCacheLocked() *core.CacheRepo {
 	for _, j := range w.st.Jobs {
 		if j.Cached {
 			return &core.CacheRepo{Forge: j.Forge, Repo: j.Repo}
@@ -1413,8 +1434,9 @@ func (w *Worker) cachedRepoLocked() *core.CacheRepo {
 // cache. Every job on a device runs as one user and can reach the others'
 // files and mounts through /proc, so a cache is only as private as the
 // least trusted job beside it:
-//   - While a job holds repo R's cache, only jobs vouched safe for R may
-//     start (ok false otherwise: declined).
+//   - While the device holds repo R's cache (a job holds it, or one did
+//     since the last reset), only jobs vouched safe for R may start (ok
+//     false otherwise: declined).
 //   - A job gets R's cache only when it is vouched safe for R, its
 //     executor keeps repo caches, the broker didn't ask it to drain, and
 //     every job already on the device is vouched safe for R.

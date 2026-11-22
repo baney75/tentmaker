@@ -284,6 +284,17 @@ else
 	say podman-unshare-user-unit BLOCKED
 fi
 
+# Every repo's cache and container store sit under a root-only folder, so
+# no job can list or open another repo's, from its own view or podman's
+# (the store a job may use is bound in at one fixed path, never reached
+# through the cache folder).
+got=""
+for d in /var/cache/tentmaker/repos /var/cache/tentmaker/repos/.containers; do
+	ls -A "$d" >/dev/null 2>&1 && got="$got $d"
+	pu ls -A "$d" >/dev/null && got="$got unshare:$d"
+done
+if [ -n "$got" ]; then say podman-unshare-repo-stores SUCCEEDED "listed$got"; else say podman-unshare-repo-stores BLOCKED; fi
+
 # Rootless podman: a container's traffic leaves through pasta or
 # slirp4netns, which run as this job's user, so the same rules must stop it.
 # A container on the host network opens its own sockets, as a subordinate

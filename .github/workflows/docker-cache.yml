@@ -1,0 +1,72 @@
+# docker-cache: the live check for Linux container stores. It installs a
+# build of this commit on a throwaway GitHub runner (a Tentmaker device),
+# builds test/scenarios/docker/Dockerfile twice in checks mode, and fails
+# unless the warm build is at least 3x faster than the cold one
+# (test/scenarios/docker-cache.sh). The scenarios workflow runs it too.
+name: docker-cache
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+# contents: write pushes and deletes the throwaway branches; statuses: write
+# is what Tentmaker posts.
+permissions:
+  contents: write
+  statuses: write
+  pull-requests: read
+
+concurrency:
+  group: docker-cache-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  docker-cache:
+    name: docker-cache (ubuntu-latest)
+    # A fork's pull request gets a read-only token and must not push.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    env:
+      REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
+      RUN_ID: ${{ github.run_id }}
+      RUN_ATTEMPT: ${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+      - name: docker-cache
+        run: |
+          rc=0
+          timeout -k 6m 37m bash test/scenarios/docker-cache.sh || rc=$?
+          if [ "$rc" = 124 ] || [ "$rc" = 137 ]; then
+            echo "::error title=docker-cache::the scenario ran past its 37 minute limit"
+          fi
+          if [ -f metrics/docker-cache-linux.json ]; then
+            jq -r '"cold build: \(.measurements.cold_build_ms) ms, warm build: \(.measurements.warm_build_ms) ms, \(.measurements.speedup)x"' \
+              metrics/docker-cache-linux.json >>"$GITHUB_STEP_SUMMARY" || true
+          fi
+          exit "$rc"
+      - name: upload metrics
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: metrics-docker-cache
+          path: metrics/
+          if-no-files-found: warn
+          retention-days: 30
+          overwrite: true
+      - name: delete throwaway branches
+        if: always()
+        run: |
+          refs=$(timeout 30 gh api "repos/$REPO/git/matching-refs/heads/tm-scn/$RUN_ID." --paginate --jq '.[].ref') || exit 0
+          for ref in $refs; do
+            timeout 30 gh api -X DELETE "repos/$REPO/git/${ref}" >/dev/null || echo "::warning::could not delete $ref"
+          done

@@ -56,7 +56,7 @@ func TestResetStartsPodmanNamespaceFirst(t *testing.T) {
 	}
 
 	// The unit gets a job's mounts, and no NoNewPrivileges (newuidmap).
-	args := v.e.podnsArgs(testUID, testGID, filepath.Join(v.o.Paths.Proc, strconv.Itoa(testPodnetPID), "ns", "net"))
+	args := v.e.podnsArgs(testUID, testGID, filepath.Join(v.o.Paths.Proc, strconv.Itoa(testPodnetPID), "ns", "net"), "")
 	if !strings.Contains(cmds[podns], strings.Join(args, " ")) {
 		t.Fatalf("podns unit:\n%s\nwant args %q", cmds[podns], args)
 	}

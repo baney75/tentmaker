@@ -39,9 +39,8 @@ type actionsRec struct {
 //     vouched safe for the repo, and only that repo's trusted jobs have
 //     run since the last reset;
 //   - otherwise none, and the job keeps GitHub's own cache. A drained job
-//     gets none too: the worker sends OnlyRepo and declines other trust
-//     only while a Cached job runs, so a reader beside no cached job would
-//     leave R's entries open to whatever starts next.
+//     gets none too: the broker drains a device to hand it to another
+//     repo, and R's entries are opened only to jobs that got R's cache.
 //
 // Write is not honored until the broker confirms which job the runner
 // took (confirmActionsLocked).
