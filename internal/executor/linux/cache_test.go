@@ -60,9 +60,16 @@ func TestRepoCacheIsConfinedToItsJob(t *testing.T) {
 			t.Fatalf("%s binds %q, want only %s:%s", name, binds, own, mount)
 		}
 		env := unitEnv(c)
-		for _, k := range []string{"GOCACHE", "GOMODCACHE", "RUNNER_TOOL_CACHE", "AGENT_TOOLSDIRECTORY", "npm_config_cache", "PIP_CACHE_DIR", "CARGO_HOME", "XDG_CACHE_HOME"} {
+		for _, k := range []string{"GOCACHE", "GOMODCACHE", "npm_config_cache", "PIP_CACHE_DIR", "CARGO_HOME", "XDG_CACHE_HOME"} {
 			if !strings.HasPrefix(env[k], mount+"/") {
 				t.Errorf("%s: %s=%q is not under the job's cache mount %s", name, k, env[k], mount)
+			}
+		}
+		// The runner binds its tool cache into job containers, and podman
+		// can't see the cache mount: it must stay a real host path.
+		for _, k := range []string{"RUNNER_TOOL_CACHE", "AGENT_TOOLSDIRECTORY"} {
+			if env[k] != v.e.jobDir(name)+"/toolcache" {
+				t.Errorf("%s: %s=%q, want the slot's host path %s/toolcache", name, k, env[k], v.e.jobDir(name))
 			}
 		}
 		// No path in the unit names the store itself except its own bind.

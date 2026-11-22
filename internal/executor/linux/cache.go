@@ -218,14 +218,15 @@ func (e *Executor) cacheInUse() (map[string]bool, error) {
 // CachesRepos implements core.RepoCacher.
 func (e *Executor) CachesRepos() bool { return e.cache.Enabled() }
 
-// cacheEnv points the tools a job runs at its repo cache.
+// cacheEnv points the tools a job runs at its repo cache. The runner's tool
+// cache stays in the slot folder (jobEnv): the runner binds it into job
+// containers, and podman runs in a mount namespace that can't see the
+// cache mount. The slot is stable per repo, so it stays warm anyway.
 func (e *Executor) cacheEnv() []string {
 	m := e.cacheMount()
 	return []string{
 		"GOCACHE=" + filepath.Join(m, "go-build"),
 		"GOMODCACHE=" + filepath.Join(m, "go-mod"),
-		"RUNNER_TOOL_CACHE=" + filepath.Join(m, "toolcache"),
-		"AGENT_TOOLSDIRECTORY=" + filepath.Join(m, "toolcache"),
 		"npm_config_cache=" + filepath.Join(m, "npm"),
 		"PIP_CACHE_DIR=" + filepath.Join(m, "pip"),
 		"CARGO_HOME=" + filepath.Join(m, "cargo"),

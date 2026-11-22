@@ -204,10 +204,11 @@ one runs cold at `jobs/<name>` as before.
   checked on every use (a root owned by anyone else is refused); a repo's folder belongs to the CI
   user. `index.json` (written with `config.WriteAtomic`) keeps each repo's size and last use.
 - Mount: the job's unit gets `BindPaths=<store>/<key>:<state>/linux/repo-cache`, so only its own
-  mount namespace sees it, and `GOCACHE`, `GOMODCACHE`, `RUNNER_TOOL_CACHE`,
-  `AGENT_TOOLSDIRECTORY`, `npm_config_cache`, `PIP_CACHE_DIR`, `CARGO_HOME` and `XDG_CACHE_HOME`
-  point below that one fixed path. On the host `repo-cache` is an empty root-owned folder.
-  Container steps run in podman.service's mount namespace and don't see the bind.
+  mount namespace sees it, and `GOCACHE`, `GOMODCACHE`, `npm_config_cache`, `PIP_CACHE_DIR`,
+  `CARGO_HOME` and `XDG_CACHE_HOME` point below that one fixed path. On the host `repo-cache` is
+  an empty root-owned folder. Container steps run in podman.service's mount namespace and don't
+  see the bind, so `RUNNER_TOOL_CACHE` and `AGENT_TOOLSDIRECTORY`, which the runner binds into job
+  containers, stay at the slot's `toolcache`, a host path that is warm because the slot is.
 - Slots: the job folder is `jobs/<key[:12]>-<n>`: the slot the same job name (`CacheRepo.Job`)
   used last time when it is free (jobs of a commit start together and would race for slot 0;
   `<state>/linux-private/slot-affinity/` remembers), else the lowest free one no other job of the
@@ -227,7 +228,11 @@ one runs cold at `jobs/<name>` as before.
 - One repo per device while a cache is held: every job runs as one user, so a job beside a cached
   job could reach its cache through `/proc/<pid>/root`, `cwd` or `fd`. The worker gives a job its
   cache only when every job already on the device is vouched safe for that same repo, and while
-  one holds it, it declines any other offer. See `WorkRequest.OnlyRepo` under Dispatch.
+  one holds it, it declines any other offer. See `WorkRequest.OnlyRepo` under Dispatch. A job can
+  also leave a process behind (`systemd-run --user`, a detached container) that only the node
+  reset kills, so the worker keeps `dirty_trust` in `state.json`: the trust key every job since the
+  last reset had. A cache goes only to that repo, or to any repo on a clean node; after another
+  repo's job, an untrusted job, a restart or a failed cleanup, jobs run cold until the reset.
 - macOS (tart) jobs get no cache yet: the executor has no folder share into a guest; `tart run
   --dir` is the next step. Windows jobs get none: every job runs as the same user with no mount
   namespace, so one repo's cache folder can't be kept from another repo's job.

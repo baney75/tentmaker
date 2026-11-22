@@ -99,14 +99,20 @@ type sourceHealth struct {
 
 // workerState is state.json. It holds no secret.
 type workerState struct {
-	Version     int                `json:"version"`
-	Jobs        []*jobRec          `json:"jobs"`
-	Unacked     map[string]*report `json:"unacked"`
-	Leftovers   map[string]string  `json:"leftovers,omitempty"` // runner -> executor; Clean failed, retried
-	Dirty       bool               `json:"dirty"`
-	Quarantined map[string]string  `json:"quarantined,omitempty"` // source -> why
-	Paused      bool               `json:"paused,omitempty"`
-	PauseReason string             `json:"pause_reason,omitempty"`
+	Version   int                `json:"version"`
+	Jobs      []*jobRec          `json:"jobs"`
+	Unacked   map[string]*report `json:"unacked"`
+	Leftovers map[string]string  `json:"leftovers,omitempty"` // runner -> executor; Clean failed, retried
+	Dirty     bool               `json:"dirty"`
+	// DirtyTrust is the trust key every job since the last reset had, and
+	// empty when they differed or anything else dirtied the node. A job can
+	// leave a process behind that only a reset kills, and that process can
+	// read a later job's cache through /proc, so a cache goes only to the
+	// repo whose trusted jobs alone have run since the reset.
+	DirtyTrust  string            `json:"dirty_trust,omitempty"`
+	Quarantined map[string]string `json:"quarantined,omitempty"` // source -> why
+	Paused      bool              `json:"paused,omitempty"`
+	PauseReason string            `json:"pause_reason,omitempty"`
 }
 
 type report struct {
@@ -269,7 +275,7 @@ func (w *Worker) reconcile(ctx context.Context) {
 	w.mu.Lock()
 	if !w.started {
 		w.started = true
-		w.st.Dirty = true // a restart never starts clean: reset at the first idle moment
+		w.markDirtyLocked() // a restart never starts clean: reset at the first idle moment
 	}
 	var todo []*execInfo
 	for _, e := range w.execs {
@@ -332,7 +338,7 @@ func (w *Worker) stopAndClean(ctx context.Context, e *execInfo, name string) {
 			w.log.Warn("runner left behind; retrying", "executor", e.name, "runner", name, "error", err)
 		}
 		w.leftoverLocked(name, e.name, err.Error())
-		w.st.Dirty = true
+		w.markDirtyLocked()
 	} else {
 		delete(w.st.Leftovers, name)
 		delete(w.cleanErrs, name)
@@ -511,7 +517,7 @@ func (w *Worker) stopJob(ctx context.Context, j *jobRec, why string) {
 	if j.starting {
 		// Stopped once its Start returns; until then it holds its slot.
 		j.Stopping, j.StopErr = why, "it is still starting"
-		w.st.Dirty = true
+		w.markDirtyLocked()
 		w.mu.Unlock()
 		return
 	}
@@ -525,7 +531,7 @@ func (w *Worker) stopJob(ctx context.Context, j *jobRec, why string) {
 		w.mu.Lock()
 		first := j.Stopping == ""
 		j.Stopping, j.StopErr = why, err.Error()
-		w.st.Dirty = true
+		w.markDirtyLocked()
 		w.mu.Unlock()
 		if first {
 			w.log.Warn("stop failed; the job stays counted and its executor takes nothing new until it stops",
@@ -610,7 +616,7 @@ func (w *Worker) maybeReset(ctx context.Context, now time.Time) {
 		return
 	}
 	lifted := len(w.st.Quarantined)
-	w.st.Dirty = false
+	w.st.Dirty, w.st.DirtyTrust = false, ""
 	w.st.Quarantined = nil
 	w.st.Leftovers = nil
 	w.cleanErrs = nil
@@ -812,7 +818,7 @@ func (w *Worker) exchange(ctx context.Context, now time.Time, d core.Decision, a
 				w.st.Quarantined = map[string]string{}
 			}
 			w.st.Quarantined[name] = "quarantined by " + name
-			w.st.Dirty = true
+			w.markDirtyLocked()
 			w.log.Warn("source quarantined this device; taking nothing from it until a reset", "source", name)
 		}
 		var stops []*jobRec
@@ -988,7 +994,7 @@ func (w *Worker) start(ctx context.Context, src core.WorkSource, off core.WorkOf
 	}
 	spec.Cache, rec.Trust, rec.Cached = c, trustKey(offerCache(off)), !c.IsZero()
 	w.st.Jobs = append(w.st.Jobs, rec)
-	w.st.Dirty = true
+	w.ranLocked(rec.Trust)
 	w.mu.Unlock()
 	if err := w.save(); err != nil {
 		w.log.Error("state not saved before start", "error", err)
@@ -1375,12 +1381,32 @@ func (w *Worker) cacheDecisionLocked(e *execInfo, off core.WorkOffer) (core.Cach
 	if tk == "" || off.Drain || !caches || !rc.CachesRepos() {
 		return core.CacheRepo{}, true
 	}
+	if w.st.Dirty && w.st.DirtyTrust != tk {
+		return core.CacheRepo{}, true // something else ran since the last reset
+	}
 	for _, j := range w.st.Jobs {
 		if j.Trust != tk {
 			return core.CacheRepo{}, true
 		}
 	}
 	return t, true
+}
+
+// markDirtyLocked records that the node needs a reset for a reason that
+// isn't one repo's trusted job, so no cache is handed out until it has one.
+func (w *Worker) markDirtyLocked() {
+	w.st.Dirty, w.st.DirtyTrust = true, ""
+}
+
+// ranLocked records that a job with trust key tk started.
+func (w *Worker) ranLocked(tk string) {
+	switch {
+	case !w.st.Dirty:
+		w.st.DirtyTrust = tk
+	case w.st.DirtyTrust != tk:
+		w.st.DirtyTrust = ""
+	}
+	w.st.Dirty = true
 }
 
 // mixedTrust says whether offers name more than one trust key ("" counts).

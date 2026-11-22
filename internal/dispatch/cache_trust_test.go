@@ -47,11 +47,59 @@ func TestCacheIsExclusiveToOneTrustedRepo(t *testing.T) {
 		{"the holding repo, any case", []*jobRec{heldBy(repoApp)}, cacheOffer("Baney75/APP", true, false), true, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			w.st.Jobs = tc.jobs
+			w.st.Jobs, w.st.Dirty, w.st.DirtyTrust = tc.jobs, false, ""
 			if c, ok := cached(tc.off); c != tc.cache || ok != tc.ok {
 				t.Fatalf("cached %v ok %v, want %v %v", c, ok, tc.cache, tc.ok)
 			}
 		})
+	}
+}
+
+// A job can leave a process behind that only a reset kills, and it can
+// read a later job's cache through /proc. So after another repo's job, an
+// untrusted job, a restart or a failed cleanup, no repo gets a cache until
+// the node is reset; a run of one repo's trusted jobs keeps its cache.
+func TestCacheWaitsForAResetAfterAnythingElseRan(t *testing.T) {
+	ex := fakeexec.New("fake", 0, linuxX64)
+	ex.SetCachesRepos(true)
+	e := &execInfo{ex: ex, name: "fake"}
+	app := trustKey(core.CacheRepo{Forge: "github", Repo: repoApp})
+	site := trustKey(core.CacheRepo{Forge: "github", Repo: repoSite})
+	for _, tc := range []struct {
+		name  string
+		ran   []string // trust keys of jobs started since the reset, in order
+		dirty bool     // something other than a job dirtied the node
+		cache bool
+	}{
+		{"clean node", nil, false, true},
+		{"only its own trusted jobs ran", []string{app, app}, false, true},
+		{"another repo's job ran and ended", []string{site}, false, false},
+		{"its own job, then another repo's", []string{app, site}, false, false},
+		{"another repo's, then its own", []string{site, app}, false, false},
+		{"an untrusted job ran", []string{""}, false, false},
+		{"a restart or failed cleanup", nil, true, false},
+		{"its own jobs, then a failed cleanup", []string{app}, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := &Worker{}
+			for _, tk := range tc.ran {
+				w.ranLocked(tk)
+			}
+			if tc.dirty {
+				w.markDirtyLocked()
+			}
+			c, ok := w.cacheDecisionLocked(e, cacheOffer(repoApp, true, false))
+			if c.IsZero() == tc.cache || !ok {
+				t.Fatalf("cached %v ok %v, want cached %v", !c.IsZero(), ok, tc.cache)
+			}
+		})
+	}
+	// A reset makes the node clean again.
+	w := &Worker{}
+	w.ranLocked(site)
+	w.st.Dirty, w.st.DirtyTrust = false, ""
+	if c, _ := w.cacheDecisionLocked(e, cacheOffer(repoApp, true, false)); c.IsZero() {
+		t.Fatal("no cache after a reset")
 	}
 }
 
