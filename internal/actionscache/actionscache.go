@@ -172,7 +172,9 @@ type Service struct {
 	uploads  map[string]*upload // upload id -> upload
 	reserved map[string]string  // entry identity -> upload id
 	repoMu   map[string]*sync.Mutex
-	held     map[string]bool // jobs held to read (Hold)
+	held     map[string]bool                // jobs held to read (Hold)
+	used     map[string]map[int64]time.Time // repo key -> entry id -> restored, not yet in the index
+	reads    map[string]int                 // repo key and file -> downloads in flight
 }
 
 // New returns a Service. It serves nothing until Serve.
@@ -211,6 +213,8 @@ func New(o Options) *Service {
 		reserved: map[string]string{},
 		repoMu:   map[string]*sync.Mutex{},
 		held:     map[string]bool{},
+		used:     map[string]map[int64]time.Time{},
+		reads:    map[string]int{},
 	}
 	s.addr.Store("")
 	s.proxy = s.newProxy()

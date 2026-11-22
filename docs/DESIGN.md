@@ -349,8 +349,14 @@ disk speed with no workflow change. Any step of it that fails leaves the job on 
   `config.WriteAtomic`; a corrupt index reads as empty. Uploads stream to `u-<id>` files, entries
   are `e-<id>`; a sweep under the repo lock removes staging and orphans older than 6 hours. The
   repo cache's LRU cap covers these files too, but it drops a whole repo folder, so the entries
-  have a budget, min(`cache_max`/2, 10 GiB), that caps `MaxJob` too. Create and commit refuse a
-  write past it (cache write denied); until eviction lands, writes stop there (review first-F1).
+  have a budget, min(`cache_max`/2, 10 GiB), that caps `MaxJob` too. A commit that would pass it
+  evicts the repo's least recently used entries (last save or restore, which a lookup records in
+  memory and the next commit writes to `index.json`) until the new entry fits, all under the repo
+  lock, so the entries never hold more than the budget. Eviction never takes an entry with a
+  download in flight (counted from the index read under the repo lock until the file closes) or
+  one a lookup matched in the last minute. When the rest can't make room, commit refuses the
+  write (cache write denied), and create refuses up front when those pinned entries already fill
+  the budget (review first-F1).
 - Speed: uploads stream to disk through a pooled 1 MiB buffer with sha256 computed on the way,
   and downloads are `http.ServeContent` on the open file (sendfile, `Range`). Benchmark
   (`BenchmarkSaveRestore256MiB`, 256 MiB, i9-14900HX, tmpfs, loopback, 3 runs of 5): save

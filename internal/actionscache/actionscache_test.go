@@ -2,6 +2,7 @@ package actionscache
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
@@ -14,8 +15,10 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -902,9 +905,14 @@ func BenchmarkSaveRestore256MiB(b *testing.B) {
 	})
 }
 
-type budgetStore struct{ fakeStore }
+// budgetStore is a fakeStore with an Actions budget of n bytes (2500
+// when n is 0).
+type budgetStore struct {
+	fakeStore
+	n int64
+}
 
-func (budgetStore) ActionsBudget() int64 { return 2500 }
+func (b budgetStore) ActionsBudget() int64 { return cmp.Or(b.n, 2500) }
 
 // An upload begun before the job was held cannot finalize (review second-S1).
 func TestHeldJobCannotFinalize(t *testing.T) {
@@ -922,30 +930,237 @@ func TestHeldJobCannotFinalize(t *testing.T) {
 	}
 }
 
-// Once the budget is reached writes are refused and the repo's build
-// caches stay (review first-F1).
-func TestWritesStopAtTheBudget(t *testing.T) {
-	h := newHarness(t, Options{})
+// clock is a settable Options.Now.
+type clock struct {
+	mu sync.Mutex
+	t  time.Time
+}
+
+func newClock() *clock { return &clock{t: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)} }
+
+func (c *clock) now() time.Time { c.mu.Lock(); defer c.mu.Unlock(); return c.t }
+
+func (c *clock) add(d time.Duration) { c.mu.Lock(); c.t = c.t.Add(d); c.mu.Unlock() }
+
+// budgetSave saves key with n random bytes as a fresh confirmed job (each
+// job may upload the whole budget) on a store with budget b.
+func (h *harness) budgetSave(b int64, key string, data []byte) (bool, string) {
+	h.t.Helper()
 	main := BranchScope("main")
-	save := func(key string, n int) (bool, string) { // a job per save: each may upload the budget
-		if err := h.svc.Grant(Binding{Job: "tm-" + key, Repo: repo, Ref: main, Default: main, Access: Write, Store: budgetStore{h.store}, Confirmed: true}); err != nil {
-			t.Fatal(err)
-		}
-		return h.client("tm-"+key, "").save(key, ver, randBytes(n), 4096)
+	if err := h.svc.Grant(Binding{Job: "tm-" + key, Repo: repo, Ref: main, Default: main, Access: Write, Store: budgetStore{h.store, b}, Confirmed: true}); err != nil {
+		h.t.Fatal(err)
 	}
+	defer h.svc.Revoke("tm-" + key)
+	return h.client("tm-"+key, "").save(key, ver, data, 4096)
+}
+
+// keys lists the repo's entries, oldest first, after checking that the
+// folder holds exactly their files and no more bytes than budget.
+func (h *harness) keys(budget int64) []string {
+	h.t.Helper()
+	root, err := h.store.ActionsRoot(repo, false)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	defer root.Close()
+	idx, err := loadIndex(root)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	if idx.bytes() > budget {
+		h.t.Fatalf("entries hold %d bytes, over the budget of %d", idx.bytes(), budget)
+	}
+	var onDisk int64
+	files, _ := filepath.Glob(filepath.Join(root.Name(), "e-*"))
+	for _, f := range files {
+		fi, err := os.Stat(f)
+		if err != nil {
+			h.t.Fatal(err)
+		}
+		if idx.byFile(filepath.Base(f)) == nil {
+			h.t.Fatalf("%s is in the folder but not the index", filepath.Base(f))
+		}
+		onDisk += fi.Size()
+	}
+	if onDisk != idx.bytes() {
+		h.t.Fatalf("entry files hold %d bytes, the index %d", onDisk, idx.bytes())
+	}
+	var out []string
+	for _, e := range idx.Entries {
+		out = append(out, e.Key)
+	}
+	return out
+}
+
+// A repo at its budget keeps accepting saves: each evicts the least
+// recently used entries, a restore counts as a use, and the repo's build
+// caches stay (review first-F1).
+func TestSavesEvictTheLeastRecentlyUsedAtTheBudget(t *testing.T) {
+	c := newClock()
+	h := newHarness(t, Options{Now: c.now})
 	k, _ := repocache.Key(repo)
 	build := filepath.Join(h.store.dir, k, "go-build")
 	if err := os.MkdirAll(build, 0o700); err != nil || os.WriteFile(build+"/obj", []byte("o"), 0o600) != nil {
 		t.Fatal(err)
 	}
-	// Of 2500 bytes: the second passes create and fails commit, the last
-	// fails create.
-	for i, n := range []int{1000, 2000, 1500, 1} {
-		if ok, msg := save(fmt.Sprint("k", i), n); ok != (i%2 == 0) || !ok && !strings.Contains(msg, denied) {
-			t.Fatalf("save %d of %d bytes: %v %q", i, n, ok, msg)
+	save := func(key string, n int) {
+		t.Helper()
+		c.add(time.Hour)
+		if ok, msg := h.budgetSave(0, key, randBytes(n)); !ok {
+			t.Fatalf("save %s of %d bytes: %s", key, n, msg)
 		}
+	}
+	save("a", 1000)
+	save("b", 1000)
+	if got := h.keys(2500); !slices.Equal(got, []string{"a", "b"}) {
+		t.Fatal(got)
+	}
+	save("c", 1000) // 3000 > 2500: a goes
+	if got := h.keys(2500); !slices.Equal(got, []string{"b", "c"}) {
+		t.Fatal(got)
+	}
+	// A restore of b makes c the least recently used.
+	c.add(time.Hour)
+	reader := h.job("tm-reader", BranchScope("main"), BranchScope("main"), Read, "")
+	if d := reader.lookup("b", ver); !d.OK {
+		t.Fatal("b was not found")
+	}
+	c.add(time.Hour)
+	save("d", 1000)
+	if got := h.keys(2500); !slices.Equal(got, []string{"b", "d"}) {
+		t.Fatal(got)
+	}
+	save("e", 2000) // takes both
+	if got := h.keys(2500); !slices.Equal(got, []string{"e"}) {
+		t.Fatal(got)
 	}
 	if _, err := os.Stat(build + "/obj"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// An entry being downloaded is never evicted. When the space it pins
+// leaves no room, the save is refused instead, as a warning.
+func TestDownloadPinsEntry(t *testing.T) {
+	const mib = 1 << 20
+	const budget = 64 * mib
+	c := newClock()
+	h := newHarness(t, Options{Now: c.now})
+	a := randBytes(24 * mib) // more than loopback buffers, so the GET stays open
+	if ok, msg := h.budgetSave(budget, "a", a); !ok {
+		t.Fatal(msg)
+	}
+	c.add(time.Hour)
+	if ok, msg := h.budgetSave(budget, "b", randBytes(24*mib)); !ok {
+		t.Fatal(msg)
+	}
+	reader := h.job("tm-reader", BranchScope("main"), BranchScope("main"), Read, "")
+	d := reader.lookup("a", ver)
+	if !d.OK {
+		t.Fatal("a was not found")
+	}
+	res, err := reader.http.Get(d.SignedDownloadURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	head := make([]byte, 1)
+	if _, err := io.ReadFull(res.Body, head); err != nil {
+		t.Fatal(err)
+	}
+	c.add(time.Hour) // past lookupGrace: only the download pins a now
+
+	// a is the oldest but downloading, so b goes.
+	if ok, msg := h.budgetSave(budget, "c", randBytes(24*mib)); !ok {
+		t.Fatal(msg)
+	}
+	if got := h.keys(budget); !slices.Equal(got, []string{"a", "c"}) {
+		t.Fatal(got)
+	}
+	// 48 MiB fits only if a goes: refused.
+	c.add(time.Hour)
+	if ok, msg := h.budgetSave(budget, "d", randBytes(48*mib)); ok || !strings.Contains(msg, denied) {
+		t.Fatalf("a save that needed the downloading entry: %v %q", ok, msg)
+	}
+	rest, err := io.ReadAll(res.Body)
+	if err != nil || !bytes.Equal(append(head, rest...), a) {
+		t.Fatalf("download of a: %d bytes, %v", 1+len(rest), err)
+	}
+	res.Body.Close()
+	// Once the download ends, a may go.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		ok, msg := h.budgetSave(budget, fmt.Sprint("e", time.Now().UnixNano()), randBytes(48*mib))
+		if ok {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("save after the download ended: %s", msg)
+		}
+		time.Sleep(10 * time.Millisecond) // the handler closes the file after the client is done
+	}
+	if got := h.keys(budget); len(got) != 1 || got[0] == "a" || got[0] == "c" {
+		t.Fatal(got)
+	}
+}
+
+// Concurrent saves never push the repo's entries past the budget, and
+// the folder ends holding exactly the index's files. Run with -race.
+func TestConcurrentSavesStayInBudget(t *testing.T) {
+	const budget = 8000
+	h := newHarness(t, Options{})
+	root, err := h.store.ActionsRoot(repo, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	rk := repoKey(repo)
+	stop := make(chan struct{})
+	watched := make(chan error, 1)
+	go func() { // checks the index the way commit sees it, under the repo lock
+		var err error
+		defer func() { watched <- err }()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			unlock := h.svc.lockRepo(rk)
+			idx, lerr := loadIndex(root)
+			unlock()
+			if lerr == nil && idx.bytes() > budget {
+				err = fmt.Errorf("entries hold %d bytes, over %d", idx.bytes(), budget)
+				return
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}()
+	var wg sync.WaitGroup
+	var saved atomic.Int64
+	for w := range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range 12 {
+				n := 500 + (w*7+i*13)%2500
+				key := fmt.Sprintf("w%d-%d", w, i)
+				if ok, _ := h.budgetSave(budget, key, randBytes(n)); ok {
+					saved.Add(1)
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	close(stop)
+	if err := <-watched; err != nil {
+		t.Fatal(err)
+	}
+	// Nothing pins an entry, so every save fits by evicting.
+	if saved.Load() != 8*12 {
+		t.Fatalf("only %d of %d saves went through", saved.Load(), 8*12)
+	}
+	if got := h.keys(budget); len(got) == 0 {
+		t.Fatal("no entries left")
 	}
 }
