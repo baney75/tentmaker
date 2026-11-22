@@ -10,6 +10,7 @@
 <p align="center">
   <a href="https://github.com/baney75/tentmaker/actions/workflows/ci.yml"><img src="https://github.com/baney75/tentmaker/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
   <a href="https://github.com/baney75/tentmaker/actions/workflows/e2e.yml"><img src="https://github.com/baney75/tentmaker/actions/workflows/e2e.yml/badge.svg" alt="End-to-end test status"></a>
+  <a href="https://github.com/baney75/tentmaker/releases/latest"><img src="https://img.shields.io/github/v/release/baney75/tentmaker?color=A63D2A&label=release" alt="Latest release"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-A63D2A" alt="MIT license"></a>
 </p>
 
@@ -20,7 +21,9 @@ curl -fsSL https://raw.githubusercontent.com/baney75/tentmaker/main/scripts/inst
 sudo tentmaker setup
 ```
 
-> **v0.1 is early.** Every package is unit tested on Linux, macOS and Windows, but the sandboxes and the service have no automated test on real machines yet. Read [Project status](#project-status) before you point a repo you care about at it.
+<p align="center"><img src="docs/media/demo.gif" alt="tentmaker status, budget and pool in a terminal: one device on boost, running a check job in one of its two slots" width="720"></p>
+
+> **v0.1 is the first release.** Every change runs the unit tests on Linux, macOS and Windows, installs a release on real GitHub-hosted Linux, macOS and Windows machines, runs a job through it, and attacks the sandbox fence from inside a job. Read [Project status](#project-status) before you point a repo you care about at it.
 
 ## Why
 
@@ -298,9 +301,11 @@ On Windows, run `tentmaker uninstall` in an Administrator PowerShell. If the bin
 
 Tentmaker is new. v0.1 is the first release line, and its contracts may still change.
 
-**Proven in CI on every push:** unit tests for every package on Linux, macOS and Windows, with fake forges, sandboxes, power sources and tailnets; a cross-build for all six OS and CPU pairs; the release archives and their checksums; and both installers run end to end against a local release (install.sh on Linux and macOS, install.ps1 under Windows PowerShell 5.1 and PowerShell 7).
+**Proven in CI on every push:** unit tests for every package on Linux, macOS and Windows, with fake forges, sandboxes, power sources and tailnets; a cross-build for all six OS and CPU pairs; the release archives and their checksums; and both installers run end to end (install.sh on Linux and macOS, install.ps1 under Windows PowerShell 5.1 and PowerShell 7).
 
-**Needs a real machine:** tests behind the `live` build tag read real power, idle, disk, memory and Tailscale state (`go test -tags live ./internal/power ./internal/guards ./internal/mesh`). The sandboxes themselves, the service install, and a full job from a forge through a sandbox have no automated real-host test yet. Expect rough edges there, and please [open an issue](https://github.com/baney75/tentmaker/issues) when you hit one.
+**Proven on real machines:** the e2e workflow installs a release on GitHub-hosted Linux, macOS and Windows machines, sets it up as a service and runs a real job through the sandbox. The abuse workflows run attacks from inside a job against the network fence, the memory and process limits and the other jobs on the device, and fail if one gets through. Tests behind the `live` build tag read real power, idle, disk, memory and Tailscale state.
+
+**Not proven yet:** a pool of several devices over a real tailnet for days, and laptops on battery. Please [open an issue](https://github.com/baney75/tentmaker/issues) when you hit a rough edge.
 
 Not in v0.1: Linux jobs on Windows through WSL2, runner mode for Forgejo and Gitea, and caches shared between jobs.
 
