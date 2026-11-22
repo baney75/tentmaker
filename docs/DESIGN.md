@@ -218,7 +218,8 @@ setup`), idempotent and safe to rerun.
   per job a fresh copy (`externals` a symlink and `bin/` hard links to the template, never
   chowned; top-level files and any file the CI user could write are copied), own HOME, a transient systemd unit in `tentmaker.slice` with `MemoryMax`
   = job memory, `CPUQuota` = job CPUs, Nice 10, idle IO; rootless podman socket for container
-  jobs with `DOCKER_HOST` (the runner's manager gets its own `XDG_CONFIG_HOME` and
+  jobs with `DOCKER_HOST` and `DOCKER_BUILDKIT=0` (podman serves docker's classic build API,
+  building with buildah in its own store, but not BuildKit's) (the runner's manager gets its own `XDG_CONFIG_HOME` and
   `XDG_RUNTIME_DIR` from a root-owned `environment.d/zz-tentmaker.conf`, which sorts after
   `/etc/environment`'s `99-environment.conf`: GitHub's runners name uid 1001's dirs there, and
   podman's service then fails to start); the slice's own `MemoryMax`/`CPUQuota` = the pool limit
