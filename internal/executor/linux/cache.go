@@ -215,6 +215,9 @@ func (e *Executor) cacheInUse() (map[string]bool, error) {
 	return out, nil
 }
 
+// CachesRepos implements core.RepoCacher.
+func (e *Executor) CachesRepos() bool { return e.cache.Enabled() }
+
 // cacheEnv points the tools a job runs at its repo cache.
 func (e *Executor) cacheEnv() []string {
 	m := e.cacheMount()

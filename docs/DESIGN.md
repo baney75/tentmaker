@@ -224,6 +224,10 @@ one runs cold at `jobs/<name>` as before.
 - A cache that can't be prepared leaves the job cold (a warning), never failed.
 - Who gets one: see `WorkOffer.Cache` under Dispatch. The cache is per repo, not per branch: any
   job of the repo may write what a later job of it reads.
+- One repo per device while a cache is held: every job runs as one user, so a job beside a cached
+  job could reach its cache through `/proc/<pid>/root`, `cwd` or `fd`. The worker gives a job its
+  cache only when every job already on the device is vouched safe for that same repo, and while
+  one holds it, it declines any other offer. See `WorkRequest.OnlyRepo` under Dispatch.
 - macOS (tart) jobs get no cache yet: the executor has no folder share into a guest; `tart run
   --dir` is the next step. Windows jobs get none: every job runs as the same user with no mount
   namespace, so one repo's cache folder can't be kept from another repo's job.
@@ -436,6 +440,20 @@ is private and its fork PR workflows are off (`RepoInfo.ForkPolicy == "off"`, re
 ago): a JIT runner takes whichever queued job matches its labels, so the granted job's own
 `FromFork` proves nothing about the job it runs. The worker sets `ExecSpec.Cache` (forge and repo)
 only from an offer with the flag and a job that isn't from a fork; an older broker never sets it.
+
+A cache is only as private as the least trusted job beside it (one user, `/proc`), so the worker
+decides under its admission lock, from the jobs on the device (`jobRec.Trust`, the repo the job
+was vouched safe for, and `jobRec.Cached`, both in state.json):
+- While a job holds repo R's cache, an offer not vouched safe for R (another repo, a fork, an
+  untrusted job of R) is declined.
+- A job gets R's cache only if it is vouched safe for R, its executor is a `core.RepoCacher` that
+  `CachesRepos()`, the offer isn't `Drain`, and every job on the device is vouched safe for R.
+- One response with offers of more than one repo (or trusted and untrusted ones) runs them all
+  cold, so none is declined for another's cache.
+The worker sends `WorkRequest.OnlyRepo` while it holds a cache. The broker then picks only that
+repo's cache-safe jobs (check jobs of the repo; runner jobs of the repo while it is cache safe);
+when it skipped another repo's job that the device could run, it marks the picks `Drain`, so they
+run cold and the device holds no cache once the cached job ends, and the waiting repo gets in.
 
 Worker: each tick (1 s, or at once after `Kick`) reads `Budget.Decide`, applies `SetPoolLimit`, reports `Running` and
 `Ended`, asks sources for `Free` offers, starts each with the matching executor, honors `Stop`,

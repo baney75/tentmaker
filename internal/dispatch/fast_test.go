@@ -105,6 +105,7 @@ func TestOffersMarkCacheSafeJobsOnly(t *testing.T) {
 	t.Run("checks", func(t *testing.T) {
 		r := newRig(t, checksRepo(repoSite))
 		w := r.addWorker("alpha", 8)
+		w.ex.SetCachesRepos(true)
 		r.forge.SetFile(repoSite, sha1, ciWorkflow, []byte("test\n"))
 		r.forge.SetCommits(repoSite, []core.Commit{{SHA: sha1, Ref: "main", Author: "baney75"}})
 		r.tick()
@@ -135,6 +136,7 @@ func TestOffersMarkCacheSafeJobsOnly(t *testing.T) {
 			info.Repo, info.DefaultBranch = repoApp, "main"
 			r.forge.SetRepo(info)
 			w := r.addWorker("alpha", 8)
+			w.ex.SetCachesRepos(true)
 			r.addJob(repoApp)
 			r.run(10*time.Second, time.Second)
 			names := started(w.ex)

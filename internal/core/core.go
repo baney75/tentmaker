@@ -373,6 +373,12 @@ type WorkRequest struct {
 	// Results carries finished check jobs back to the broker that granted
 	// them, which posts the commit statuses.
 	Results []CheckResult `json:"results"`
+	// OnlyRepo, when set, says a job on the device holds this repo's cache:
+	// every job there runs as one user and can reach the others through
+	// /proc, so the device takes only that repo's cache-safe jobs until it
+	// ends. A broker offers nothing else (an older one that does gets its
+	// offers declined).
+	OnlyRepo *CacheRepo `json:"only_repo,omitempty"`
 }
 
 // WorkOffer is one job for the worker, with the grant to run it.
@@ -387,6 +393,17 @@ type WorkOffer struct {
 	// mode only when the forge runs no fork PR workflows for the repo. An
 	// older broker never sets it, so its jobs get no cache.
 	Cache bool `json:"cache,omitempty"`
+	// Drain asks the worker to run this cache-safe job without the cache:
+	// the broker skipped another repo's job for the device's OnlyRepo, and
+	// that job gets in once the device holds no cache.
+	Drain bool `json:"drain,omitempty"`
+}
+
+// RepoCacher is an executor that gives a job ExecSpec.Cache. Executors
+// without it ignore the field, and the worker never counts their jobs as
+// holding a cache.
+type RepoCacher interface {
+	CachesRepos() bool
 }
 
 // WorkResponse answers a WorkRequest.

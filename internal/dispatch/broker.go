@@ -142,6 +142,7 @@ type grantRec struct {
 
 	pending bool      // the grant call is in flight
 	checked time.Time // last forge check
+	drain   bool      // offer it with Drain: another repo waits for its device
 }
 
 type deviceRec struct {
@@ -454,6 +455,17 @@ func (b *Broker) newNameLocked(device string) string {
 // pickLocked reserves grants for the request. The reservations count as idle
 // runners at once, so a concurrent request can't over-serve a job.
 func (b *Broker) pickLocked(req core.WorkRequest, now time.Time) []*grantRec {
+	skipped := false
+	picks := b.pickAllLocked(req, now, &skipped)
+	for _, rec := range picks {
+		rec.drain = skipped
+	}
+	return picks
+}
+
+// pickAllLocked picks grants for req; it sets *skipped when a job this
+// device could run waits only because of req.OnlyRepo.
+func (b *Broker) pickAllLocked(req core.WorkRequest, now time.Time, skipped *bool) []*grantRec {
 	var picks []*grantRec
 	type cand struct {
 		r      *repoState
@@ -508,6 +520,12 @@ func (b *Broker) pickLocked(req core.WorkRequest, now time.Time) []*grantRec {
 			if !ok {
 				continue
 			}
+			// The device holds a repo's cache: only that repo's cache-safe
+			// jobs may join it; anything else waits (see WorkOffer.Drain).
+			if !onlyRepo(req, r.forge, r.cfg.Name) || (req.OnlyRepo != nil && !b.runnerCacheSafeLocked(r.forge, r.cfg.Name, j)) {
+				*skipped = true
+				continue
+			}
 			cands = append(cands, cand{r, j, p, labels})
 		}
 	}
@@ -548,6 +566,10 @@ func (b *Broker) pickLocked(req core.WorkRequest, now time.Time) []*grantRec {
 				}
 				p, ok := matchCheckPlatform(cj.Platform, req.Platforms)
 				if !ok {
+					continue
+				}
+				if !onlyRepo(req, r.forge, r.cfg.Name) {
+					*skipped = true
 					continue
 				}
 				job := core.Job{Forge: r.forge, Repo: r.cfg.Name, Name: cj.Name, Workflow: cj.Workflow,
@@ -630,7 +652,7 @@ func (b *Broker) realize(ctx context.Context, req core.WorkRequest, rec *grantRe
 	b.log.Info("runner granted", "runner", rec.Name, "runner_id", g.RunnerID, "device", req.Device,
 		"repo", rec.Repo, "job_id", rec.Job.ID, "job", rec.Job.Name, "platform", rec.Platform.String(),
 		"labels", strings.Join(rec.Labels, ","))
-	return core.WorkOffer{Job: rec.Job, Grant: g, Secret: g.Secret, Platform: rec.Platform, Cache: b.cacheSafe(rec)}, true
+	return core.WorkOffer{Job: rec.Job, Grant: g, Secret: g.Secret, Platform: rec.Platform, Cache: b.cacheSafe(rec), Drain: rec.drain}, true
 }
 
 // cacheSafe says whether a runner job may use its repo's persistent cache.
@@ -640,13 +662,24 @@ func (b *Broker) realize(ctx context.Context, req core.WorkRequest, rec *grantRe
 // all) is safe. The forge's answer is at most repoInfoTTL old, like the
 // public-repo refusal it comes with.
 func (b *Broker) cacheSafe(rec *grantRec) bool {
-	if rec.Job.FromFork {
-		return false
-	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	c := b.infos[rec.Forge+":"+rec.Repo]
+	return b.runnerCacheSafeLocked(rec.Forge, rec.Repo, rec.Job)
+}
+
+func (b *Broker) runnerCacheSafeLocked(forge, repo string, j core.Job) bool {
+	if j.FromFork {
+		return false
+	}
+	c := b.infos[forge+":"+repo]
 	return c != nil && c.err == "" && c.noForks
+}
+
+// onlyRepo reports whether repo r may serve a request restricted to
+// req.OnlyRepo (always true without one).
+func onlyRepo(req core.WorkRequest, forge, repo string) bool {
+	o := req.OnlyRepo
+	return o == nil || (o.Forge == forge && strings.EqualFold(o.Repo, repo))
 }
 
 func (b *Broker) realizeCheck(ctx context.Context, req core.WorkRequest, rec *grantRec, now time.Time, drop func(string, error)) (core.WorkOffer, bool) {
@@ -729,7 +762,7 @@ func (b *Broker) realizeCheck(ctx context.Context, req core.WorkRequest, rec *gr
 		Secret: secret, ExpiresAt: now.Add(time.Hour)}
 	// A check job runs exactly one commit the broker picked, never a fork's
 	// (pollChecks skips them), so it may use the repo's cache.
-	return core.WorkOffer{Job: rec.Job, Grant: g, Secret: secret, Platform: rec.Platform, Cache: !rec.Job.FromFork}, true
+	return core.WorkOffer{Job: rec.Job, Grant: g, Secret: secret, Platform: rec.Platform, Cache: !rec.Job.FromFork, Drain: rec.drain}, true
 }
 
 // maxCheckRetries is how many times a check whose grant ended unstarted

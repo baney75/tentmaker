@@ -132,6 +132,10 @@ type jobRec struct {
 	// blocks its executor; pollJobs retries the stop.
 	Stopping string `json:"stopping,omitempty"`
 	StopErr  string `json:"stop_err,omitempty"`
+	// Trust is the repo (trustKey) whose cache the job was vouched safe for,
+	// "" if none; Cached says it got that cache. See cacheDecisionLocked.
+	Trust  string `json:"trust,omitempty"`
+	Cached bool   `json:"cached,omitempty"`
 
 	// starting is set while the executor's Start runs, off the tick, so a
 	// slow boot never stops the worker's heartbeat. The job holds its slot
@@ -754,6 +758,7 @@ func (w *Worker) exchange(ctx context.Context, now time.Time, d core.Decision, a
 		if len(platforms) == 0 {
 			free = 0
 		}
+		only := w.cachedRepoLocked()
 		var running []string
 		for _, j := range w.st.Jobs {
 			if j.Source == name && !j.starting {
@@ -782,7 +787,7 @@ func (w *Worker) exchange(ctx context.Context, now time.Time, d core.Decision, a
 		w.mu.Unlock()
 
 		req := core.WorkRequest{Device: w.device, Labels: w.labels, Platforms: platforms, Free: free,
-			Limits: w.limits, Running: running, Ended: sent.Ended, Results: sent.Results}
+			Limits: w.limits, Running: running, Ended: sent.Ended, Results: sent.Results, OnlyRepo: only}
 		wctx, cancel := context.WithTimeout(ctx, workTimeout)
 		resp, err := s.Work(wctx, req)
 		cancel()
@@ -824,7 +829,11 @@ func (w *Worker) exchange(ctx context.Context, now time.Time, d core.Decision, a
 			w.stopJob(ctx, j, "stopped by the broker")
 		}
 		started := 0
+		mixed := mixedTrust(resp.Offers)
 		for _, off := range resp.Offers {
+			// Offers of more than one repo (or untrusted ones) in one
+			// response all run cold, so none is declined for another's cache.
+			off.Drain = off.Drain || mixed
 			if started >= free || resp.Quarantine {
 				w.decline(name, off, "no room for it")
 				continue
@@ -958,7 +967,6 @@ func (w *Worker) start(ctx context.Context, src core.WorkSource, off core.WorkOf
 	}
 	spec := core.ExecSpec{Kind: kind, Name: name, Grant: g, Platform: off.Platform, Limits: w.limits,
 		MaxDuration: w.o.Config.Job.MaxDuration.D(), TestWorkers: tw}
-	spec.Cache = offerCache(off)
 	rec := &jobRec{Name: name, Source: source, Kind: kind, Executor: e.name, Forge: off.Job.Forge, Repo: off.Job.Repo,
 		Job: off.Job.Name, JobID: off.Job.ID, Platform: off.Platform, Started: now, Limits: w.limits, starting: true}
 	// Admission is checked again under the lock that adds the job record:
@@ -971,6 +979,14 @@ func (w *Worker) start(ctx context.Context, src core.WorkSource, off core.WorkOf
 		w.decline(source, off, "admission closed before the start")
 		return false
 	}
+	c, ok := w.cacheDecisionLocked(e, off)
+	if !ok {
+		w.dropRelaysLocked(name)
+		w.mu.Unlock()
+		w.decline(source, off, "a job holding another repo's cache runs here")
+		return false
+	}
+	spec.Cache, rec.Trust, rec.Cached = c, trustKey(offerCache(off)), !c.IsZero()
 	w.st.Jobs = append(w.st.Jobs, rec)
 	w.st.Dirty = true
 	w.mu.Unlock()
@@ -1319,6 +1335,62 @@ func (w *Worker) Status() WorkerStatus {
 // String makes a short summary for logs and tests.
 func (s WorkerStatus) String() string {
 	return fmt.Sprintf("%s: %d/%d slots used, admit=%v", s.Device, s.Slots.Used, s.Slots.Total, s.Decision.Admit)
+}
+
+// trustKey names the repo a cache is for, "" for none.
+func trustKey(c core.CacheRepo) string {
+	if c.IsZero() {
+		return ""
+	}
+	return c.Forge + "\x00" + strings.ToLower(c.Repo)
+}
+
+// cachedRepoLocked is the repo whose cache a job on the device holds, or
+// nil. cacheDecisionLocked keeps it to one repo at a time.
+func (w *Worker) cachedRepoLocked() *core.CacheRepo {
+	for _, j := range w.st.Jobs {
+		if j.Cached {
+			return &core.CacheRepo{Forge: j.Forge, Repo: j.Repo}
+		}
+	}
+	return nil
+}
+
+// cacheDecisionLocked decides whether offer off may start, and with which
+// cache. Every job on a device runs as one user and can reach the others'
+// files and mounts through /proc, so a cache is only as private as the
+// least trusted job beside it:
+//   - While a job holds repo R's cache, only jobs vouched safe for R may
+//     start (ok false otherwise: declined).
+//   - A job gets R's cache only when it is vouched safe for R, its
+//     executor keeps repo caches, the broker didn't ask it to drain, and
+//     every job already on the device is vouched safe for R.
+func (w *Worker) cacheDecisionLocked(e *execInfo, off core.WorkOffer) (core.CacheRepo, bool) {
+	t := offerCache(off)
+	tk := trustKey(t)
+	if held := w.cachedRepoLocked(); held != nil && trustKey(*held) != tk {
+		return core.CacheRepo{}, false
+	}
+	rc, caches := e.ex.(core.RepoCacher)
+	if tk == "" || off.Drain || !caches || !rc.CachesRepos() {
+		return core.CacheRepo{}, true
+	}
+	for _, j := range w.st.Jobs {
+		if j.Trust != tk {
+			return core.CacheRepo{}, true
+		}
+	}
+	return t, true
+}
+
+// mixedTrust says whether offers name more than one trust key ("" counts).
+func mixedTrust(offs []core.WorkOffer) bool {
+	for _, off := range offs[min(1, len(offs)):] {
+		if trustKey(offerCache(off)) != trustKey(offerCache(offs[0])) {
+			return true
+		}
+	}
+	return false
 }
 
 // offerCache is the repo cache a job may use: its repo's, only when the
