@@ -199,7 +199,7 @@ func TestBrokerForgeReports(t *testing.T) {
 	wr := r.addWorker("alpha", 1, linuxX64)
 
 	j, name := endJob(t, r, wr)
-	r.forge.SetReport(repoApp, j.ID, core.JobReport{Conclusion: "failure", FailedStep: "go test", LogErr: errors.New("404")}, nil)
+	r.forge.SetReport(repoApp, j.ID, core.JobReport{HeadSHA: "abc1234def", Workflow: "CI", Conclusion: "failure", FailedStep: "go test", LogErr: errors.New("404")}, nil)
 	r.forge.Finish(name)
 	wr.ex.Exit(name)
 	r.run(10*time.Second, 2*time.Second)
@@ -209,7 +209,8 @@ func TestBrokerForgeReports(t *testing.T) {
 	r.run(30*time.Second, 2*time.Second)
 	got := rp.all()
 	if len(got) != 1 || got[0].ID != name || got[0].JobID != j.ID || got[0].Device != "alpha" ||
-		got[0].Conclusion != "failure" || got[0].FailedStep != "go test" || got[0].Log != nil {
+		got[0].Conclusion != "failure" || got[0].FailedStep != "go test" || got[0].Log != nil ||
+		got[0].SHA != "abc1234def" || got[0].Workflow != "CI" {
 		t.Fatalf("reports = %+v", got)
 	}
 

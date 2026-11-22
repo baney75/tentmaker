@@ -456,3 +456,21 @@ func TestMergeForgeCopy(t *testing.T) {
 		}
 	}
 }
+
+// The broker's forge copy of a peer's job must survive a query by commit, the
+// agent loop's wait_for_run(repo, sha): the Mac's own record has no result
+// and the copy is what carries the failure.
+func TestForgeCopyMatchesAQueryBySHA(t *testing.T) {
+	now := time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC)
+	cp := ForgeReport{ID: "tm-mac-1", Device: "mac", Repo: "o/n", SHA: "abc1234def0000000000000000000000000000aa",
+		Workflow: "CI", StartedAt: now.Add(-time.Minute), EndedAt: now, Conclusion: "failure", FailedStep: "go test"}.Record()
+	got := Apply([]Record{cp}, Query{SHA: "abc1234"})
+	if len(got) != 1 || got[0].Conclusion != Failure || got[0].Workflow != "CI" || got[0].StartedAt.IsZero() {
+		t.Fatalf("Apply by sha = %+v", got)
+	}
+	dev := Record{ID: "tm-mac-1", Kind: "runner", Device: "mac", Repo: "o/n", EndedAt: now, Conclusion: Unknown}
+	m := Merge([]Record{dev}, got)
+	if len(m) != 1 || m[0].Conclusion != Failure || m[0].SHA != cp.SHA {
+		t.Fatalf("merged = %+v", m)
+	}
+}

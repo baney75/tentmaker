@@ -48,6 +48,8 @@ type apiJob struct {
 	RunnerName string   `json:"runner_name"`
 	HeadSHA    string   `json:"head_sha"`
 	HTMLURL    string   `json:"html_url"`
+	Workflow   string   `json:"workflow_name"`
+	StartedAt  string   `json:"started_at"`
 	Steps      []struct {
 		Name       string `json:"name"`
 		Conclusion string `json:"conclusion"`
@@ -502,7 +504,10 @@ func (c *Client) JobReport(ctx context.Context, repo string, jobID, maxLog int64
 	if j.Status != "completed" {
 		return core.JobReport{}, nil
 	}
-	rep := core.JobReport{Conclusion: j.Conclusion}
+	rep := core.JobReport{Conclusion: j.Conclusion, HeadSHA: j.HeadSHA, Workflow: j.Workflow}
+	if t, err := time.Parse(time.RFC3339, j.StartedAt); err == nil {
+		rep.StartedAt = t
+	}
 	for _, s := range j.Steps {
 		if s.Conclusion == "failure" || s.Conclusion == "timed_out" {
 			rep.FailedStep = s.Name

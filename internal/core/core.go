@@ -314,6 +314,11 @@ type JobInspector interface {
 // "timed_out", ...); it is "" while the job is not completed. Log is the
 // tail of the job's own log (step output), raw; the caller redacts it.
 type JobReport struct {
+	// HeadSHA, Workflow and StartedAt identify the job, so a broker's copy
+	// of a peer's record matches a query by commit.
+	HeadSHA    string
+	Workflow   string
+	StartedAt  time.Time
 	Conclusion string
 	FailedStep string
 	Log        []byte

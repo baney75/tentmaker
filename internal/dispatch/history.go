@@ -86,6 +86,7 @@ func (b *Broker) sendReports(ctx context.Context, now time.Time) {
 		q.tries++
 		if err == nil && res.Conclusion != "" && (res.LogErr == nil || q.tries >= logTries) {
 			q.rep.Conclusion, q.rep.FailedStep, q.rep.Log = res.Conclusion, res.FailedStep, res.Log
+			q.rep.SHA, q.rep.Workflow, q.rep.StartedAt = res.HeadSHA, res.Workflow, res.StartedAt
 			if res.LogErr != nil {
 				b.log.Info("job log not read from the forge; the record keeps the runner's diag log",
 					"runner", q.rep.ID, "job_id", q.rep.JobID, "error", res.LogErr)

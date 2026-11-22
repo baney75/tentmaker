@@ -88,7 +88,8 @@ type ForgeReport struct {
 	ID, Device, Forge, Repo, Job string
 	JobID, RunID                 int64
 	RunURL                       string
-	EndedAt                      time.Time
+	SHA, Workflow                string
+	StartedAt, EndedAt           time.Time
 	Conclusion, FailedStep       string
 	Log                          []byte // raw; nil when it could not be read
 }
@@ -105,6 +106,15 @@ func (r *Record) ApplyForge(rep ForgeReport) {
 	if rep.Log != nil {
 		r.LogSource = LogForge
 	}
+	if r.SHA == "" {
+		r.SHA = rep.SHA
+	}
+	if r.Workflow == "" {
+		r.Workflow = rep.Workflow
+	}
+	if r.StartedAt.IsZero() {
+		r.StartedAt = rep.StartedAt
+	}
 }
 
 // Record is the record a broker keeps for a peer's job it has a forge
@@ -114,6 +124,7 @@ func (rep ForgeReport) Record() Record {
 	r := Record{ID: rep.ID, Kind: "runner", Forge: rep.Forge, Repo: rep.Repo, Job: rep.Job, JobID: rep.JobID,
 		RunID: rep.RunID, RunURL: rep.RunURL, Device: rep.Device, EndedAt: rep.EndedAt}
 	r.ApplyForge(rep)
+	r.SHA, r.Workflow, r.StartedAt = rep.SHA, rep.Workflow, rep.StartedAt
 	r.LogSource = LogForge
 	return r
 }
@@ -236,6 +247,15 @@ func Apply(recs []Record, q Query) []Record {
 // forge.
 func withForge(dev, forge Record) Record {
 	dev.Conclusion, dev.FailedStep = forge.Conclusion, forge.FailedStep
+	if dev.SHA == "" {
+		dev.SHA = forge.SHA
+	}
+	if dev.Workflow == "" {
+		dev.Workflow = forge.Workflow
+	}
+	if dev.StartedAt.IsZero() {
+		dev.StartedAt = forge.StartedAt
+	}
 	if forge.HasLog {
 		dev.LogSource = LogForge
 	}
