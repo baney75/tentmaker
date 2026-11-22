@@ -111,6 +111,13 @@ func jobID(v any) error {
 	return nil
 }
 
+func optJobID(v any) error {
+	if v.(string) == "" {
+		return nil
+	}
+	return jobID(v)
+}
+
 func optRepo(v any) error {
 	if v.(string) == "" {
 		return nil
@@ -402,6 +409,74 @@ var tools = []tool{
 				return nil, fmt.Errorf("pass repo and sha, or run_url alone")
 			}
 			return c.WaitForRun(ctx, a.str("repo"), a.str("sha"), a.str("run_url"), time.Duration(a.num("timeout_s"))*time.Second)
+		},
+	},
+	{
+		Name:  "tests",
+		Title: "A CI job's test results",
+		Description: "Return one job's test cases from its JUnit reports and go test -json output: counts, and each " +
+			"failed test with its message and output. Failed only by default. Read-only.",
+		Props: []prop{
+			{Name: "id", Type: "string", Required: true, Description: "The job id from runs or wait_for_run.", Check: jobID},
+			{Name: "failed", Type: "boolean", Default: true, Description: "Only failed tests (true), or every test, up to 5000 (false)."},
+		},
+		ReadOnly: true, Idempotent: true, OpenWorld: true,
+		run: func(ctx context.Context, c Controller, a args) (any, error) {
+			return c.Tests(ctx, a.str("id"), a.flag("failed"))
+		},
+	},
+	{
+		Name:  "flaky",
+		Title: "Flaky tests",
+		Description: "List tests that look flaky across the pool: they failed and then passed on the same commit, or " +
+			"flipped between failing and passing in a job's recent runs on one branch. Read-only.",
+		Props: []prop{
+			{Name: "repo", Type: "string", Description: "Only this repository, as owner/name.", Check: optRepo},
+			{Name: "since", Type: "string", Default: "14d", Description: "Window back from now, like 24h, 7d or 30d.", Check: window},
+		},
+		ReadOnly: true, Idempotent: true, OpenWorld: true,
+		run: func(ctx context.Context, c Controller, a args) (any, error) {
+			return c.Flaky(ctx, a.str("repo"), a.str("since"))
+		},
+	},
+	{
+		Name:  "why_failed",
+		Title: "Why a CI job failed",
+		Description: "Explain a failed job in a small answer: the failed step, up to 5 failing tests with their messages, " +
+			"the log lines around the first error, and whether it looks flaky. Pass id, or repo with sha or run_id for " +
+			"the newest failed job there. kept_until is set when its sandbox is kept for debug_exec. Read-only.",
+		Props: []prop{
+			{Name: "id", Type: "string", Description: "A job id from runs or wait_for_run.", Check: optJobID},
+			{Name: "repo", Type: "string", Description: "Repository as owner/name, with sha or run_id.", Check: optRepo},
+			{Name: "sha", Type: "string", Description: "The commit: full sha or 7 or more characters.", Check: commitSHA},
+			{Name: "run_id", Type: "number", Description: "The run id, the number in the run's URL.", Check: between(0, 1<<53)},
+		},
+		ReadOnly: true, Idempotent: true, OpenWorld: true,
+		run: func(ctx context.Context, c Controller, a args) (any, error) {
+			byID := a.str("id") != ""
+			byRepo := a.str("repo") != "" && (a.str("sha") != "") != (a.num("run_id") != 0)
+			if byID == byRepo || (byID && (a.str("repo") != "" || a.str("sha") != "" || a.num("run_id") != 0)) {
+				return nil, fmt.Errorf("pass id alone, or repo with sha or run_id")
+			}
+			return c.WhyFailed(ctx, a.str("id"), a.str("repo"), a.str("sha"), int64(a.num("run_id")))
+		},
+	},
+	{
+		Name:  "debug_exec",
+		Title: "Run a command in a failed job's sandbox",
+		Description: "Run one shell command in a failed job's sandbox, kept on this device when the repo sets " +
+			"[repos.debug] keep_failed, as the job's user with its limits and network fence. Returns exit_code, output " +
+			"(redacted, its last max_bytes), truncated and timed_out. Use it to rerun a failing test or read a file " +
+			"the job left. Needs the MCP server to run as root.",
+		Props: []prop{
+			{Name: "id", Type: "string", Required: true, Description: "The failed job's id; why_failed says whether its sandbox is kept.", Check: jobID},
+			{Name: "command", Type: "string", Required: true, Description: "A shell command, run with /bin/sh -c in the job's workspace.", Check: nonEmpty},
+			{Name: "timeout_s", Type: "number", Default: float64(60), Description: "Seconds the command may run, 1 to 600.", Check: between(1, 600)},
+			{Name: "max_bytes", Type: "number", Default: float64(64 << 10), Description: "Output bytes to return, its last ones, 1 to 1048576.", Check: between(1, 1<<20)},
+		},
+		Destructive: true,
+		run: func(ctx context.Context, c Controller, a args) (any, error) {
+			return c.DebugExec(ctx, a.str("id"), a.str("command"), int64(a.num("timeout_s")), int64(a.num("max_bytes")))
 		},
 	},
 }

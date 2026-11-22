@@ -13,16 +13,18 @@ import (
 )
 
 type recorder struct {
-	mu   sync.Mutex
-	recs []runs.Record
-	logs [][]byte
+	mu    sync.Mutex
+	recs  []runs.Record
+	logs  [][]byte
+	tests []*runs.TestResults
 }
 
-func (r *recorder) JobEnded(rec runs.Record, log []byte) {
+func (r *recorder) JobEnded(rec runs.Record, log []byte, tests *runs.TestResults) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.recs = append(r.recs, rec)
 	r.logs = append(r.logs, log)
+	r.tests = append(r.tests, tests)
 }
 
 func (r *recorder) all() ([]runs.Record, [][]byte) {

@@ -64,6 +64,13 @@ type Record struct {
 	// LogForge (the forge's own job log and step results) or LogRunnerDiag
 	// (the runner's _diag trace logs, when the forge could not be read).
 	LogSource string `json:"log_source,omitempty"`
+	// Tests counts the job's test results (JUnit reports in its workspace,
+	// go test -json lines in its log), nil when it reported none. The
+	// device keeps the cases themselves (Store.Tests).
+	Tests *TestSummary `json:"tests,omitempty"`
+	// KeptUntil is when a failed job's sandbox, kept for debugging, is
+	// cleaned up; zero when it was not kept.
+	KeptUntil time.Time `json:"kept_until,omitzero"`
 }
 
 // Log sources.
@@ -258,6 +265,9 @@ func withForge(dev, forge Record) Record {
 	}
 	if forge.HasLog {
 		dev.LogSource = LogForge
+	}
+	if dev.Tests == nil {
+		dev.Tests = forge.Tests
 	}
 	return dev
 }

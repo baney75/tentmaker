@@ -12,11 +12,21 @@ import (
 )
 
 // RunRecorder keeps run history. The worker calls JobEnded once per job
-// that ran, off its lock, with the record and the raw tail of the job's
-// log (nil when the executor can't read one); the recorder redacts it. It
-// must not block for long: the daemon's stores it and queues alerts.
+// that ran, off its lock, with the record, the raw tail of the job's log
+// (nil when the executor can't read one) and the test reports found in its
+// workspace (nil when the executor can't look); the recorder redacts them.
+// It must not block for long: the daemon's stores it and queues alerts.
 type RunRecorder interface {
-	JobEnded(rec runs.Record, log []byte)
+	JobEnded(rec runs.Record, log []byte, tests *runs.TestResults)
+}
+
+// TestCollector is an executor that can find the test reports (JUnit XML)
+// a job wrote in its workspace. The worker reads them after the job exits
+// and before Clean. The workspace is the job's, so a collector reads it
+// without following a link out of it and within size and count limits
+// (internal/testresults).
+type TestCollector interface {
+	TestResults(ctx context.Context, name string) (runs.TestResults, error)
 }
 
 // ReportRecorder takes a broker's forge result for a runner job that
@@ -166,7 +176,11 @@ type collected struct {
 	hasLg bool
 	usage core.Usage
 	ended time.Time
+	tests *runs.TestResults
 }
+
+// testsTimeout bounds the scan of one job's workspace for test reports.
+const testsTimeout = 30 * time.Second
 
 // collect reads a finished job's log and last use before Clean.
 func (w *Worker) collect(ctx context.Context, e *execInfo, j *jobRec) collected {
@@ -191,6 +205,15 @@ func (w *Worker) collect(ctx context.Context, e *execInfo, j *jobRec) collected 
 		c.log, c.hasLg = l.Data, true
 	}
 	cancel()
+	if tc, ok := e.ex.(TestCollector); ok {
+		tctx, cancel := context.WithTimeout(ctx, testsTimeout)
+		if t, err := tc.TestResults(tctx, j.Name); err == nil {
+			c.tests = &t
+		} else {
+			w.log.Info("test reports not read", "runner", j.Name, "error", err)
+		}
+		cancel()
+	}
 	return c
 }
 
@@ -204,11 +227,8 @@ func (w *Worker) baseRecord(j *jobRec) runs.Record {
 	}
 }
 
-// recordEnd hands the ended job's record to the recorder.
-func (w *Worker) recordEnd(j *jobRec, res *core.CheckResult, why string, c collected) {
-	if w.o.Runs == nil {
-		return
-	}
+// endRecord is the ended job's record and the log the recorder keeps.
+func (w *Worker) endRecord(j *jobRec, res *core.CheckResult, why string, c collected) (runs.Record, []byte) {
 	w.mu.Lock()
 	rec := w.baseRecord(j)
 	stopping := j.Stopping
@@ -250,7 +270,15 @@ func (w *Worker) recordEnd(j *jobRec, res *core.CheckResult, why string, c colle
 			rec.Conclusion = runs.Error
 		}
 	}
-	w.o.Runs.JobEnded(rec, log)
+	return rec, log
+}
+
+// recordEnd hands the ended job's record to the recorder.
+func (w *Worker) recordEnd(rec runs.Record, log []byte, c collected) {
+	if w.o.Runs == nil {
+		return
+	}
+	w.o.Runs.JobEnded(rec, log, c.tests)
 }
 
 // RunningRecords lists the jobs on this device as running records.
@@ -259,6 +287,9 @@ func (w *Worker) RunningRecords() []runs.Record {
 	defer w.mu.Unlock()
 	out := make([]runs.Record, 0, len(w.st.Jobs))
 	for _, j := range w.st.Jobs {
+		if j.kept() {
+			continue // ended; its record is in the history
+		}
 		r := w.baseRecord(j)
 		r.Conclusion = runs.Running
 		out = append(out, r)
@@ -272,7 +303,7 @@ func (w *Worker) JobLog(ctx context.Context, name string, max int64) (core.JobLo
 	w.mu.Lock()
 	var j *jobRec
 	for _, x := range w.st.Jobs {
-		if x.Name == name {
+		if x.Name == name && !x.kept() {
 			j = x
 		}
 	}

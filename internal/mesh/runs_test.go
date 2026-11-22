@@ -17,6 +17,7 @@ type fakeRuns struct {
 	recs   []runs.Record
 	queued []string
 	logs   map[string]string
+	tests  map[string]runs.TestsAnswer
 	// repos this device can rerun; reruns records what it did.
 	repos  map[string]bool
 	mu     sync.Mutex
@@ -37,6 +38,14 @@ func (f *fakeRuns) RunLog(_ context.Context, id string, max int64) (runs.LogAnsw
 		return runs.LogAnswer{}, core.ErrNotFound
 	}
 	return runs.LogAnswer{ID: id, Device: f.device, Size: int64(len(l)), Data: []byte(l)}, nil
+}
+
+func (f *fakeRuns) RunTests(_ context.Context, id string) (runs.TestsAnswer, error) {
+	t, ok := f.tests[id]
+	if !ok {
+		return runs.TestsAnswer{}, core.ErrNotFound
+	}
+	return t, nil
 }
 
 func (f *fakeRuns) Rerun(_ context.Context, repo string, runID int64) error {
@@ -134,5 +143,42 @@ func TestPoolRunLogAndRerun(t *testing.T) {
 	// The broker reruns its own repos without the mesh.
 	if dev, err := ms[2].node.PoolRerun(ctx, "o/app", 10); err != nil || dev != "c" {
 		t.Fatalf("local rerun = %q %v", dev, err)
+	}
+}
+
+// A job's test results come from the device that ran it, even when a
+// broker also has a record of the job (its forge result) with no tests.
+func TestPoolRunTests(t *testing.T) {
+	failed := runs.TestResults{ID: "tm-b-1", Device: "b", Cases: []runs.TestCase{{Suite: "pkg", Name: "TestX", Status: runs.TestFailed, Message: "boom"}}}
+	a := &fakeRuns{device: "a", tests: map[string]runs.TestsAnswer{
+		"tm-b-1": {Record: runs.Record{ID: "tm-b-1", Device: "b"}, Results: runs.TestResults{ID: "tm-b-1", Cases: []runs.TestCase{}}},
+		"tm-a-1": {Record: runs.Record{ID: "tm-a-1", Device: "a"}, Results: runs.TestResults{ID: "tm-a-1", Cases: []runs.TestCase{}}},
+	}}
+	b := &fakeRuns{device: "b", tests: map[string]runs.TestsAnswer{"tm-b-1": {Record: runs.Record{ID: "tm-b-1", Device: "b"}, Results: failed}}}
+	ms := newCluster(t,
+		nodeSpec{device: "a", pool: "home", runs: a, broker: &fakeBroker{}},
+		nodeSpec{device: "b", pool: "home", runs: b},
+	)
+	ctx := context.Background()
+	ms[0].node.Brokers(ctx)
+	got, err := ms[0].node.PoolRunTests(ctx, "tm-b-1")
+	if err != nil || len(got.Results.Cases) != 1 || got.Results.Cases[0].Message != "boom" {
+		t.Fatalf("tests = %+v %v", got, err)
+	}
+	// This device's own job answers without the mesh, tests or not.
+	if got, err := ms[0].node.PoolRunTests(ctx, "tm-a-1"); err != nil || got.Record.Device != "a" {
+		t.Fatalf("own job = %+v %v", got, err)
+	}
+	// With b down, a's record without tests is the answer.
+	ms[1].fail.Store(true)
+	if got, err := ms[0].node.PoolRunTests(ctx, "tm-b-1"); err != nil || len(got.Results.Cases) != 0 || got.Record.ID != "tm-b-1" {
+		t.Fatalf("with b down = %+v %v", got, err)
+	}
+	ms[1].fail.Store(false)
+	if _, err := ms[0].node.PoolRunTests(ctx, "tm-nobody"); !errors.Is(err, core.ErrNotFound) {
+		t.Fatalf("missing job err = %v", err)
+	}
+	if _, err := ms[0].node.PoolRunTests(ctx, "../x"); err == nil {
+		t.Fatal("a bad id was asked for")
 	}
 }

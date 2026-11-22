@@ -129,6 +129,9 @@ type Env struct {
 	// Context is the base context; DefaultEnv cancels it on Ctrl-C.
 	Context func() (context.Context, context.CancelFunc)
 	Sleep   func(time.Duration)
+	// RawTerminal puts the terminal on stdin in raw mode for a debug
+	// shell and returns how to restore it; nil leaves it alone.
+	RawTerminal func() (restore func(), err error)
 }
 
 // DefaultEnv is the real host.
@@ -197,7 +200,8 @@ func DefaultEnv() *Env {
 		Context: func() (context.Context, context.CancelFunc) {
 			return signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		},
-		Sleep: time.Sleep,
+		Sleep:       time.Sleep,
+		RawTerminal: func() (func(), error) { return makeRaw(os.Stdin) },
 	}
 }
 
@@ -279,6 +283,10 @@ func init() {
 		"rerun":     {usageRerun, (*app).cmdRerun},
 		"stats":     {usageStats, (*app).cmdStats},
 		"alerts":    {usageAlerts, (*app).cmdAlerts},
+		"tests":     {usageTests, (*app).cmdTests},
+		"flaky":     {usageFlaky, (*app).cmdFlaky},
+		"why":       {usageWhy, (*app).cmdWhy},
+		"debug":     {usageDebug, (*app).cmdDebug},
 		"update":    {"tentmaker update [--channel stable|dev] [--check] [--force] [--json]", (*app).cmdUpdate},
 		"rollback":  {"tentmaker rollback [--json]", (*app).cmdRollback},
 		"uninstall": {"tentmaker uninstall [--purge] [--yes] [--json]", (*app).cmdUninstall},
@@ -312,6 +320,10 @@ Usage:
   tentmaker rerun JOB-ID|RUN-URL  rerun a run's failed jobs
   tentmaker stats [--since 7d]    jobs, failure rate, waits, est. savings
   tentmaker alerts test           send a test alert to every webhook
+  tentmaker tests [JOB-ID]        a job's test results, failed first
+  tentmaker flaky [--since 14d]   tests that fail and pass on the same code
+  tentmaker why JOB-ID            why a job failed: step, tests, log, flaky
+  tentmaker debug JOB-ID          shell in a failed job's kept sandbox
   tentmaker update [--check]      update to the newest release
   tentmaker rollback              go back to the previous version
   tentmaker uninstall [--purge]

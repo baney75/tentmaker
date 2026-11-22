@@ -16,6 +16,7 @@ import (
 	"github.com/baney75/tentmaker/internal/core"
 	"github.com/baney75/tentmaker/internal/mesh"
 	"github.com/baney75/tentmaker/internal/runs"
+	"github.com/baney75/tentmaker/internal/testresults"
 )
 
 // history is this device's run history and alerts. apply rebuilds it when
@@ -65,10 +66,11 @@ func (h *history) close() {
 	}
 }
 
-// JobEnded keeps the record and its redacted log tail, then queues alerts.
-// A forge result that came first replaces the runner's diag conclusion and
-// log.
-func (h *history) JobEnded(rec runs.Record, log []byte) {
+// JobEnded keeps the record, its redacted log tail and its test results,
+// then queues alerts. A forge result that came first replaces the runner's
+// diag conclusion and log. go test -json output in the log adds to the
+// JUnit reports the executor found.
+func (h *history) JobEnded(rec runs.Record, log []byte, tests *runs.TestResults) {
 	h.mu.Lock()
 	if rep, ok := h.early[rec.ID]; ok {
 		delete(h.early, rec.ID)
@@ -78,8 +80,31 @@ func (h *history) JobEnded(rec runs.Record, log []byte) {
 		}
 	}
 	h.add(rec, log)
+	h.putTests(rec, tests, log)
+	if r, ok := h.store.Get(rec.ID); ok {
+		rec = r
+	}
 	h.mu.Unlock()
 	h.alerts.JobEnded(rec)
+}
+
+// putTests keeps rec's test results: the executor's, plus what go test
+// -json printed to log. It keeps nothing when neither has a test.
+func (h *history) putTests(rec runs.Record, tests *runs.TestResults, log []byte) {
+	var t runs.TestResults
+	if tests != nil {
+		t = *tests
+	}
+	if len(log) > 0 {
+		t = t.Merge(runs.TestResults{Cases: testresults.ParseGoTestJSON(log)})
+	}
+	if len(t.Cases) == 0 && t.Dropped == 0 && len(t.Problems) == 0 {
+		return
+	}
+	t.Device = rec.Device
+	if err := h.store.PutTests(rec.ID, t); err != nil {
+		h.log.Warn("run history: can't keep the test results", "runner", rec.ID, "error", err)
+	}
 }
 
 // ForgeReport takes a broker's forge result for a runner job: it updates
@@ -103,6 +128,17 @@ func (h *history) ForgeReport(rep runs.ForgeReport) {
 		rec = rep.Record()
 	}
 	h.add(rec, rep.Log)
+	if ok && len(rep.Log) > 0 {
+		// The forge's log may carry go test -json the runner's diag lacked.
+		old, err := h.store.Tests(rep.ID)
+		if err != nil {
+			old = runs.TestResults{}
+		}
+		h.putTests(rec, &old, rep.Log)
+		if r, found := h.store.Get(rec.ID); found {
+			rec = r
+		}
+	}
 	h.mu.Unlock()
 	if rec.Conclusion != prev {
 		h.alerts.JobEnded(rec)
@@ -124,9 +160,9 @@ func (d *Daemon) currentHistory() *history {
 // historyProxy is the worker's recorder; it follows apply's rebuilds.
 type historyProxy struct{ d *Daemon }
 
-func (p historyProxy) JobEnded(rec runs.Record, log []byte) {
+func (p historyProxy) JobEnded(rec runs.Record, log []byte, tests *runs.TestResults) {
 	if h := p.d.currentHistory(); h != nil {
-		h.JobEnded(rec, log)
+		h.JobEnded(rec, log, tests)
 	}
 }
 

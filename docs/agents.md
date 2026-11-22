@@ -87,6 +87,10 @@ claude mcp add tentmaker -- tentmaker mcp
 | `rerun` | yes, on the forge | Rerun a run's failed jobs: `target` is a job id or a run URL. The token stays on the broker. |
 | `stats` | no | p50 and p95 queue wait and duration, minutes and an estimated saving per repo: `since` (default `7d`), `repo`. |
 | `wait_for_run` | no | Block until every job for `repo` at `sha` (or the run at `run_url`) has ended, or `timeout_s` (default 600, 10 to 3600) passes. Returns each job's conclusion and, for failures, the failed step and the last 80 log lines. |
+| `tests` | no | One job's test cases from its JUnit reports and `go test -json` output: `id`, `failed` (default true: failed tests only). |
+| `flaky` | no | Tests that failed and passed on the same commit, or flip on a branch: `repo`, `since` (default `14d`). |
+| `why_failed` | no | Why a job failed, small: failed step, up to 5 failing tests with messages, the log around the first error, a flaky verdict. Pass `id`, or `repo` with `sha` or `run_id`. |
+| `debug_exec` | yes, in the kept sandbox | Run one `command` in a failed job's kept sandbox on this device: `id`, `timeout_s` (default 60, at most 600), `max_bytes` (default 65536, at most 1 MiB). Returns `exit_code`, `output`, `truncated`, `timed_out`. |
 
 Tools that change the device need the MCP server process to run as root or Administrator. Run as a normal user, they return an error saying so, and the read tools still work. For those changes, an agent can fall back to the CLI with `sudo`.
 
@@ -105,6 +109,13 @@ An agent that pushes a fix can watch its own CI without a browser or a forge tok
    the broker can't read it, the record falls back to the runner's trace log and says
    `log_source: "runner-diag"`; that log names the failed step but holds no test output. For more, call
    `logs` with the job's `id` and a bigger `lines`.
+   On a failure, `why_failed` with the job's `id` is the short answer: the failed step, the
+   failing tests with their messages, the log lines around the first error and whether it looks
+   flaky. When the repo sets `[repos.debug] keep_failed`, `why_failed` has `kept_until` and the
+   failed job's sandbox is still on the device that ran it: `debug_exec` reruns one test or
+   reads a file the job left (`go test -run TestName ./pkg`, `cat out/report.txt`) without a new
+   push. It runs as the job's user under the job's limits, needs the MCP server to run as root,
+   and works only on the device that ran the job.
 4. Fix, push and go back to step 2. For a flaky failure with no code change, call `rerun` with
    the job id instead (it needs the MCP server to run as root).
 5. `timed_out: true` means jobs were still running; call `wait_for_run` again. A `note` that

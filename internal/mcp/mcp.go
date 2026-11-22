@@ -48,6 +48,15 @@ type Controller interface {
 	// WaitForRun blocks until every Tentmaker job for repo at sha (or for
 	// the run at runURL) has ended, or timeout passes.
 	WaitForRun(ctx context.Context, repo, sha, runURL string, timeout time.Duration) (any, error)
+
+	// Test results and failed jobs.
+	Tests(ctx context.Context, jobID string, failedOnly bool) (any, error)
+	Flaky(ctx context.Context, repo, since string) (any, error)
+	// WhyFailed explains job jobID, or the newest failed job of repo at sha
+	// or in run runID.
+	WhyFailed(ctx context.Context, jobID, repo, sha string, runID int64) (any, error)
+	// DebugExec runs command in a failed job's kept sandbox on this device.
+	DebugExec(ctx context.Context, jobID, command string, timeoutS, maxBytes int64) (any, error)
 }
 
 // JSON-RPC error codes.

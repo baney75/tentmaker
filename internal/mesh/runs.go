@@ -26,11 +26,16 @@ type RunsSource interface {
 	// Rerun asks the forge to rerun a run's failed jobs with this broker's
 	// token; core.ErrNotFound when this device has no forge for repo.
 	Rerun(ctx context.Context, repo string, runID int64) error
+	// RunTests is a job's record and the test results this device keeps
+	// for it; core.ErrNotFound when it has no record of the job.
+	RunTests(ctx context.Context, id string) (runs.TestsAnswer, error)
 }
 
 const (
 	maxRunsAnswer = 8 << 20 // a pool device's slice of history
 	maxLogAnswer  = 2 << 20 // a 512 KiB tail, base64 in JSON
+	// maxTestsAnswer covers a run's kept test results (8 MiB at most).
+	maxTestsAnswer = 10 << 20
 	// rerunTimeout covers the broker's forge call.
 	rerunTimeout = 20 * time.Second
 )
@@ -81,6 +86,29 @@ func (n *Node) handleRunLog(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "can't read the job's log")
 	default:
 		writeJSON(w, http.StatusOK, l)
+	}
+}
+
+func (n *Node) handleRunTests(w http.ResponseWriter, r *http.Request) {
+	id := r.URL.Query().Get("id")
+	if !runs.ValidID(id) {
+		writeErr(w, http.StatusBadRequest, "bad job id")
+		return
+	}
+	if n.o.Runs == nil {
+		writeErr(w, http.StatusNotFound, "no such job here")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), n.callTimeout)
+	defer cancel()
+	t, err := n.o.Runs.RunTests(ctx, id)
+	switch {
+	case errors.Is(err, core.ErrNotFound):
+		writeErr(w, http.StatusNotFound, "no such job here")
+	case err != nil:
+		writeErr(w, http.StatusInternalServerError, "can't read the job's test results")
+	default:
+		writeJSON(w, http.StatusOK, t)
 	}
 }
 
@@ -267,4 +295,77 @@ func (n *Node) PoolRerun(ctx context.Context, repo string, runID int64) (string,
 		return "", errors.New(strings.Join(errs, "; "))
 	}
 	return "", fmt.Errorf("no broker in the pool has a forge token for %s", repo)
+}
+
+// PoolRunTests finds job id's test results. The device that ran the job
+// keeps them, so its answer wins; another device's answer (a broker that
+// has only the job's forge result) is the fallback.
+func (n *Node) PoolRunTests(ctx context.Context, id string) (runs.TestsAnswer, error) {
+	if !runs.ValidID(id) {
+		return runs.TestsAnswer{}, errors.New("bad job id")
+	}
+	var fallback *runs.TestsAnswer
+	if n.o.Runs != nil {
+		t, err := n.o.Runs.RunTests(ctx, id)
+		switch {
+		case err == nil && (t.Record.Device == n.o.Device || len(t.Results.Cases) > 0):
+			return t, nil
+		case err == nil:
+			fallback = &t
+		case !errors.Is(err, core.ErrNotFound):
+			return t, err
+		}
+	}
+	n.ensureFresh(ctx)
+	type got struct {
+		dev string
+		t   runs.TestsAnswer
+		err error
+	}
+	peers := n.snapshot()
+	ch := make(chan got, len(peers))
+	cctx, cancel := context.WithTimeout(ctx, n.callTimeout)
+	defer cancel()
+	asked := 0
+	for _, p := range peers {
+		if p.skipped {
+			continue
+		}
+		if fallback != nil && fallback.Record.Device != "" && !strings.EqualFold(p.hello.Device, fallback.Record.Device) {
+			continue // the record names the device that has the tests
+		}
+		asked++
+		go func(p peerRef) {
+			var t runs.TestsAnswer
+			start := time.Now()
+			err := n.callMax(cctx, http.MethodGet, p.base+"/v1/runs/tests?"+url.Values{"id": {id}}.Encode(), nil, &t, maxTestsAnswer)
+			if err != nil && !strings.Contains(err.Error(), ": 404 ") {
+				n.record(p.id, err, time.Since(start))
+			}
+			ch <- got{p.hello.Device, t, err}
+		}(p)
+	}
+	var errs []string
+	for range asked {
+		g := <-ch
+		if g.err == nil {
+			if g.t.Record.Device == g.dev || len(g.t.Results.Cases) > 0 {
+				return g.t, nil
+			}
+			if fallback == nil {
+				fallback = &g.t
+			}
+			continue
+		}
+		if !strings.Contains(g.err.Error(), ": 404 ") {
+			errs = append(errs, g.err.Error())
+		}
+	}
+	if fallback != nil {
+		return *fallback, nil
+	}
+	if len(errs) > 0 {
+		return runs.TestsAnswer{}, fmt.Errorf("job %s is on no device that answered (%s)", id, strings.Join(errs, "; "))
+	}
+	return runs.TestsAnswer{}, fmt.Errorf("job %s: %w", id, core.ErrNotFound)
 }

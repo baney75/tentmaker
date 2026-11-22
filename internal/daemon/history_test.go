@@ -145,7 +145,7 @@ func TestHistoryForgeFallback(t *testing.T) {
 		device: "box", early: map[string]runs.ForgeReport{}}
 	diag := "[x] Processing step: DisplayName='go test'\n[x] Step result: Failed\n"
 	h.JobEnded(runs.Record{ID: "tm-box-1", Kind: core.KindRunner, Repo: "o/r", Device: "box", Conclusion: runs.Unknown,
-		LogSource: runs.LogRunnerDiag}, []byte(diag))
+		LogSource: runs.LogRunnerDiag}, []byte(diag), nil)
 	h.ForgeReport(runs.ForgeReport{ID: "tm-box-1", Device: "box", Repo: "o/r", Conclusion: "failure"})
 	rec, _ := h.store.Get("tm-box-1")
 	data, err := h.store.Log("tm-box-1")
@@ -155,7 +155,7 @@ func TestHistoryForgeFallback(t *testing.T) {
 
 	h.ForgeReport(runs.ForgeReport{ID: "tm-box-2", Device: "box", Repo: "o/r", Conclusion: "success", Log: []byte("ok\n")})
 	h.JobEnded(runs.Record{ID: "tm-box-2", Kind: core.KindRunner, Repo: "o/r", Device: "box", Conclusion: runs.Unknown,
-		LogSource: runs.LogRunnerDiag}, nil)
+		LogSource: runs.LogRunnerDiag}, nil, nil)
 	rec, _ = h.store.Get("tm-box-2")
 	if data, _ := h.store.Log("tm-box-2"); rec.Conclusion != runs.Success || rec.LogSource != runs.LogForge || string(data) != "ok\n" {
 		t.Fatalf("early record = %+v, log = %q", rec, data)

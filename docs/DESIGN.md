@@ -67,6 +67,7 @@ internal/mesh/            tailnet peer API: discovery, WhoIs auth, remote WorkSo
 internal/runs/            run history: records, log tails, redaction, stats, wait
 internal/alerts/          webhooks on failure, recovery and slow jobs
 internal/executor/joblog/ reads a job's log from its job folder without following the job's links
+internal/testresults/     finds JUnit reports in a job's workspace and go test -json in its log
 internal/service/         install the daemon as a systemd / launchd / Windows service
 internal/update/          stable/dev channels, verified self-update with rollback
 internal/httpsafe/        redirect policy that keeps credential headers on their origin
@@ -861,8 +862,26 @@ type JobReporter interface {                  // a Forge that reports a finished
     JobReport(ctx context.Context, repo string, jobID, maxLog int64) (JobReport, error)
 }
 
+type DebugSpec struct { Limits Resources; Timeout time.Duration; MaxOutput int64 }
+type DebugResult struct { ExitCode int; Output []byte; Truncated, TimedOut bool }
+type Debugger interface {                     // an Executor that can keep a failed job's sandbox
+    Keep(ctx context.Context, name string) error
+    DebugExec(ctx context.Context, name, command string, spec DebugSpec) (DebugResult, error)
+    DebugShell(ctx context.Context, name string, spec DebugSpec, stdin io.Reader, stdout io.Writer) error
+}
+// WorkRequest gains Kept []CacheRepo: repos the worker keeps a sandbox of.
+
 // dispatch
-type RunRecorder interface { JobEnded(rec runs.Record, log []byte) }  // WorkerOptions.Runs
+type RunRecorder interface {                  // WorkerOptions.Runs
+    JobEnded(rec runs.Record, log []byte, tests *runs.TestResults)
+}
+type TestCollector interface {                // an Executor that can read a job's test reports
+    TestResults(ctx context.Context, name string) (runs.TestResults, error)
+}
+func (w *Worker) KeptJobs() []KeptJob
+func (w *Worker) DebugExec(ctx context.Context, name, command string, timeout time.Duration, maxOut int64) (core.DebugResult, error)
+func (w *Worker) DebugShell(ctx context.Context, name string, stdin io.Reader, stdout io.Writer) error
+func (w *Worker) ReleaseKept(name string) error
 type ReportRecorder interface { ForgeReport(rep runs.ForgeReport) }    // BrokerOptions.Reports
 func (w *Worker) RunningRecords() []runs.Record
 func (w *Worker) JobLog(ctx context.Context, name string, max int64) (core.JobLog, bool, error)
@@ -872,7 +891,8 @@ func (b *Broker) Queued(repo, sha string, runID int64) []string
 type Record struct { ID, Kind, Forge, Repo, Workflow, Job string; JobID, RunID int64; RunURL, Ref,
     SHA, Device, Executor, Platform string; Slot int; QueuedAt, StartedAt, EndedAt time.Time;
     Conclusion, FailedStep, Note string; PeakMemoryBytes int64; CPUSeconds float64;
-    CacheBytes int64; HasLog bool; LogSource string }  // LogSource: "forge" or "runner-diag"
+    CacheBytes int64; HasLog bool; LogSource string;   // LogSource: "forge" or "runner-diag"
+    Tests *TestSummary; KeptUntil time.Time }
 type ForgeReport struct { ID, Device, Forge, Repo, Job string; JobID, RunID int64; RunURL string;
     EndedAt time.Time; Conclusion, FailedStep string; Log []byte }
 type Query struct { Repo, SHA, ID string; RunID int64; Failed bool; Since time.Time; Limit int }
@@ -880,6 +900,17 @@ func Open(dir string, max int) *Store         // Add, List, Log, Err
 func Redact(data []byte, extra ...[]byte) []byte
 func Stats(recs []Record, since, now time.Time) Report
 func Wait(ctx context.Context, look func(context.Context) (Snapshot, error), o WaitOptions) (WaitResult, error)
+type TestCase struct { Suite, Name, Status string; Seconds float64; Message, Detail, File, Source string }
+type TestResults struct { ID, Device string; Cases []TestCase; Files, Problems []string; Dropped int }
+type TestSummary struct { Total, Passed, Failed, Skipped int; Failures []string; Truncated bool; Sources, Suites []string }
+func (s *Store) PutTests(id string, t TestResults) error   // and Tests(id)
+func Flaky(recs []Record) []FlakyTest
+func Why(rec Record, tests *TestResults, log []byte, history []Record) WhyAnswer
+
+// testresults
+func Collect(dir string, subdirs []string, lim Limits) runs.TestResults
+func ParseJUnit(r io.Reader, file string) ([]runs.TestCase, error)
+func ParseGoTestJSON(log []byte) []runs.TestCase
 
 // alerts
 func New(o Options) *Notifier                 // Run, JobEnded, Test, Counts, Enabled
@@ -928,6 +959,37 @@ func New(o Options) *Notifier                 // Run, JobEnded, Test, Counts, En
 - Stats: p50 and p95 by nearest rank over ended jobs in the window. The saving is each job's
   minutes rounded up, as GitHub bills, times `runs.HostedRate` for the job's OS, and every answer
   says it is an estimate and when the rates were checked.
+- Test results. Before `Clean`, the worker asks an executor that is a `TestCollector` for the
+  JUnit reports the job left in its workspace (Linux: `runner/_work` and a check job's `work`).
+  `testresults.Collect` reads them as root through an `os.Root`, so nothing leaves the job
+  folder; it never follows a symlink, opens only regular files with `O_NONBLOCK` (a planted FIFO
+  can't hang the daemon), sniffs the first 4 KiB for a JUnit root element, skips `.git`,
+  `node_modules` and the like, and stops at 200 reports, 16 MiB a report, 64 MiB in all, 50000
+  entries walked and depth 16, saying what it skipped in `Problems` (relative paths only). The
+  history adds `go test -json` events from the log (raw or behind the forge's timestamps); a
+  JUnit case wins over a go test one for the same test. A broker that reads a forge log later
+  adds its go test events too. The device keeps each run's cases in `runs/tests/<id>.json`
+  (`config.WriteAtomic`, 0600): failures first, at most 500 failed and 5000 in all, each message
+  1 KiB and detail 4 KiB, redacted. The record carries a `TestSummary` with at most 50 failing
+  test ids, so the pool view and the flaky rules need no device's file. `GET /v1/runs/tests` and
+  the mesh's `/v1/runs/tests` serve the cases from the device that ran the job.
+- Flaky tests (`runs.Flaky`), from the summaries of one job (repo, workflow, job): a test is
+  flaky when it failed and a later run on the same commit reported tests without it failing
+  (`same-commit`), or when it changed between failing and passing at least twice in the last 10
+  runs on the same ref (`flips`). A run counts as a pass only when its summary is whole and names
+  the test's suite in `Suites` (a go test package seen from `start` to its end; a package cut from
+  the log tail is `Partial`), so a test missing from a cut log or a run that stopped early is not
+  called flaky. A test that broke once and stayed broken is not
+  flaky.
+- `why_failed` (`runs.Why`, `GET /v1/runs/why`, `tentmaker why`): the run's commit, ref, run,
+  conclusion and failed step; its first 5 failing tests with a 300 byte message and the first 8
+  lines of detail (and a count of the rest); 10 lines before and 20 after the first log line
+  that looks like an error (`##[error]`, `--- FAIL`, `panic:`, `FAIL`, `Error:`, `npm ERR!`,
+  `error:`, a non-zero exit code), with the forge's timestamps cut, or the last 30 lines when no
+  line does; and whether it looks flaky: the same job passed on the same commit, or a failing
+  test is flaky by the rules above. Everything is redacted. With a repo and sha or run id it
+  explains the newest failed run of them; its flaky history is the pool's last 14 days of that
+  repo.
 - Alerts run on the device that ran the job, and on the broker for a peer's job whose forge
   result changed its conclusion, so a pool with alerts on both may send one twice. `JobEnded` never blocks: a full queue (64) drops
   the alert and counts it, with one warning a minute. Each send has a 10 s timeout, each alert a
@@ -936,13 +998,75 @@ func New(o Options) *Notifier                 // Run, JobEnded, Test, Counts, En
   webhook's host, because Slack and Discord URLs are credentials; `url_secret` keeps them in the
   secret store.
 
+## Debugging a failed job (internal/dispatch/debug.go, internal/executor/linux/debug.go)
+
+A repo can ask for a failed job's sandbox to be kept: `[repos.debug] keep_failed = "10m"`, off by
+default, at most 1h. Then `tentmaker debug JOB-ID` opens a shell in it and the MCP tool
+`debug_exec` runs one command there.
+
+- What is kept. When a job ends failed on its own (not stopped by Tentmaker, not during
+  shutdown) in such a repo, on an executor that is a `core.Debugger`, the worker calls `Keep`
+  instead of `Clean`. The job is reported ended to its broker at once, so its runner is deleted
+  at the forge and its relays and Actions cache grant are revoked; the record gets `KeptUntil`.
+  The job stays in `state.json` with `KeptUntil` set, so it still holds its slot and its memory
+  (not its repo cache: other repos' jobs may then start), it blocks the node reset that would wipe it, and it counts against the
+  budget. The worker sends `WorkRequest.Kept` and the broker offers that device no job of the
+  repo (the worker declines one too), so a new run can't land on a half-debugged device. When
+  the grace ends, when the owner releases it (`tentmaker debug JOB-ID --release`), when a hard
+  guard evicts, or when its executor is gone, the worker cleans it up exactly as it cleans any
+  job. `KeptUntil` lives in `state.json`, so a restart keeps the deadline.
+- Linux keeps the job folder, the slot, the namespace holder and the pasta uplink, and removes
+  the runner's `.runner`, `.credentials` and `.credentials_rsaparams` through an `os.Root`. A
+  debug command is a transient unit `tentmaker-debug-<job>-<random>` built like the job's: the
+  runner's uid and gid, the job's `MemoryMax` and `CPUQuota`, `NoNewPrivileges`, `PrivateTmp`,
+  the job's mounts (not its repo cache), its environment (no secrets), `RuntimeMaxSec` of the timeout,
+  and `NetworkNamespacePath` of the job's own namespace holder. If the holder is gone it refuses:
+  no debug command runs outside the job's namespace. `debug_exec` runs `systemd-run --wait
+  --pipe ... /bin/sh -s` with the command on stdin, so the command is in no argv on the host;
+  it keeps the last `max_bytes` of output (64 KiB by default, 1 MiB at most) within a timeout
+  (1 minute by default, 10 at most). The shell is `systemd-run --wait --pty`, bounded by the
+  time left in the grace and by 1 hour. Every debug unit is stopped when its command or shell
+  ends, and `Stop` and `Clean` stop all of a job's debug units before they take its namespace
+  and folder. macOS and Windows have no `Debugger` yet: their failed jobs are cleaned up as
+  today and the log says why.
+- Threat model. The kept sandbox is the job's: whatever ran in it is untrusted.
+  - Who may debug. Only local callers the control API trusts with pause and resume: the token
+    (readable only by root or Administrators) or an admin peer (root, an elevated
+    Administrator). `POST /v1/debug/exec`, `/v1/debug/shell` and `/v1/debug/release` use
+    `tokenOrAdmin`; the runner user gets 403 and other local users 401. There is no mesh route:
+    a peer, even one in the pool, can't debug another device's job, and a caller asking the
+    wrong device is told which device ran it. The MCP server offers `debug_exec` only when it
+    runs as root, like `rerun`.
+  - What a debug command can reach: what the job could, no more. Same uid, so the uid-matched
+    nftables fence (no tailnet, LAN, link-local, host addresses or mesh port) applies; same
+    network namespace and uplink; same limits; `NoNewPrivileges`; other homes and the Tailscale
+    paths hidden. The Actions cache grant is revoked, so the cache service answers 404, and the
+    runner is deleted at the forge, so the runner credentials and the JIT config can't be
+    reused. GitHub ends a job's `GITHUB_TOKEN` when the job completes, so a token the job left
+    in `.git/config` is dead. Secrets the workflow itself wrote into the workspace stay there
+    for the grace, and other repos' jobs on the device run as the same runner uid, so they can
+    read the kept folder until it is cleaned up. Don't set `keep_failed` on a repo whose
+    workflow writes secrets to disk if the device runs other repos' jobs.
+  - What leaks to logs. The command text is never logged, not by the control server, the worker
+    nor the executor (it travels on stdin). The output is redacted with `runs.Redact`, capped,
+    returned to the caller and never logged; the logs say only the job id and the exit code.
+  - What it costs. The grace is at most 1 hour and counts against the budget; a hard guard that
+    evicts jobs still evicts it, which cleans up a kept sandbox at once. A device with a kept sandbox takes no job of that repo until it is gone, and other
+    repos only within its remaining slots.
+  - Containment if the debugger is careless. Every process of a debug command lives in its
+    unit's cgroup and ends with it: the unit is stopped when the command ends, `RuntimeMaxSec`
+    bounds it, and `Clean` stops every debug unit of the job. Containers it starts through the
+    job's podman socket are the same as containers the job starts, and are cleaned up the same
+    way.
+
 ## Testing
 
 - `go vet ./...` and `go test ./...` pass on Linux, macOS and Windows.
 - Cross-compile check: `GOOS=linux,darwin,windows` x `GOARCH=amd64,arm64` all build.
 - No test touches the real host: OS calls go through small interfaces with fakes. Tests that
   need root, podman, tart or a real tailnet are behind the `live` build tag.
-- Fakes: `forge/fake` (`Reruns`, `MRerunFailed`), `executor/fake` (`SetLog`, `SetUsage`), a fake
+- Fakes: `forge/fake` (`Reruns`, `MRerunFailed`), `executor/fake` (`SetLog`, `SetUsage`,
+  `SetTests`, `SetKeepErr`, `SetDebugExec`, `DebugCalls`, `Kept`), a fake
   `Tailscale`, a fake power source.
 
 ## Decisions made while building (v0.1)

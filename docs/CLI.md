@@ -46,6 +46,14 @@ tentmaker rerun JOB-ID|RUN-URL    Rerun the run's failed jobs through the forge 
 tentmaker stats [--since 7d] [--repo R] [--json]
                                   Queue wait and duration p50/p95, minutes, estimated saving.
 tentmaker alerts test             Send a test message to every [[alerts]] webhook (needs root).
+tentmaker tests [JOB-ID] [--repo R] [--failed] [-n 20] [--json]
+                                  A job's test cases, failed first; without an id, recent jobs with tests.
+tentmaker flaky [--repo R] [--since 14d] [--json]
+                                  Tests that failed and passed on the same commit, or flip on a branch.
+tentmaker why JOB-ID | --repo R --sha SHA | --repo R --run N [--json]
+                                  Why a job failed: step, failing tests, log excerpt, flaky verdict.
+tentmaker debug JOB-ID [--exec CMD] [--timeout 60s] [--max-bytes N] [--release] [--json]
+                                  Shell or one command in a failed job's kept sandbox (needs root).
 tentmaker update [--channel stable|dev] [--check]
 tentmaker rollback
 tentmaker uninstall [--purge] [--yes]
@@ -57,10 +65,10 @@ tentmaker check-run --out DIR     Run inside a sandbox: CheckBundle JSON on stdi
 ```
 
 Commands that change the device (setup, budget set, schedule add/remove, repo add/remove,
-connect, pause, resume, update, rollback, uninstall, rerun, alerts test) need root or
+connect, pause, resume, update, rollback, uninstall, rerun, alerts test, debug) need root or
 Administrator and exit 3 with the exact command to rerun (`sudo tentmaker ...`, or "open
 PowerShell as Administrator"). status, pool, budget, repo list, doctor, logs, runs, stats,
-version and migrate do not.
+tests, flaky, why, version and migrate do not.
 
 ## Run history: runs, logs, rerun, stats
 
@@ -92,6 +100,38 @@ Without the service, `runs` and `logs` read this device's own history and say so
   windows up to 3650 days.
 - `alerts test` sends one test message through every alert and prints how each went; it exits
   1 when any failed. Errors name the webhook's host only, never its URL.
+
+## Test results and failures: tests, flaky, why, debug
+
+When a runner job ends, its device reads the JUnit XML reports in the job's workspace and any
+`go test -json` lines in its log, and keeps the cases (failed first, at most 500 failed and 5000
+in all, messages capped and redacted) next to the record; the record carries a `tests` summary
+(`total`, `passed`, `failed`, `skipped`, `failures`). Like `logs`, these commands ask the device
+that ran the job, and read this device's history when the service is not running.
+
+- `tests JOB-ID` prints the counts, then each failed test with its message and output, then the
+  rest. `--failed` keeps the failed ones. `--json` prints `{"record", "results"}`, where
+  `results` has `cases` (`suite`, `name`, `status`, `seconds`, `message`, `detail`, `file`,
+  `source`), `files`, `problems` and `dropped`. Without a job id it lists the newest jobs that
+  reported tests (`--repo`, `--failed`, `-n`) as `{"service", "runs": [...]}`.
+- `flaky` lists tests that look flaky in the pool's records since `--since` (default 14 days):
+  a test that failed in one run and did not fail in a later run of the same job on the same
+  commit (`same-commit`), or one that changed between failing and passing at least twice in the
+  job's last 10 runs on one ref (`flips`). `--json` prints `{"since", "tests": [...]}`.
+- `why` explains one failed job: a job id, or `--repo` with `--sha` or `--run` (or a run URL)
+  for the newest failed job there. It prints the conclusion, repo, ref, short sha, failed step,
+  up to 5 failing tests with their messages, the log lines around the first line that looks
+  like an error (10 before, 20 after; the last 30 lines when none does) and a flaky verdict: the
+  same job passed on the same commit, or a failing test is flaky in the last 14 days.
+  `kept_until` is set while the job's sandbox is kept. `--json` prints the runs.WhyAnswer.
+- `debug JOB-ID` opens an interactive shell, on a raw terminal, in a failed job's sandbox kept
+  on this device by `[repos.debug] keep_failed` (docs/config.md). It runs as the job's user with
+  the job's limits and network fence. `--exec CMD` runs one command with `/bin/sh -c`, prints
+  its output (redacted; its last `--max-bytes`, default 64 KiB, at most 1 MiB) and exits with
+  the command's exit code; `--timeout` is up to 10m (default 60s). `--json` (with `--exec`)
+  prints `{"id", "exit_code", "output", "truncated", "timed_out"}`. `--release` ends the grace
+  now and the sandbox is cleaned up. A job kept on another device is refused with that
+  device's name: debug only reaches this device, never over the mesh.
 
 ## status
 
@@ -234,7 +274,15 @@ forges, so it needs the token or an admin caller (root, SYSTEM or an elevated Ad
 sandbox checks, which read state only root can read, and says to run `sudo tentmaker doctor`. GET /v1/runs (the runs.Query
 fields as URL parameters: repo, sha, id, run_id, failed, since, limit) answers runs.Answer;
 GET /v1/runs/log?id=ID&max=BYTES answers runs.LogAnswer and is open to local users but the CI
-user. POST /v1/rerun {repo, run_id} and POST /v1/alerts/test need the token. POST /v1/pause {reason, for_s},
+user. GET /v1/runs/tests?id=ID (runs.TestsAnswer), GET /v1/runs/flaky?repo=&since=
+({since, tests, errors}) and GET /v1/runs/why?id=ID, ?repo=&sha= or ?repo=&run_id=
+(runs.WhyAnswer) are open the same way. POST /v1/rerun {repo, run_id} and POST /v1/alerts/test need the token.
+POST /v1/debug/exec {id, command, timeout_s, max_bytes} ({id, exit_code, output, truncated,
+timed_out}), POST /v1/debug/release {id} and POST /v1/debug/shell {id} need the token or an
+admin caller; a CI job gets 403 and any other user 401. The shell answers `101 Switching
+Protocols` with `Upgrade: tentmaker-debug` and then carries raw terminal bytes both ways until
+the shell exits; a job with no kept sandbox gets a JSON 404 instead. The server logs the job id
+and exit code, never the command or its output. POST /v1/pause {reason, for_s},
 /v1/resume, /v1/reload and /v1/pr need the token in `Authorization: Bearer`, read from
 `<state>/control.token` (32 random bytes hex, mode 0600 root, or SYSTEM+Administrators on
 Windows), created by the daemon at start. The client sends the token on GETs too when it can
@@ -271,5 +319,6 @@ there.
 `tentmaker mcp` serves internal/mcp with a Controller backed by the same code as the CLI.
 Register it with: `claude mcp add tentmaker -- tentmaker mcp`. Mutating tools need the
 MCP server process to run as root/Administrator; otherwise they return an error saying so.
-The run history tools are `runs`, `logs`, `rerun` (mutating), `stats` and `wait_for_run`;
-docs/agents.md has their arguments and the agent loop.
+The run history tools are `runs`, `logs`, `rerun` (mutating), `stats`, `wait_for_run`,
+`tests`, `flaky`, `why_failed` and `debug_exec` (mutating); docs/agents.md has their arguments
+and the agent loop.

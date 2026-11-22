@@ -118,6 +118,53 @@ func (OSHost) Run(ctx context.Context, c Cmd) (Result, error) {
 	return res, nil
 }
 
+// Stream implements Streamer.
+func (OSHost) Stream(ctx context.Context, c Cmd, stdin io.Reader, stdout io.Writer) (int, error) {
+	path, err := lookPath(c.Path)
+	if err != nil {
+		return -1, err
+	}
+	t := c.Timeout
+	if t <= 0 {
+		t = DefaultTimeout
+	}
+	ctx, cancel := context.WithTimeout(ctx, t)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, path, c.Args...)
+	cmd.Env = c.Env
+	if cmd.Env == nil {
+		cmd.Env = baseEnv
+	}
+	cmd.Dir = "/"
+	cmd.Stdout, cmd.Stderr = stdout, stdout
+	if stdin != nil {
+		// Copy stdin ourselves: exec's own copy would keep Wait waiting on a
+		// stdin (a debug shell's connection) that never ends after the
+		// process exits. Wait closes w, which ends this copy's next write.
+		w, err := cmd.StdinPipe()
+		if err != nil {
+			return -1, err
+		}
+		go func() { io.Copy(w, stdin); w.Close() }()
+	}
+	cmd.WaitDelay = 5 * time.Second
+	err = cmd.Run()
+	code := -1
+	if cmd.ProcessState != nil {
+		code = cmd.ProcessState.ExitCode()
+	}
+	if ctx.Err() == context.DeadlineExceeded {
+		return code, fmt.Errorf("%s: timed out after %s", filepath.Base(path), t)
+	}
+	var exit *exec.ExitError
+	if err != nil && !errors.As(err, &exit) {
+		return code, fmt.Errorf("%s: %w", filepath.Base(path), err)
+	}
+	return code, nil
+}
+
+var _ Streamer = OSHost{}
+
 // LookupUser implements Host.
 func (OSHost) LookupUser(name string) (int, int, error) {
 	u, err := user.Lookup(name)

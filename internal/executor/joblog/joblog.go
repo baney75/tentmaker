@@ -76,7 +76,7 @@ func Read(dir string, max int64) (core.JobLog, error) {
 	}()
 	var total int64
 	for _, n := range names {
-		f, st, err := openRegular(root, n)
+		f, st, err := OpenRegular(root, n)
 		if err != nil {
 			continue
 		}
@@ -123,7 +123,10 @@ func readDir(root *os.Root, dir string) ([]fs.DirEntry, error) {
 	return f.ReadDir(256)
 }
 
-func openRegular(root *os.Root, rel string) (*os.File, os.FileInfo, error) {
+// OpenRegular opens rel under root read-only, only if it is a regular file.
+// It never follows a symlink, opens with O_NONBLOCK so a FIFO can't hang
+// the caller, and checks the opened file is still regular.
+func OpenRegular(root *os.Root, rel string) (*os.File, os.FileInfo, error) {
 	st, err := root.Lstat(rel)
 	if err != nil {
 		return nil, nil, err

@@ -175,6 +175,34 @@ type Repo struct {
 	// Branches whose heads checks mode runs besides the default branch, such
 	// as a release branch. Only people who can push to the repo move them.
 	Branches []string `toml:"branches" json:"branches"`
+	// Debug keeps a failed job's sandbox on this device for a while, so its
+	// owner can look inside with tentmaker debug. Off by default.
+	Debug RepoDebug `toml:"debug" json:"debug"`
+}
+
+// MaxKeepFailed is the longest a failed job's sandbox may be kept.
+const MaxKeepFailed = time.Hour
+
+// RepoDebug is a repo's [repos.debug] table.
+type RepoDebug struct {
+	// KeepFailed is how long a failed job's sandbox stays after the job
+	// ends, holding its slot and memory; 0 keeps none. Linux only.
+	KeepFailed Duration `toml:"keep_failed" json:"keep_failed"`
+}
+
+// KeepFailedFor is how long this device keeps a failed job's sandbox for
+// repo on forge, 0 for none: the repo's own [repos.debug] keep_failed.
+func (c Config) KeepFailedFor(forge, repo string) time.Duration {
+	for _, r := range c.Repos {
+		f := r.Forge
+		if f == "" {
+			f = "github"
+		}
+		if strings.EqualFold(r.Name, repo) && (forge == "" || f == forge) {
+			return r.Debug.KeepFailed.D()
+		}
+	}
+	return 0
 }
 
 // Forge is how to reach one forge.
@@ -353,6 +381,9 @@ func (c Config) Validate() []string {
 		}
 		if len(r.Branches) > 0 && r.Mode != "checks" {
 			p = append(p, fmt.Sprintf(`repo %q: branches apply only to mode = "checks"`, r.Name))
+		}
+		if k := r.Debug.KeepFailed.D(); k < 0 || k > MaxKeepFailed {
+			p = append(p, fmt.Sprintf("repo %q: debug.keep_failed must be from 0 to %s", r.Name, MaxKeepFailed))
 		}
 	}
 	switch c.Update.Channel {
