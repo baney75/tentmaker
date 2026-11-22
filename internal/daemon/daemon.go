@@ -331,6 +331,16 @@ func (d *Daemon) currentNode() *mesh.Node {
 	return d.node
 }
 
+// kickWorker has the worker ask its sources for work now.
+func (d *Daemon) kickWorker() {
+	d.mu.RLock()
+	w := d.worker
+	d.mu.RUnlock()
+	if w != nil {
+		w.Kick()
+	}
+}
+
 func (d *Daemon) currentBroker() *dispatch.Broker {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
@@ -563,6 +573,7 @@ func (d *Daemon) apply(cfg config.Config) {
 				StateDir:     cfg.StateDir,
 				Log:          log,
 				Now:          d.o.Now,
+				OnWork:       d.kickWorker,
 			})
 			bc = startComp(d.runCtx, log, "broker", b.Run)
 			log.Info("broker started", "forges", forges.Tokens, "repos", len(cfg.Repos))

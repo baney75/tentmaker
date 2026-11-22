@@ -68,6 +68,7 @@ type Worker struct {
 	holds        int                    // Hold calls not yet released; memory only
 
 	starts sync.WaitGroup // executor Starts in flight
+	kick   chan struct{}  // Kick: tick now instead of at the next second
 }
 
 // relayEntry lets one running check job fetch its source archive from the
@@ -165,6 +166,7 @@ func NewWorker(o WorkerOptions) *Worker {
 		sources: map[string]*sourceHealth{},
 		warned:  map[string]bool{},
 		relays:  map[string]*relayEntry{},
+		kick:    make(chan struct{}, 1),
 	}
 	if w.o.RelayAddr == nil {
 		w.o.RelayAddr = func() string { return DefaultRelayAddr }
@@ -181,7 +183,8 @@ func NewWorker(o WorkerOptions) *Worker {
 
 // ---------------------------------------------------------------- loop
 
-// Run ticks every 2 s until ctx ends. The daemon calls Shutdown afterwards.
+// Run ticks every second, and right away after Kick, until ctx ends. The
+// daemon calls Shutdown afterwards.
 func (w *Worker) Run(ctx context.Context) error {
 	t := time.NewTicker(workerTick)
 	defer t.Stop()
@@ -193,7 +196,18 @@ func (w *Worker) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-t.C:
+		case <-w.kick:
 		}
+	}
+}
+
+// Kick asks Run for a tick now: the local broker found work, so asking
+// for it shouldn't wait for the next tick. Kicks while a tick runs fold
+// into one more tick. It never blocks.
+func (w *Worker) Kick() {
+	select {
+	case w.kick <- struct{}{}:
+	default:
 	}
 }
 
@@ -944,6 +958,7 @@ func (w *Worker) start(ctx context.Context, src core.WorkSource, off core.WorkOf
 	}
 	spec := core.ExecSpec{Kind: kind, Name: name, Grant: g, Platform: off.Platform, Limits: w.limits,
 		MaxDuration: w.o.Config.Job.MaxDuration.D(), TestWorkers: tw}
+	spec.Cache = offerCache(off)
 	rec := &jobRec{Name: name, Source: source, Kind: kind, Executor: e.name, Forge: off.Job.Forge, Repo: off.Job.Repo,
 		Job: off.Job.Name, JobID: off.Job.ID, Platform: off.Platform, Started: now, Limits: w.limits, starting: true}
 	// Admission is checked again under the lock that adds the job record:
@@ -1304,4 +1319,14 @@ func (w *Worker) Status() WorkerStatus {
 // String makes a short summary for logs and tests.
 func (s WorkerStatus) String() string {
 	return fmt.Sprintf("%s: %d/%d slots used, admit=%v", s.Device, s.Slots.Used, s.Slots.Total, s.Decision.Admit)
+}
+
+// offerCache is the repo cache a job may use: its repo's, only when the
+// broker marked the offer safe for it (an older broker never does) and the
+// job isn't a fork's.
+func offerCache(off core.WorkOffer) core.CacheRepo {
+	if !off.Cache || off.Job.FromFork || off.Job.Forge == "" || off.Job.Repo == "" {
+		return core.CacheRepo{}
+	}
+	return core.CacheRepo{Forge: off.Job.Forge, Repo: off.Job.Repo}
 }

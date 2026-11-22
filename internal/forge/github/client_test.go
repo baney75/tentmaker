@@ -523,3 +523,39 @@ func TestTokenNeverLeaks(t *testing.T) {
 	}
 	h.noLeak(t, e6, e7, e8)
 }
+
+// Polls are cheap until the limit runs low; they are cheap again once its
+// reset time passes. RateFloor's wait is separate and unchanged.
+func TestCheapPollsFollowsRateLeft(t *testing.T) {
+	h := newHarness(t)
+	if !h.c.CheapPolls() {
+		t.Fatal("an unknown limit should poll cheaply")
+	}
+	reset := t0.Add(10 * time.Minute)
+	left := "4999"
+	h.f.on("GET", "/repos/acme/app/actions/runners/5", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-RateLimit-Remaining", left)
+		w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(reset.Unix(), 10))
+		fmt.Fprint(w, `{"status":"online","busy":true}`)
+	})
+	if _, err := h.c.Runner(context.Background(), "acme/app", 5); err != nil {
+		t.Fatal(err)
+	}
+	if !h.c.CheapPolls() {
+		t.Fatal("4999 left should poll cheaply")
+	}
+	left = strconv.Itoa(CheapPollFloor - 1)
+	if _, err := h.c.Runner(context.Background(), "acme/app", 5); err != nil {
+		t.Fatal(err)
+	}
+	if h.c.CheapPolls() {
+		t.Fatalf("%s left should back off", left)
+	}
+	if len(h.slept()) != 0 {
+		t.Fatal("above RateFloor nothing waits")
+	}
+	h.c.now = func() time.Time { return reset }
+	if !h.c.CheapPolls() {
+		t.Fatal("after the reset time polls are cheap again")
+	}
+}

@@ -44,6 +44,9 @@ const (
 	InProgressRecheck = 15 * time.Second
 	// RateFloor: below this many remaining requests, wait for the reset.
 	RateFloor = 200
+	// CheapPollFloor: below this many remaining requests, CheapPolls is
+	// false and the broker polls at its slow, backed-off pace again.
+	CheapPollFloor = 1000
 	// Tries is how many times a request is sent before giving up.
 	Tries = 3
 	// GrantTTL is how long Tentmaker treats a JIT config as usable.
@@ -100,6 +103,7 @@ type runJobsEntry struct {
 var (
 	_ core.Forge       = (*Client)(nil)
 	_ core.StatusForge = (*Client)(nil)
+	_ core.CheapPoller = (*Client)(nil)
 )
 
 // New returns a Client.
@@ -262,6 +266,17 @@ func (c *Client) waitForRate(ctx context.Context) error {
 	}
 	c.mu.Unlock()
 	return nil
+}
+
+// CheapPolls implements core.CheapPoller. Every poll is an ETag-conditional
+// GET, and a 304 doesn't count against the primary rate limit, so polling
+// unchanged repos is free while plenty of the limit is left. It is true
+// while the limit is unknown (no response yet), the last reading is at or
+// above CheapPollFloor, or that reading's reset time has passed.
+func (c *Client) CheapPolls() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.rateLeft < 0 || c.rateLeft >= CheapPollFloor || !c.now().Before(c.rateSet)
 }
 
 func (c *Client) noteRate(h http.Header) {
