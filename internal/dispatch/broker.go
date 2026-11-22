@@ -130,6 +130,10 @@ type grantRec struct {
 	TookRun    int64         `json:"took_run,omitempty"`
 	Identified bool          `json:"identified,omitempty"`
 	Fork       bool          `json:"fork,omitempty"`
+	// TookEvent and TookBranch are the taken job's run event and head
+	// branch, sent to the worker as WorkResponse.Confirm.
+	TookEvent  string `json:"took_event,omitempty"`
+	TookBranch string `json:"took_branch,omitempty"`
 	// Settled means nothing more needs checking at the forge: the runner was
 	// identified as a same-repo job, or the broker deleted or stopped it.
 	Settled  bool      `json:"settled,omitempty"`
@@ -359,6 +363,15 @@ func (b *Broker) Work(ctx context.Context, req core.WorkRequest) (core.WorkRespo
 	}
 	dev.Stop = keep
 	resp.Stop = dedupe(resp.Stop)
+
+	// Confirmations: the job each running runner took, every response
+	// while it runs, so a lost response costs nothing.
+	for _, rec := range b.grants {
+		if rec.Device == req.Device && rec.Kind == core.KindRunner && rec.Identified && running[rec.Name] {
+			resp.Confirm = append(resp.Confirm, core.RunnerJob{Runner: rec.Name, Event: rec.TookEvent, HeadBranch: rec.TookBranch})
+		}
+	}
+	sort.Slice(resp.Confirm, func(i, k int) bool { return resp.Confirm[i].Runner < resp.Confirm[k].Runner })
 
 	if dev.Quarantine {
 		// The contract has no "I reset" field: a worker that got the
@@ -1298,6 +1311,7 @@ func (b *Broker) tookLocked(rec *grantRec, j core.Job) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	rec.TookJob, rec.TookRun, rec.Identified, rec.Fork = j.ID, j.RunID, true, j.FromFork
+	rec.TookEvent, rec.TookBranch = j.Event, j.HeadBranch
 	rec.Settled = !j.FromFork
 }
 

@@ -113,10 +113,11 @@ type job struct {
 	http  *http.Client
 }
 
-// grant registers a job and returns a client that acts as it.
+// grant registers a job whose binding the broker has confirmed, and
+// returns a client that acts as it.
 func (h *harness) job(name, ref, def string, a Access, tok string) *job {
 	h.t.Helper()
-	if err := h.svc.Grant(Binding{Job: name, Repo: repo, Ref: ref, Default: def, Access: a, Store: h.store}); err != nil {
+	if err := h.svc.Grant(Binding{Job: name, Repo: repo, Ref: ref, Default: def, Access: a, Store: h.store, Confirmed: true}); err != nil {
 		h.t.Fatal(err)
 	}
 	return h.client(name, tok)
@@ -141,9 +142,15 @@ func (h *harness) client(name, tok string) *job {
 	return &job{h: h, name: name, token: tok, http: &http.Client{Transport: tr, Timeout: time.Minute}}
 }
 
+// tokenScope is one scope of a runtime token's ac claim.
+type tokenScope struct {
+	Scope      string `json:"Scope"`
+	Permission int    `json:"Permission"`
+}
+
 // token makes a runtime token whose ac claim grants these scopes. The
-// signature is junk: the service never trusts the token for more than the
-// binding.
+// signature is junk, as a job that forges one would make it: the service
+// must never trust the claim.
 func token(scopes ...tokenScope) string {
 	ac, _ := json.Marshal(scopes)
 	claims, _ := json.Marshal(map[string]string{"ac": string(ac)})
@@ -152,7 +159,6 @@ func token(scopes ...tokenScope) string {
 }
 
 func rw(scope string) tokenScope { return tokenScope{Scope: scope, Permission: 3} }
-func ro(scope string) tokenScope { return tokenScope{Scope: scope, Permission: 1} }
 
 func (j *job) twirp(method string, req, resp any) int {
 	j.h.t.Helper()
@@ -364,9 +370,10 @@ func TestRefScoping(t *testing.T) {
 		t.Fatal(msg)
 	}
 
-	// A pull request job reads main's entries and writes its own scope.
-	pr := h.job("tm-pr-1", RefScope("pull_request", "feature"), BranchScope("main"), Write,
-		token(rw("refs/pull/7/merge"), ro("refs/heads/main")))
+	// A pull request job reads main's entries and writes nothing, even
+	// with a token that claims writes.
+	pr := h.job("tm-pr-1", RefScope("pull_request", "feature"), BranchScope("main"), Read,
+		token(rw("refs/pull/7/merge"), rw("refs/heads/main")))
 	d := pr.lookup("deps-main", ver)
 	if !d.OK {
 		t.Fatal("the PR did not read main's entry")
@@ -374,66 +381,116 @@ func TestRefScoping(t *testing.T) {
 	if _, got := pr.get(d.SignedDownloadURL); !bytes.Equal(got, mainData) {
 		t.Fatal("the PR read the wrong bytes")
 	}
-	// The PR can save a key main already has: it lands in its own scope.
-	if ok, msg := pr.save("deps-main", ver, []byte("poisoned"), 4096); !ok {
-		t.Fatalf("PR save to its own scope: %s", msg)
+	if ok, msg := pr.save("deps-pr", ver, []byte("poisoned"), 4096); ok || !strings.HasPrefix(msg, denied) {
+		t.Fatalf("a PR job saved: %v %q", ok, msg)
 	}
-	if ok, msg := pr.save("deps-pr", ver, []byte("from pr"), 4096); !ok {
+
+	// Another branch writes its own scope, which main never reads.
+	other := h.job("tm-other-1", BranchScope("dev"), BranchScope("main"), Write, "")
+	if ok, msg := other.save("deps-dev", ver, []byte("from dev"), 4096); !ok {
 		t.Fatal(msg)
-	}
-	// It reads its own first.
-	if _, got := pr.get(pr.lookup("deps-main", ver).SignedDownloadURL); string(got) != "poisoned" {
-		t.Fatalf("PR read %q, want its own entry first", got)
-	}
-
-	// Main never sees the PR's writes.
-	if _, got := main.get(main.lookup("deps-main", ver).SignedDownloadURL); !bytes.Equal(got, mainData) {
-		t.Fatalf("main read %q", got)
-	}
-	if d := main.lookup("deps-pr", ver); d.OK {
-		t.Fatal("main read the PR's entry")
-	}
-	if d := main.lookup("deps-x", ver, "deps-p"); d.OK {
-		t.Fatal("main matched the PR's entry by prefix")
-	}
-
-	// Another branch reads main, not the PR.
-	other := h.job("tm-other-1", BranchScope("dev"), BranchScope("main"), Write, token(rw("refs/heads/dev")))
-	if d := other.lookup("deps-pr", ver); d.OK {
-		t.Fatal("another branch read the PR's entry")
 	}
 	if d := other.lookup("deps-main", ver); !d.OK {
 		t.Fatal("another branch did not read main")
 	}
-
-	// Another PR can't fetch this PR's entry, even with its file name.
-	pr2 := h.job("tm-pr-2", RefScope("pull_request", "other"), BranchScope("main"), Write,
-		token(rw("refs/pull/8/merge")))
-	file := strings.TrimPrefix(strings.Split(pr.lookup("deps-pr", ver).SignedDownloadURL, "?")[0], h.base+blobPrefix)
-	if code, _ := pr2.get(h.base + blobPrefix + file + "?sig=" + h.svc.grantOf("tm-pr-2").capability); code != http.StatusNotFound {
-		t.Fatalf("another PR fetched a PR entry by file name: %d", code)
+	if d := main.lookup("deps-dev", ver); d.OK {
+		t.Fatal("main read dev's entry")
+	}
+	if d := main.lookup("deps-x", ver, "deps-d"); d.OK {
+		t.Fatal("main matched dev's entry by prefix")
+	}
+	if d := pr.lookup("deps-dev", ver); d.OK {
+		t.Fatal("a PR read dev's entry")
+	}
+	// A PR can't fetch dev's entry, even with its file name.
+	file := strings.TrimPrefix(strings.Split(other.lookup("deps-dev", ver).SignedDownloadURL, "?")[0], h.base+blobPrefix)
+	if code, _ := pr.get(h.base + blobPrefix + file + "?sig=" + h.svc.grantOf("tm-pr-1").capability); code != http.StatusNotFound {
+		t.Fatalf("a PR fetched dev's entry by file name: %d", code)
 	}
 }
 
-func TestTokenNarrowsBinding(t *testing.T) {
+// A JIT runner granted for a push to main may take a queued pull_request
+// job instead, and that job can forge a runtime token whose ac claim grants
+// main. Write waits for the broker's confirmation of the job the runner
+// took, and the claim never counts (review first-F1).
+func TestWriteNeedsConfirmation(t *testing.T) {
 	h := newHarness(t, Options{})
-	main := h.job("tm-main-1", BranchScope("main"), BranchScope("main"), Write, token(rw("refs/heads/main")))
-	if ok, msg := main.save("dev-deps", ver, []byte("main's"), 4096); !ok {
+	forged := token(rw("refs/heads/main"), rw("refs/heads/dev"))
+	main := Binding{Job: "tm-main-1", Repo: repo, Ref: BranchScope("main"), Default: BranchScope("main"), Access: Write, Store: h.store}
+	if err := h.svc.Grant(main); err != nil {
+		t.Fatal(err)
+	}
+	j := h.client("tm-main-1", forged)
+	if ok, msg := j.save("deps", ver, []byte("early"), 4096); ok || !strings.HasPrefix(msg, denied) {
+		t.Fatalf("an unconfirmed main binding saved: %v %q", ok, msg)
+	}
+
+	// Before confirmation only the default branch is read.
+	dev := h.job("tm-dev-1", BranchScope("dev"), BranchScope("main"), Write, "")
+	if ok, msg := dev.save("dev-only", ver, []byte("dev's"), 4096); !ok {
 		t.Fatal(msg)
 	}
-	// The runner was granted for dev but runs a job whose token names
-	// another branch: dev is neither written nor read, main is still read.
-	dev := h.job("tm-dev-1", BranchScope("dev"), BranchScope("main"), Write, token(rw("refs/heads/release")))
-	if ok, msg := dev.save("dev-deps", ver, []byte("x"), 4096); ok || !strings.HasPrefix(msg, denied) {
-		t.Fatalf("save with a mismatched token: %v %q", ok, msg)
+	devB := Binding{Job: "tm-dev-2", Repo: repo, Ref: BranchScope("dev"), Default: BranchScope("main"), Access: Write, Store: h.store}
+	if err := h.svc.Grant(devB); err != nil {
+		t.Fatal(err)
 	}
-	if d := dev.lookup("dev-deps", ver); !d.OK {
-		t.Fatal("the default branch was not read")
+	dev2 := h.client("tm-dev-2", forged)
+	if d := dev2.lookup("dev-only", ver); d.OK {
+		t.Fatal("an unconfirmed job read its own ref")
 	}
-	// No token at all: the same.
-	none := h.job("tm-dev-2", BranchScope("dev"), BranchScope("main"), Write, "")
-	if ok, _ := none.save("dev-deps-2", ver, []byte("x"), 4096); ok {
-		t.Fatal("a save with no token was accepted")
+	if err := h.svc.Grant(devB.Confirm("push", "dev")); err != nil {
+		t.Fatal(err)
+	}
+	if d := dev2.lookup("dev-only", ver); !d.OK {
+		t.Fatal("a confirmed job did not read its own ref")
+	}
+
+	// The runner took a pull_request job: narrowed to Read for good, and the
+	// forged claim changes nothing.
+	pr := main.Confirm("pull_request", "feature")
+	if pr.Access != Read || pr.Ref != RefScope("pull_request", "feature") || !pr.Confirmed {
+		t.Fatalf("PR confirmation: %+v", pr)
+	}
+	if again := pr.Confirm("push", "main"); again != pr {
+		t.Fatal("a confirmed binding was confirmed again")
+	}
+	if err := h.svc.Grant(pr); err != nil {
+		t.Fatal(err)
+	}
+	if ok, msg := j.save("deps", ver, []byte("poisoned"), 4096); ok || !strings.HasPrefix(msg, denied) {
+		t.Fatalf("a PR job with a forged token saved to main: %v %q", ok, msg)
+	}
+	if a, _ := h.svc.Granted("tm-main-1"); a != Read {
+		t.Fatalf("access %v after a PR confirmation, want read", a)
+	}
+
+	// A push to another branch, or pull_request_target on main, is no
+	// confirmation of main either.
+	for _, c := range [][2]string{{"push", "dev"}, {"pull_request_target", "main"}, {"push", ""}} {
+		if b := main.Confirm(c[0], c[1]); b.Access != Read {
+			t.Errorf("Confirm(%q, %q) kept %v", c[0], c[1], b.Access)
+		}
+	}
+
+	// A pull_request job never writes, even the one the runner was granted
+	// for, confirmed on its own ref.
+	prB := Binding{Job: "tm-pr-1", Ref: RefScope("pull_request", "feature"), Access: Write}
+	if b := prB.Confirm("pull_request", "feature"); b.Access != Read || b.Ref != prB.Ref {
+		t.Fatalf("a confirmed pull_request binding: %+v", b)
+	}
+
+	// It took the push to main it was granted for: Write.
+	h2 := newHarness(t, Options{})
+	main.Store = h2.store
+	ok := main.Confirm("push", "main")
+	if ok.Access != Write || ok.Ref != BranchScope("main") {
+		t.Fatalf("push confirmation: %+v", ok)
+	}
+	if err := h2.svc.Grant(ok); err != nil {
+		t.Fatal(err)
+	}
+	if ok, msg := h2.client("tm-main-1", "").save("deps", ver, []byte("good"), 4096); !ok {
+		t.Fatalf("a confirmed push to main could not save: %s", msg)
 	}
 }
 
@@ -717,13 +774,6 @@ func TestScopes(t *testing.T) {
 		if got := RefScope(c.event, c.branch); got != c.want {
 			t.Errorf("RefScope(%q, %q) = %q, want %q", c.event, c.branch, got, c.want)
 		}
-	}
-	ts := []tokenScope{rw("refs/pull/3/merge"), ro("refs/heads/main")}
-	if !tokenGrants(ts, "refs/pull/head/x", writeBit) || tokenGrants(ts, "refs/heads/main", writeBit) || !tokenGrants(ts, "refs/heads/main", readBit) {
-		t.Fatal("tokenGrants")
-	}
-	if tokenGrants([]tokenScope{rw("refs/heads/mainline")}, "refs/heads/main", writeBit) {
-		t.Fatal("a branch prefix granted another branch")
 	}
 }
 

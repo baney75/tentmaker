@@ -836,6 +836,7 @@ func (w *Worker) exchange(ctx context.Context, now time.Time, d core.Decision, a
 				}
 			}
 		}
+		w.confirmActionsLocked(name, resp.Confirm)
 		w.mu.Unlock()
 		for _, j := range stops {
 			w.log.Info("broker asked to stop a runner", "source", name, "runner", j.Name, "repo", j.Repo)

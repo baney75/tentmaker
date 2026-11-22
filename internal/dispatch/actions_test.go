@@ -84,13 +84,16 @@ func TestActionsAccessFollowsTheCacheDecision(t *testing.T) {
 		want string // "" means no grant
 	}{
 		{"cached job writes", nil, actionsOffer(repoApp, true, false), core.KindRunner, "write"},
-		{"drained job reads", nil, actionsOffer(repoApp, true, true), core.KindRunner, "read"},
+		// A drained job gets none: it holds no repo cache, so nothing keeps
+		// other repos off the device while it reads (review second-S1).
+		{"drained job", nil, actionsOffer(repoApp, true, true), core.KindRunner, ""},
 		{"untrusted job", nil, actionsOffer(repoApp, false, false), core.KindRunner, ""},
 		{"fork job", nil, func() core.WorkOffer { o := actionsOffer(repoApp, true, false); o.Job.FromFork = true; return o }(), core.KindRunner, ""},
 		{"not github.com", nil, func() core.WorkOffer { o := actionsOffer(repoApp, true, false); o.Actions = nil; return o }(), core.KindRunner, ""},
 		{"check job", nil, actionsOffer(repoApp, true, false), core.KindCheck, ""},
 		{"beside another repo's job", []*jobRec{{Forge: "github", Repo: repoSite}}, actionsOffer(repoApp, true, true), core.KindRunner, ""},
-		{"beside its own repo's job", []*jobRec{{Forge: "github", Repo: repoApp, Trust: app}}, actionsOffer(repoApp, true, true), core.KindRunner, "read"},
+		{"drained beside its own repo's job", []*jobRec{{Forge: "github", Repo: repoApp, Trust: app}}, actionsOffer(repoApp, true, true), core.KindRunner, ""},
+		{"beside its own repo's job", []*jobRec{{Forge: "github", Repo: repoApp, Trust: app}}, actionsOffer(repoApp, true, false), core.KindRunner, "write"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			w := &Worker{o: WorkerOptions{ActionsCache: svc}}
@@ -103,8 +106,13 @@ func TestActionsAccessFollowsTheCacheDecision(t *testing.T) {
 			case tc.want != "" && (got == nil || got.Access != tc.want):
 				t.Fatalf("got %+v, want %s", got, tc.want)
 			}
-			if got != nil && (got.Ref != "refs/pull/head/feature" || got.Default != "refs/heads/main") {
+			if got != nil && (got.Ref != "refs/pull/head/feature" || got.Default != "refs/heads/main" || got.Confirmed) {
 				t.Fatalf("scopes %+v", got)
+			}
+			// Any grant at all means the job holds the repo cache, which is
+			// what keeps other trust off the device (cachedRepoLocked).
+			if got != nil && c.IsZero() {
+				t.Fatalf("granted %s without the repo cache", got.Access)
 			}
 		})
 	}
@@ -284,6 +292,74 @@ func TestRestartRegrantsRunningJobs(t *testing.T) {
 	after, ok := fresh.grant(names[0])
 	if !ok || after.Access != before.Access || after.Ref != before.Ref || after.Default != before.Default || after.Store == nil {
 		t.Fatalf("after a restart: %+v ok %v, before %+v", after, ok, before)
+	}
+}
+
+// A JIT runner takes whichever queued job matches its labels. Its grant
+// may not write until the broker confirms from the forge which job it
+// took; a pull_request job taken instead narrows it to read for good. While
+// any grant of read or more runs, the worker keeps other repos off the
+// device (review first-F1, second-S1).
+func TestActionsWriteWaitsForConfirmation(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		took func(*core.Job) // nil: the job it was granted for
+		want actionscache.Access
+		ref  string
+	}{
+		{"the push it was granted for", nil, actionscache.Write, "refs/heads/main"},
+		{"a pull_request job instead", func(j *core.Job) { j.Event, j.HeadBranch = "pull_request", "feature" },
+			actionscache.Read, "refs/pull/head/feature"},
+		{"a push to another branch", func(j *core.Job) { j.HeadBranch = "dev" }, actionscache.Read, "refs/heads/dev"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newRig(t, config.Repo{Name: repoApp, Mode: "runner"})
+			r.forge.SetRepo(core.RepoInfo{Repo: repoApp, DefaultBranch: "main", ForkPolicy: "off"})
+			w := r.addWorker("alpha", 1)
+			w.ex.SetCachesRepos(true)
+			w.ex.SetActionsCache(t.TempDir())
+			svc := newFakeActions()
+			w.actions = svc
+			src := &source{inner: r.broker}
+			w.sources = []core.WorkSource{src}
+			w.w = r.newWorker(w)
+			j := r.addJob(repoApp)
+			r.run(2*time.Second, time.Second)
+			names := started(w.ex)
+			if len(names) != 1 {
+				t.Fatalf("starts = %v", names)
+			}
+			name := names[0]
+			if b, _ := svc.grant(name); b.Access != actionscache.Write || b.Confirmed {
+				t.Fatalf("grant at start %+v, want unconfirmed write", b)
+			}
+			taken := j
+			if tc.took != nil {
+				taken = r.addJob(repoApp, tc.took)
+			}
+			if err := r.forge.Take(name, taken.ID); err != nil {
+				t.Fatal(err)
+			}
+			r.run(10*time.Second, time.Second)
+			b, ok := svc.grant(name)
+			if !ok || !b.Confirmed || b.Access != tc.want || b.Ref != tc.ref || b.Default != "refs/heads/main" {
+				t.Fatalf("grant after confirmation %+v ok %v, want %v on %s", b, ok, tc.want, tc.ref)
+			}
+			w.w.mu.Lock()
+			rec := w.w.st.Jobs[0].Actions
+			only := w.w.cachedRepoLocked()
+			_, admits := w.w.cacheDecisionLocked(w.w.execs[0], cacheOffer(repoSite, true, false))
+			w.w.mu.Unlock()
+			if rec == nil || !rec.Confirmed || rec.Access != tc.want.String() || rec.Ref != tc.ref {
+				t.Fatalf("recorded %+v", rec)
+			}
+			if req := src.last(); req.OnlyRepo == nil || req.OnlyRepo.Repo != repoApp || only == nil {
+				t.Fatalf("OnlyRepo %+v while a job with %v runs", req.OnlyRepo, b.Access)
+			}
+			if admits {
+				t.Fatalf("another repo's job would start beside a job with %v", b.Access)
+			}
+		})
 	}
 }
 

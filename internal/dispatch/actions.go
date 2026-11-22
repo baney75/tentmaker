@@ -23,6 +23,9 @@ type actionsRec struct {
 	Ref     string `json:"ref,omitempty"`
 	Default string `json:"default,omitempty"`
 	Access  string `json:"access"`
+	// Confirmed: Ref and Access are narrowed to the job the broker saw the
+	// runner take (actionscache.Binding.Confirm).
+	Confirmed bool `json:"confirmed,omitempty"`
 }
 
 // actionsLocked decides whether runner offer off, about to start on e with
@@ -31,8 +34,13 @@ type actionsRec struct {
 //   - write when it got the repo cache, so the same trust rules hold: it is
 //     vouched safe for the repo, and only that repo's trusted jobs have
 //     run since the last reset;
-//   - read when it would have got the cache but for a drain;
-//   - otherwise none, and the job keeps GitHub's own cache.
+//   - otherwise none, and the job keeps GitHub's own cache. A drained job
+//     gets none too: the worker sends OnlyRepo and declines other trust
+//     only while a Cached job runs, so a reader beside no cached job would
+//     leave R's entries open to whatever starts next.
+//
+// Write is not honored until the broker confirms which job the runner
+// took (confirmActionsLocked).
 //
 // The caller adds the job record afterward.
 func (w *Worker) actionsLocked(e *execInfo, off core.WorkOffer, kind string, c core.CacheRepo) *actionsRec {
@@ -44,40 +52,45 @@ func (w *Worker) actionsLocked(e *execInfo, off core.WorkOffer, kind string, c c
 	if !ok || !ac.ActionsCacheReady() {
 		return nil
 	}
-	access := actionscache.None
-	switch {
-	case !c.IsZero():
-		access = actionscache.Write
-	case w.mayReadCacheLocked(e, off):
-		access = actionscache.Read
-	}
-	if access == actionscache.None {
+	if c.IsZero() {
 		return nil
 	}
 	return &actionsRec{
 		Ref:     actionscache.RefScope(off.Job.Event, off.Job.HeadBranch),
 		Default: actionscache.BranchScope(off.Actions.DefaultBranch),
-		Access:  access.String(),
+		Access:  actionscache.Write.String(),
 	}
 }
 
-// mayReadCacheLocked is cacheDecisionLocked's test without the drain: may
-// off's job see its repo's cache at all.
-func (w *Worker) mayReadCacheLocked(e *execInfo, off core.WorkOffer) bool {
-	tk := trustKey(offerCache(off))
-	rc, caches := e.ex.(core.RepoCacher)
-	if tk == "" || !caches || !rc.CachesRepos() {
-		return false
+// confirmActionsLocked applies source's word on which job each runner took
+// to the runner's Actions grant, once: the record is narrowed for good
+// (actionscache.Binding.Confirm), saved with the job, and granted again.
+func (w *Worker) confirmActionsLocked(source string, cs []core.RunnerJob) {
+	if w.o.ActionsCache == nil {
+		return
 	}
-	if w.st.Dirty && w.st.DirtyTrust != tk {
-		return false
-	}
-	for _, j := range w.st.Jobs {
-		if j.Trust != tk {
-			return false
+	for _, c := range cs {
+		for _, j := range w.st.Jobs {
+			if j.Name != c.Runner || j.Source != source || j.Actions == nil || j.Actions.Confirmed {
+				continue
+			}
+			e := w.execByName(j.Executor)
+			if e == nil {
+				continue
+			}
+			b, ok := w.actionsBinding(e, j)
+			if !ok {
+				continue
+			}
+			b = b.Confirm(c.Event, c.HeadBranch)
+			j.Actions.Ref, j.Actions.Access, j.Actions.Confirmed = b.Ref, b.Access.String(), true
+			if err := w.o.ActionsCache.Grant(b); err != nil {
+				// The old grant stays, and it may not write unconfirmed.
+				w.log.Warn("actions cache grant not narrowed", "runner", j.Name, "error", err)
+			}
+			w.log.Info("actions cache grant confirmed", "runner", j.Name, "ref", b.Ref, "access", b.Access.String())
 		}
 	}
-	return true
 }
 
 func (w *Worker) actionsBinding(e *execInfo, j *jobRec) (actionscache.Binding, bool) {
@@ -86,12 +99,13 @@ func (w *Worker) actionsBinding(e *execInfo, j *jobRec) (actionscache.Binding, b
 		return actionscache.Binding{}, false
 	}
 	return actionscache.Binding{
-		Job:     j.Name,
-		Repo:    core.CacheRepo{Forge: j.Forge, Repo: j.Repo},
-		Ref:     j.Actions.Ref,
-		Default: j.Actions.Default,
-		Access:  actionscache.ParseAccess(j.Actions.Access),
-		Store:   ac,
+		Job:       j.Name,
+		Repo:      core.CacheRepo{Forge: j.Forge, Repo: j.Repo},
+		Ref:       j.Actions.Ref,
+		Default:   j.Actions.Default,
+		Access:    actionscache.ParseAccess(j.Actions.Access),
+		Store:     ac,
+		Confirmed: j.Actions.Confirmed,
 	}, true
 }
 

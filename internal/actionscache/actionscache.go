@@ -21,10 +21,11 @@
 // repo, its ref scope, the default branch's scope and an Access (none, read
 // or write, from the worker's repo cache decision). A job reads its own
 // ref's entries first, then the default branch's, and writes only to its
-// own ref; GitHub scopes caches the same way. The job's runtime token can
-// only narrow that: when its ac claim doesn't grant the bound ref (the JIT
-// runner took another job than the one it was granted for), the ref is
-// neither read nor written. Entries are immutable: a second create for the
+// own ref; GitHub scopes caches the same way. A JIT runner may take another
+// job than the one it was granted for, so until the broker confirms from
+// the forge which job it took (Binding.Confirm), the job reads only the
+// default branch and writes nothing. The runtime token's claims are never
+// trusted: their signature can't be checked here. Entries are immutable: a second create for the
 // same key and version in a scope is refused. An upload becomes an entry
 // only at Finalize, when its size matches.
 //
@@ -121,6 +122,10 @@ type Binding struct {
 	Default string         // the default branch's scope (BranchScope); "" unknown
 	Access  Access
 	Store   Store
+	// Confirmed says the broker has read from the forge which job the
+	// runner took and the binding was narrowed to it (Confirm). Until then
+	// the job reads only the default branch and writes nothing.
+	Confirmed bool
 }
 
 // Options configure a Service.
@@ -145,12 +150,11 @@ type grant struct {
 	capability string
 	// Shared by every grant a job's binding is replaced with, so bytes an
 	// upload in flight adds are never lost.
-	used      *atomic.Int64 // bytes this job has uploaded
-	tokenWarn *atomic.Bool
+	used *atomic.Int64 // bytes this job has uploaded
 }
 
 func (g *grant) with(b Binding) *grant {
-	return &grant{Binding: b, capability: g.capability, used: g.used, tokenWarn: g.tokenWarn}
+	return &grant{Binding: b, capability: g.capability, used: g.used}
 }
 
 // Service is the cache service. It keeps grants and uploads in memory
@@ -243,7 +247,7 @@ func (s *Service) Grant(b Binding) error {
 	if err != nil {
 		return err
 	}
-	g := &grant{Binding: b, capability: c, used: new(atomic.Int64), tokenWarn: new(atomic.Bool)}
+	g := &grant{Binding: b, capability: c, used: new(atomic.Int64)}
 	s.byJob[b.Job], s.byCap[c] = g, g
 	return nil
 }

@@ -444,6 +444,18 @@ type WorkResponse struct {
 	// Quarantine tells the worker to take nothing from this broker until it
 	// has reset (a runner took a job the broker couldn't identify).
 	Quarantine bool `json:"quarantine"`
+	// Confirm names the job each running runner took, once the broker has
+	// read it from the forge. The worker narrows the runner's Actions cache
+	// grant to it (actionscache.Binding.Confirm); until then the grant may
+	// not write.
+	Confirm []RunnerJob `json:"confirm,omitempty"`
+}
+
+// RunnerJob is the job a runner took, as the forge reports it.
+type RunnerJob struct {
+	Runner     string `json:"runner"`
+	Event      string `json:"event"`
+	HeadBranch string `json:"head_branch"`
 }
 
 // WorkSource hands out work: the local broker, or a remote one over the mesh.

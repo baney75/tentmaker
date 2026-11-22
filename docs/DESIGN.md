@@ -279,10 +279,21 @@ disk speed with no workflow change. Any step of it that fails leaves the job on 
   `refs/pull/head/<branch>` for a pull_request event. Restore looks in the job's own ref, then the
   repo's default branch (`WorkOffer.Actions.DefaultBranch`), each by exact key then by each restore
   key as a prefix, newest first, and only for the version asked for. A save goes only to the job's
-  own ref, so a PR reads main and never writes it. The runtime token's `ac` claim can only narrow
-  this: a write needs write on the job's ref in the claim, and reading the job's own ref needs read
-  on it (any `refs/pull/` scope counts for a PR). A token with no readable claim keeps the
-  binding's access, with one warning per job.
+  own ref, so a PR reads main and never writes it.
+- Confirmation: a JIT runner takes whichever queued job of the repo matches its labels, so the
+  job it was granted for proves nothing, and the runtime token's `ac` claim can't be trusted (its
+  signature can't be checked on the device, so a job can forge any claim; the service ignores the
+  token). A binding starts unconfirmed: it reads only the default branch and every create and
+  finalize is refused as a "cache write denied" save, which the toolkit warns about and the step
+  passes. The broker already identifies the job each busy runner took (its forge token, a timeout
+  per call, a retry every monitor pass; see the runner identification under Dispatch), and sends
+  it with every work response while the runner runs as `WorkResponse.Confirm` (runner, the run's
+  event and head branch), over the same channel as grants, so a peer device gets it too. The
+  worker applies it once (`actionscache.Binding.Confirm`), records it in `jobRec.Actions`
+  (`confirmed`, the narrowed ref and access) and grants again. Write survives only when the job is
+  not `pull_request` or `pull_request_target` and its scope is the bound ref. Any other job keeps
+  at most read, of its own scope (a PR's `refs/pull/head/<branch>`) and the default branch, for
+  good (review first-F1).
 - Entries are immutable: a key and version that exist, or are reserved by an upload in flight,
   are refused with `ok:false` and a "cache write denied" message, which the toolkit logs as a
   warning without failing the step. An entry is committed only at `FinalizeCacheEntryUpload`,
@@ -523,8 +534,10 @@ only from an offer with the flag and a job that isn't from a fork; an older brok
 api.github.com) and carries the repo's default branch. The worker grants such a job the Actions
 cache (`WorkerOptions.ActionsCache`, an `ActionsCache` interface) only when the service is
 listening and the executor is a `core.ActionsCacher` whose `ActionsCacheReady()` is true:
-write when the job got its repo cache, read only when a drain alone kept it from the cache, and no
-grant otherwise, so the job keeps GitHub's cache. When a job of another trust starts beside one
+write when the job got its repo cache (honored only once confirmed, above), and no grant otherwise,
+so the job keeps GitHub's cache. A drained job gets none: the worker sends `OnlyRepo` and declines
+other trust only while a `Cached` job runs, so a reader without the cache would leave the repo's
+entries open to whatever starts next (review second-S1). When a job of another trust starts beside one
 with a grant, the grant is lowered to none (`Limit`): the cache is as private as the least trusted
 job on the device, the same rule as the repo cache. The binding (refs and access, no secret) is
 kept in `state.json` as `jobRec.Actions`, and a restart grants the recorded jobs again with new
