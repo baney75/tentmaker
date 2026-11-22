@@ -244,7 +244,10 @@ physical LAN only, never what the tailnet routes.
   reach. A host-network container can then reach no host service's abstract Unix socket and
   listen on none of the host's addresses. This namespace is one per device, not one per job: the
   containers every job starts through the service share it (and its loopback), as they share
-  the service. A job's own `podman` CLI keeps the job's namespace. `Reset` fails unless the pause
+  the service. Its three units run as the runner from `Install` on, between jobs too, so they
+  are not a job's leftovers; the failures scenario tells them apart by unit cgroup, never by
+  argv (`sleep infinity` is also what a leak looks like). A job's own `podman` CLI keeps the
+  job's namespace. `Reset` fails unless the pause
   process and the user manager are both outside the host's network namespace
   (`/proc/<pid>/ns/net` differs from the daemon's), then checks the mounts through `podman
   unshare` and fails on any difference. Doctor (`Preflight`) reports either one in the host's
@@ -580,6 +583,30 @@ are rediscovered every 30 s; a peer failing 3 calls in a row is skipped for a mi
   folder holding the link (a user-writable `/usr/local` with `bin` pointing at a root-owned
   folder) could repoint it after the check (review r2 partB sol-second-F7). (internal/binsafe,
   internal/cli)
+- On Windows an elevated user owns what it creates, and an owner can always rewrite the DACL, so
+  a folder or binary the elevated user owns fails the walk. Before setup makes the service's folder
+  and copy, `binsafe.OwnNewFiles` sets its token's default owner to Administrators, so nothing it
+  creates is ever owned by the user (setting the owner after the create would leave a moment in
+  which it is); without elevation setup makes no copy. `update` and `rollback` do the same before
+  they write the new binary or the `.prev` copy; before, an elevated `update` left them owned by
+  the user and the next `rollback` refused them. `install.ps1`, run as Administrator into a
+  system folder, installs only into a folder named `Tentmaker` (the default
+  `%ProgramFiles%\Tentmaker`) and never lets the user own it or the binary, even for a moment,
+  because an owner can always rewrite a DACL and a handle opened while the user owned an object
+  keeps working after the owner changes. A new folder is created with Administrators as owner and
+  a protected DACL: SYSTEM and Administrators full, Users read and execute, and OWNER RIGHTS read
+  and execute, which takes the owner's implicit rights away from every file made in it. An
+  existing folder is kept only when SYSTEM or Administrators own it and everything in it, and no
+  one else can change any of them; it then gets that DACL in place of its own. Any other folder
+  is moved aside to `Tentmaker.untrusted-<ticks>`, never repaired in place, since its other owner
+  or writer may hold a handle a new DACL can't revoke or have left a DLL the service would load;
+  the install fails, naming `Stop-Service tentmaker`, if it can't be moved. A `tentmaker.exe.prev`
+  anyone else owns is deleted, since rollback would run it. The archive is read once and checked
+  and extracted from the same bytes, since the temp folder is the user's, and the staged binary is
+  always a new file. Before, every Windows install failed setup with "owned by S-1-5-21-..., not
+  SYSTEM or Administrators".
+- `setup --json` reports `binary`, the path the service runs. After a copy it is not the binary
+  on PATH, and `update` and `rollback` change only it.
 
 Install:
 

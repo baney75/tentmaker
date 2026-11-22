@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -201,5 +203,86 @@ func TestServiceBinaryUsesTheResolvedPath(t *testing.T) {
 	}
 	if code := f.run("", "rollback", "--json"); code != ExitOK || len(f.up.rollbackTo) != 1 || f.up.rollbackTo[0] != want {
 		t.Fatalf("rollback: exit %d to %v, want %s", code, f.up.rollbackTo, want)
+	}
+}
+
+// On Windows an elevated user owns what it creates, and an owner can always
+// rewrite the DACL, so setup must make Administrators the owner before it
+// makes the service's folder and copy, not after. Its JSON names the binary
+// the service runs, which is not the one on PATH after a copy.
+func TestSetupOwnsTheCopyBeforeMakingIt(t *testing.T) {
+	f := newFixture(t)
+	exe := f.writeExe("tentmaker build 1")
+	f.userWritable[filepath.Dir(exe)] = filepath.Dir(exe) + " is owned by uid 1000, not root"
+	dir := f.env.ServiceBinDirs[0]
+	calls := 0
+	f.env.OwnNewFiles = func() error {
+		calls++
+		if _, err := os.Stat(dir); err == nil {
+			t.Errorf("OwnNewFiles ran after %s was made", dir)
+		}
+		return nil
+	}
+	if code := f.run("", "setup", "--yes", "--no-mesh", "--json"); code != ExitOK {
+		t.Fatalf("exit %d\n%s\n%s", code, f.stdout, f.stderr)
+	}
+	if calls == 0 {
+		t.Fatal("setup copied the binary without OwnNewFiles")
+	}
+	var v struct{ Binary string }
+	if err := json.Unmarshal(f.stdout.Bytes(), &v); err != nil {
+		t.Fatalf("%v\n%s", err, f.stdout)
+	}
+	if want := filepath.Join(dir, "tentmaker"); v.Binary != want {
+		t.Errorf("setup --json binary %q, want %s", v.Binary, want)
+	}
+}
+
+// When OwnNewFiles fails (Windows, not elevated), setup makes no copy.
+func TestSetupRefusesCopyWhenItCannotOwnIt(t *testing.T) {
+	f := newFixture(t)
+	exe := f.writeExe("tentmaker build 1")
+	f.userWritable[filepath.Dir(exe)] = filepath.Dir(exe) + " is owned by uid 1000, not root"
+	f.env.OwnNewFiles = func() error { return errors.New("not elevated") }
+	if code := f.run("", "setup", "--yes", "--no-mesh"); code == ExitOK {
+		t.Fatalf("setup succeeded\n%s", f.stdout)
+	}
+	for _, d := range f.env.ServiceBinDirs {
+		if _, err := os.Stat(d); err == nil {
+			t.Errorf("setup made %s", d)
+		}
+	}
+	if f.svc.spec != nil {
+		t.Errorf("service installed: %+v", f.svc.spec)
+	}
+}
+
+// update and rollback write the new binary and the .prev copy as root. On
+// Windows those files would be owned by the elevated user, and the next
+// rollback refused them (the upgrade scenario's rollback failed on exactly
+// this), so both make Administrators the owner before they write anything.
+func TestUpdateAndRollbackOwnNewFilesFirst(t *testing.T) {
+	f := newFixture(t)
+	f.writeExe("tm")
+	f.setUp()
+	f.up.newer = true
+	f.svc.installed = false
+	owned := false
+	f.env.OwnNewFiles = func() error { owned = true; return nil }
+	f.up.onApply = func() {
+		if !owned {
+			t.Error("update applied before OwnNewFiles")
+		}
+	}
+	if code := f.run("", "update", "--json"); code != ExitOK || len(f.up.appliedTo) != 1 {
+		t.Fatalf("update: exit %d applied to %v\n%s", code, f.up.appliedTo, f.stdout)
+	}
+	owned = false
+	f.env.OwnNewFiles = func() error { return errors.New("not elevated") }
+	if code := f.run("", "rollback", "--json"); code == ExitOK || len(f.up.rollbackTo) != 0 {
+		t.Fatalf("rollback without OwnNewFiles: exit %d to %v", code, f.up.rollbackTo)
+	}
+	if code := f.run("", "update", "--json"); code == ExitOK || len(f.up.appliedTo) != 1 {
+		t.Fatalf("update without OwnNewFiles: exit %d applied to %v", code, f.up.appliedTo)
 	}
 }

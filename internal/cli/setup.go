@@ -81,6 +81,7 @@ type setupView struct {
 	Login   string         `json:"login,omitempty"`
 	Repos   []string       `json:"repos"`
 	Service string         `json:"service"`
+	Binary  string         `json:"binary,omitempty"` // the binary the service runs
 	Steps   []setupStep    `json:"steps"`
 	Doctor  *daemon.Report `json:"doctor,omitempty"`
 	Next    string         `json:"next"`
@@ -695,6 +696,13 @@ func (a *app) copyRootOwned(exe, name string) (string, error) {
 	if why, err := a.env.BinaryProblem(real); err != nil || why != "" {
 		return "", fmt.Errorf("%s: %s", name, firstNonEmpty(why, fmt.Sprint(err)))
 	}
+	// An elevated Windows user would own the folder and the copy, and an
+	// owner can always rewrite the DACL.
+	if a.env.OwnNewFiles != nil {
+		if err := a.env.OwnNewFiles(); err != nil {
+			return "", fmt.Errorf("%s: %v", name, err)
+		}
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", fmt.Errorf("make %s: %v", dir, err)
 	}
@@ -780,7 +788,24 @@ func installCopy(src, dst, goos string) error {
 // rootBinary is the binary update and rollback work on as root: this one
 // when only root can change it, else the root-owned copy setup made. They
 // never write a binary or a .prev someone else could change.
+//
+// On Windows the files they write (the new binary, the .prev copy) would be
+// owned by the elevated user, which the next update or rollback would rightly
+// refuse, so Administrators own them from the start.
 func (a *app) rootBinary() (string, error) {
+	bin, err := a.findRootBinary()
+	if err != nil {
+		return "", err
+	}
+	if a.env.OwnNewFiles != nil {
+		if err := a.env.OwnNewFiles(); err != nil {
+			return "", fail("run it as Administrator", "%v", err)
+		}
+	}
+	return bin, nil
+}
+
+func (a *app) findRootBinary() (string, error) {
 	exe, err := a.selfPath()
 	if err != nil {
 		return "", fail("", "%v", err)
@@ -824,6 +849,7 @@ func (a *app) setupService(v *setupView) error {
 	if err != nil {
 		return err
 	}
+	v.Binary = spec.Binary
 	if note != "" {
 		a.step(v, "binary", daemon.Warn, "%s", note)
 	}

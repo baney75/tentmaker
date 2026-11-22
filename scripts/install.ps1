@@ -119,6 +119,14 @@ function Install-Tentmaker {
     elseif ($Channel -eq 'dev') { $dl = "$base/download/dev"; $what = 'the dev channel' }
     else { $dl = "$base/latest/download"; $what = 'the latest stable release' }
 
+    function Icacls([string]$path) {
+        $ErrorActionPreference = 'Continue'
+        $out = & icacls.exe $path @args /Q 2>&1
+        $code = $LASTEXITCODE
+        $ErrorActionPreference = 'Stop'
+        if ($code -ne 0) { Fail "icacls $path $($args -join ' ') failed: $out" 'run the installer from an Administrator PowerShell' }
+    }
+
     function Fetch([string]$src, [string]$dst) {
         if ($src -notmatch '^https?://') {
             $local = $src -replace '/', '\'
@@ -154,28 +162,122 @@ function Install-Tentmaker {
             if ($f.Count -eq 2 -and ($f[1] -eq $asset -or $f[1] -eq "*$asset")) { $want = $f[0].ToLowerInvariant(); break }
         }
         if (-not $want) { Fail "SHA256SUMS has no entry for $asset" "the release may be incomplete; retry later or report it at $repoUrl/issues" }
-        $got = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        # The temp folder is the user's, so the archive could change after a
+        # check. Read it once, and check and extract the same bytes.
+        $zipBytes = [IO.File]::ReadAllBytes($zipPath)
+        $sha = [Security.Cryptography.SHA256]::Create()
+        try { $got = -join ($sha.ComputeHash($zipBytes) | ForEach-Object { $_.ToString('x2') }) } finally { $sha.Dispose() }
         if ($got -ne $want) {
             Fail "checksum mismatch for ${asset}: got $got, SHA256SUMS says $want; refusing to install" "retry; if it repeats, report it at $repoUrl/issues (the download was changed or corrupted)"
         }
         Say "verified sha256 $got"
 
-        # Extract only tentmaker.exe from the top level of the archive.
-        Add-Type -AssemblyName System.IO.Compression.FileSystem
-        $extracted = Join-Path $tmp 'tentmaker.exe'
-        $zip = [IO.Compression.ZipFile]::OpenRead($zipPath)
+        $target = Join-Path $InstallDir 'tentmaker.exe'
+        $staged = Join-Path $InstallDir 'tentmaker.new.exe'
+        # The service runs this binary as SYSTEM, and setup refuses one that
+        # anyone but SYSTEM and Administrators could change. An owner can
+        # always rewrite a DACL, and a handle opened while the user owned a
+        # file or folder keeps working after the owner changes. So a system
+        # install never lets the user own either one, even for a moment:
+        # the folder is created with Administrators as owner and a DACL of
+        # its own, and the OWNER RIGHTS entry takes the owner's implicit
+        # rights away from every file made in it.
+        $lock = $isAdmin -and $isSystem
+        if ($lock) {
+            if ((Split-Path -Leaf $InstallDir) -ne 'Tentmaker') {
+                Fail "a system install goes in its own folder named Tentmaker, not $InstallDir" "use -InstallDir `"$(Join-Path $InstallDir 'Tentmaker')`""
+            }
+            $admins = New-Object Security.Principal.SecurityIdentifier 'S-1-5-32-544'
+            $sec = New-Object Security.AccessControl.DirectorySecurity
+            $sec.SetOwner($admins)
+            $sec.SetAccessRuleProtection($true, $false)
+            $tree = [Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit'
+            foreach ($rule in @(@('S-1-5-18', 'FullControl'), @('S-1-5-32-544', 'FullControl'), @('S-1-5-32-545', 'ReadAndExecute'), @('S-1-3-4', 'ReadAndExecute'))) {
+                $sec.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule (
+                    (New-Object Security.Principal.SecurityIdentifier $rule[0]), [Security.AccessControl.FileSystemRights]$rule[1], $tree,
+                    [Security.AccessControl.PropagationFlags]::None, [Security.AccessControl.AccessControlType]::Allow)))
+            }
+            $trusted = @('S-1-5-18', 'S-1-5-32-544')
+            # Anyone else who could change the folder or anything in it may
+            # still hold a handle that a new DACL can't revoke, or may have
+            # left a file the service would load (a DLL beside the exe). Such
+            # a folder is never repaired in place: it is set aside.
+            $write = [Security.AccessControl.FileSystemRights]'WriteData, AppendData, WriteExtendedAttributes, WriteAttributes, DeleteSubdirectoriesAndFiles, Delete, ChangePermissions, TakeOwnership'
+            function Get-Untrusted([string]$path) {
+                $acl = Get-Acl -LiteralPath $path
+                $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+                if ($trusted -notcontains $owner) { return "it is owned by $owner" }
+                foreach ($r in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
+                    if ($r.AccessControlType -eq 'Allow' -and $trusted -notcontains $r.IdentityReference.Value -and ($r.FileSystemRights -band $write)) {
+                        return "$($r.IdentityReference.Value) can change it"
+                    }
+                }
+                return $null
+            }
+            if (Test-Path -LiteralPath $InstallDir) {
+                $why = Get-Untrusted $InstallDir
+                if (-not $why) {
+                    foreach ($child in Get-ChildItem -LiteralPath $InstallDir -Force -Recurse) {
+                        $because = Get-Untrusted $child.FullName
+                        if ($because) { $why = "in $($child.FullName), $because"; break }
+                    }
+                }
+                if ($why) {
+                    $aside = "$InstallDir.untrusted-" + [DateTime]::UtcNow.Ticks
+                    try { [IO.Directory]::Move($InstallDir, $aside) } catch {
+                        Fail "$InstallDir can't be trusted ($why) and can't be moved aside: $_" "stop the service with 'Stop-Service tentmaker' and close anything using the folder, then delete it and run the installer again"
+                    }
+                    Say "moved $InstallDir to $aside, because $why"
+                }
+            }
+            if (Test-Path -LiteralPath $InstallDir) {
+                Set-Acl -LiteralPath $InstallDir -AclObject $sec
+                # The rollback copy is one the service would run. Delete it
+                # when anyone else owns it (an elevated `tentmaker update`
+                # used to leave it owned by the user).
+                $prev = "$target.prev"
+                if (Test-Path -LiteralPath $prev) {
+                    $prevOwner = (Get-Acl -LiteralPath $prev).GetOwner([Security.Principal.SecurityIdentifier]).Value
+                    if ($trusted -notcontains $prevOwner) {
+                        Remove-Item -LiteralPath $prev -Force
+                        Say "removed $prev, which $prevOwner could have changed"
+                    }
+                }
+            } else {
+                $parent = Split-Path -Parent $InstallDir
+                if (-not (Test-Path -LiteralPath $parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
+                if ($PSVersionTable.PSVersion.Major -lt 6) {
+                    [void][IO.Directory]::CreateDirectory($InstallDir, $sec)
+                } else {
+                    [void][IO.FileSystemAclExtensions]::Create((New-Object IO.DirectoryInfo $InstallDir), $sec)
+                }
+            }
+            $now = (Get-Acl -LiteralPath $InstallDir).GetOwner([Security.Principal.SecurityIdentifier]).Value
+            if ($trusted -notcontains $now) { Fail "$InstallDir is owned by $now after the install made it" "report it at $repoUrl/issues" }
+        } else {
+            New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
+        }
+
+        # Extract only tentmaker.exe from the top level of the archive, into
+        # a new file: one left over could carry its own security descriptor.
+        if (Test-Path -LiteralPath $staged) { Remove-Item -LiteralPath $staged -Force }
+        Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
+        $zip = New-Object IO.Compression.ZipArchive((New-Object IO.MemoryStream (, $zipBytes)), [IO.Compression.ZipArchiveMode]::Read)
         try {
             $entry = $zip.Entries | Where-Object { $_.FullName -eq 'tentmaker.exe' } | Select-Object -First 1
             if (-not $entry) { Fail "$asset has no tentmaker.exe" "report it at $repoUrl/issues" }
-            [IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $extracted, $true)
+            [IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $staged, $false)
         } finally {
             $zip.Dispose()
         }
-
-        New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
-        $target = Join-Path $InstallDir 'tentmaker.exe'
-        $staged = Join-Path $InstallDir 'tentmaker.new.exe'
-        Copy-Item -LiteralPath $extracted -Destination $staged -Force
+        if ($lock) {
+            # Until the owner changes, only the inherited OWNER RIGHTS entry
+            # keeps the user from rewriting this file's DACL. Check it is
+            # there; Windows drops it once Administrators own the file.
+            $limits = @((Get-Acl -LiteralPath $staged).GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]) | Where-Object { $_.IdentityReference.Value -eq 'S-1-3-4' })
+            if ($limits.Count -eq 0) { Fail "$staged did not inherit the OWNER RIGHTS entry from $InstallDir; refusing to install" "report it at $repoUrl/issues" }
+            Icacls $staged '/setowner' '*S-1-5-32-544'
+        }
         # PowerShell 5.1 turns native stderr into errors under 'Stop'.
         $ErrorActionPreference = 'Continue'
         $out = & $staged version 2>&1

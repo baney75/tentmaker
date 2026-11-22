@@ -91,6 +91,72 @@ try {
     $threw = $false
     try { & $installer -InstallDir $dir3 -NoSetup -Channel beta } catch { $threw = $true }
     if ($threw) { Pass 'rejects unknown channel' } else { Bad 'accepted channel beta' }
+
+    # 6. A system install (Administrator) leaves nothing the user owns: the
+    # SYSTEM service refuses a binary its user could change, and an owner can
+    # always rewrite the DACL. A rollback copy planted while the user owned
+    # the folder is removed.
+    $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
+        [Security.Principal.WindowsBuiltInRole]::Administrator)
+    if ($isAdmin) {
+        $env:TENTMAKER_DOWNLOAD_BASE = Join-Path $work 'good'
+        $sysParent = Join-Path $env:ProgramFiles ('tm-test-' + [Guid]::NewGuid().ToString('N'))
+        $sys = Join-Path $sysParent 'Tentmaker'
+        $machinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
+        try {
+            New-Item -ItemType Directory -Path $sys -Force | Out-Null
+            Set-Content -LiteralPath (Join-Path $sys 'tentmaker.exe.prev') -Value 'planted'
+            # Whether an elevated process's new files belong to the user or
+            # to Administrators differs between hosts and PowerShell
+            # editions, so make both the user's, as an earlier install left
+            # them on the scenario runner.
+            $me = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+            foreach ($p in @($sys, (Join-Path $sys 'tentmaker.exe.prev'))) {
+                $out = & icacls.exe $p /setowner "*$me" /Q 2>&1
+                if ($LASTEXITCODE -ne 0) { throw "icacls $p /setowner: $out" }
+                Write-Host "     before: $p is owned by $((Get-Acl -LiteralPath $p).GetOwner([Security.Principal.SecurityIdentifier]).Value)"
+            }
+            & $installer -InstallDir $sys -NoSetup
+            foreach ($p in @($sys, (Join-Path $sys 'tentmaker.exe'))) {
+                $acl = Get-Acl -LiteralPath $p
+                $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+                if ($owner -eq 'S-1-5-32-544') { Pass "system install: Administrators own $p" } else { Bad "system install: $p is owned by $owner" }
+                $mine = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]) | Where-Object { $_.IdentityReference.Value -eq $me })
+                if ($mine.Count -eq 0) { Pass "system install: no entry for this user on $p" } else { Bad "system install: $p has an entry for $me" }
+            }
+            if (Test-Path -LiteralPath (Join-Path $sys 'tentmaker.exe.prev')) { Bad 'system install kept a planted tentmaker.exe.prev' } else { Pass 'system install removed a planted tentmaker.exe.prev' }
+            # A rollback copy only Administrators could change survives a
+            # reinstall.
+            $prev = Join-Path $sys 'tentmaker.exe.prev'
+            Set-Content -LiteralPath $prev -Value 'kept'
+            $out = & icacls.exe $prev /setowner '*S-1-5-32-544' /Q 2>&1
+            if ($LASTEXITCODE -ne 0) { throw "icacls $prev /setowner: $out" }
+            & $installer -InstallDir $sys -NoSetup
+            if (Test-Path -LiteralPath $prev) { Pass 'system reinstall kept an Administrators-owned tentmaker.exe.prev' } else { Bad 'system reinstall removed an Administrators-owned tentmaker.exe.prev' }
+            & (Join-Path $PSScriptRoot 'test_install_system.ps1') -Installer $installer -Sys $sys -Me $me
+            $failures += $LASTEXITCODE
+            $write = [Security.AccessControl.FileSystemRights]'WriteData, AppendData, WriteAttributes, WriteExtendedAttributes, Delete, ChangePermissions, TakeOwnership'
+            foreach ($p in @($sys, (Join-Path $sys 'tentmaker.exe'))) {
+                $rules = @((Get-Acl -LiteralPath $p).GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))
+                $loose = @($rules | Where-Object { $_.AccessControlType -eq 'Allow' -and @('S-1-5-18', 'S-1-5-32-544') -notcontains $_.IdentityReference.Value -and ($_.FileSystemRights -band $write) })
+                if ($loose.Count -eq 0) { Pass "system install: only SYSTEM and Administrators can change $p" } else { Bad "system install: $p lets $($loose[0].IdentityReference.Value) change it ($($loose[0].FileSystemRights))" }
+            }
+            # install.ps1 checks that the staged file inherited this before it
+            # changes the owner; Windows drops it from the file after that.
+            $limit = @((Get-Acl -LiteralPath $sys).GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]) | Where-Object { $_.IdentityReference.Value -eq 'S-1-3-4' -and ($_.InheritanceFlags -band [Security.AccessControl.InheritanceFlags]::ObjectInherit) })
+            if ($limit.Count -gt 0) { Pass 'system install: new files in the folder inherit OWNER RIGHTS' } else { Bad 'system install: the folder passes no OWNER RIGHTS entry to new files' }
+            $got = (& (Join-Path $sys 'tentmaker.exe') version 2>&1 | Out-String).Trim()
+            if ($got -eq $Expect) { Pass 'system install replaced a planted tentmaker.new.exe' } else { Bad "system install: tentmaker.exe says '$got'" }
+            # A system install outside a Tentmaker folder would put the DACL
+            # on a folder others share, so it is refused.
+            $threw = $false
+            try { & $installer -InstallDir (Join-Path $sysParent 'Other') -NoSetup } catch { $threw = $true }
+            if ($threw -and -not (Test-Path -LiteralPath (Join-Path $sysParent 'Other\tentmaker.exe'))) { Pass 'system install refuses a folder not named Tentmaker' } else { Bad 'system install went into a folder not named Tentmaker' }
+        } catch { Bad "system install threw: $_" } finally {
+            Remove-Item -LiteralPath $sysParent -Recurse -Force -ErrorAction SilentlyContinue
+            [Environment]::SetEnvironmentVariable('Path', $machinePath, 'Machine')
+        }
+    } else { Write-Host 'skip system install: not Administrator' }
 } finally {
     Remove-Item Env:TENTMAKER_DOWNLOAD_BASE -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
