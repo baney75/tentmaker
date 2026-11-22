@@ -88,12 +88,12 @@ func TestKeepAndDebugExec(t *testing.T) {
 	}
 
 	v.f.stream = func(c Cmd, in []byte, out io.Writer) (int, error) {
-		io.WriteString(out, strings.Repeat("x", 100)+"\nlast line\n")
+		io.WriteString(out, strings.Repeat("x", 100)+"\nghp_"+strings.Repeat("C", 36)+"\nlast line\n")
 		return 3, nil
 	}
 	res, err := v.e.DebugExec(ctx, "job-one", "echo hunter2-in-a-command", debugSpec())
 	must(t, err)
-	if res.ExitCode != 3 || !res.Truncated || !strings.HasSuffix(string(res.Output), "last line\n") || len(res.Output) != 32 {
+	if res.ExitCode != 3 || !res.Truncated || string(res.Output) != "last line\n" {
 		t.Fatalf("result = %+v %q", res, res.Output)
 	}
 	c := lastSystemdRun(t, v.f)

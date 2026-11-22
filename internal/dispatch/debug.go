@@ -229,10 +229,11 @@ func (w *Worker) DebugExec(ctx context.Context, name, command string, timeout ti
 	if err != nil {
 		return res, err
 	}
+	// Redact first: a secret cut in half would no longer match.
+	res.Output = runs.Redact(res.Output)
 	if int64(len(res.Output)) > maxOut {
 		res.Output, res.Truncated = res.Output[len(res.Output)-int(maxOut):], true
 	}
-	res.Output = runs.Redact(res.Output)
 	w.log.Info("debug command run", "runner", name, "exit_code", res.ExitCode, "timed_out", res.TimedOut)
 	return res, nil
 }

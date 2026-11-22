@@ -274,4 +274,12 @@ func (w *tailWriter) Write(p []byte) (int, error) {
 	return n, nil
 }
 
-func (w *tailWriter) Bytes() []byte { return append([]byte(nil), w.b.Bytes()...) }
+// Bytes is the tail without its first, cut line: a secret cut in half
+// there would no longer match a redaction pattern.
+func (w *tailWriter) Bytes() []byte {
+	b := w.b.Bytes()
+	if w.cut {
+		_, b, _ = bytes.Cut(b, []byte("\n"))
+	}
+	return append([]byte(nil), b...)
+}

@@ -104,7 +104,11 @@ func TestWorkerKeepsFailedSandbox(t *testing.T) {
 	if err != nil || res.ExitCode != 2 || !res.Truncated || strings.Contains(string(res.Output), "ghp_") {
 		t.Fatalf("debug exec = %+v %q %v", res, res.Output, err)
 	}
-	if calls := wr.ex.DebugCalls(); len(calls) != 1 || calls[0].Command != "cat out.txt" || calls[0].Spec.Timeout != DebugTimeout {
+	// A cut through the token leaves none of it.
+	if res, err := wr.w.DebugExec(bg, name, "cat out.txt", 0, 30); err != nil || strings.Contains(string(res.Output), "CCCC") {
+		t.Fatalf("debug exec cut mid-token = %q %v", res.Output, err)
+	}
+	if calls := wr.ex.DebugCalls(); len(calls) != 2 || calls[0].Command != "cat out.txt" || calls[0].Spec.Timeout != DebugTimeout {
 		t.Fatalf("debug calls = %+v", calls)
 	}
 	if _, err := wr.w.DebugExec(bg, name, "true", 2*MaxDebugTimeout, 0); err == nil {
