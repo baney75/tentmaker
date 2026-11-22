@@ -252,11 +252,21 @@ func (e *Executor) unbindLocked(ctx context.Context, uid, gid int) error {
 }
 
 // setStore writes the runner's storage.conf for store (the host path of a
-// repo's store) or removes it for none, and clears the bound runroot and
-// podman's alive file before a bind, as a reboot would: the processes of
-// any container still on record in the store are gone. podman's
-// namespaces must be stopped.
+// repo's store) or removes it for none. podman's namespaces must be
+// stopped. Either way it clears what a reboot would: podman's alive file,
+// so podman refreshes the state of containers on record (their processes
+// are gone), and its pause pid file, whose process is gone too. Both go
+// together: podman 4.9 with no alive file joins the pid in pause.pid
+// without checking it, and fails ("cannot re-exec process to join the
+// existing user namespace") on a stale one. A bind also clears its own
+// runroot.
 func (e *Executor) setStore(uid int, store string) error {
+	tmp := filepath.Join(e.runtimeDir(uid), "libpod", "tmp")
+	for _, p := range []string{e.pausePIDFile(uid), filepath.Join(tmp, "alive")} {
+		if err := os.Remove(p); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+	}
 	if store == "" {
 		if err := os.Remove(e.storageConf()); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return err
@@ -266,10 +276,8 @@ func (e *Executor) setStore(uid int, store string) error {
 	if err := os.MkdirAll(e.storeMount(), 0o755); err != nil {
 		return err
 	}
-	for _, p := range []string{e.storeRunRoot(uid), filepath.Join(e.runtimeDir(uid), "libpod", "tmp", "alive")} {
-		if err := os.RemoveAll(p); err != nil {
-			return err
-		}
+	if err := os.RemoveAll(e.storeRunRoot(uid)); err != nil {
+		return err
 	}
 	return writeRoot(e.h, e.storageConf(), []byte(storageConfText(e.storeMount(), e.storeRunRoot(uid))), 0o644)
 }

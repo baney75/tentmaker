@@ -46,6 +46,10 @@ type fakeHost struct {
 	// each was given.
 	stream func(c Cmd, in []byte, out io.Writer) (int, error)
 	stdins []string
+	// Each PodnsUnit start writes pause into pauseFile, as podman does
+	// when it makes its pause process: "" writes testPausePID, "none"
+	// writes nothing (no pause process came up).
+	pauseFile, pause string
 }
 
 // testNetnsPID is the fake namespace holder; newEnv gives it a network
@@ -72,9 +76,28 @@ func (f *fakeHost) Run(ctx context.Context, c Cmd) (Result, error) {
 		return res, err
 	}
 	if respond != nil {
-		return respond(c)
+		res, err = respond(c)
+	} else {
+		res, err = Result{Code: 0}, nil
 	}
-	return Result{Code: 0}, nil
+	if err == nil && c.Path == "systemd-run" && slices.Contains(c.Args, "--unit="+PodnsUnit) {
+		f.writePause()
+	}
+	return res, err
+}
+
+func (f *fakeHost) writePause() {
+	f.mu.Lock()
+	file, pause := f.pauseFile, f.pause
+	f.mu.Unlock()
+	if file == "" || pause == "none" {
+		return
+	}
+	if pause == "" {
+		pause = strconv.Itoa(testPausePID)
+	}
+	os.MkdirAll(filepath.Dir(file), 0o700)
+	os.WriteFile(file, []byte(pause), 0o600)
 }
 
 // firewallLocked plays nft, iptables, ip6tables and systemctl enable for
@@ -300,6 +323,7 @@ func newEnv(t *testing.T) *env {
 	must(t, os.WriteFile(filepath.Join(p.Proc, strconv.Itoa(testPausePID), "uid_map"), []byte("         0       1234          1\n         1     100000      65536\n"), 0o644))
 	must(t, os.MkdirAll(filepath.Join(p.RunUser, strconv.Itoa(testUID), "libpod", "tmp"), 0o700))
 	must(t, os.WriteFile(filepath.Join(p.RunUser, strconv.Itoa(testUID), "libpod", "tmp", "pause.pid"), []byte(strconv.Itoa(testPausePID)), 0o600))
+	f.pauseFile = filepath.Join(p.RunUser, strconv.Itoa(testUID), "libpod", "tmp", "pause.pid")
 	o := Options{
 		StateDir: filepath.Join(dir, "state"),
 		CacheDir: filepath.Join(dir, "cache"),

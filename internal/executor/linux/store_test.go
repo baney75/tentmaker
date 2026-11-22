@@ -25,6 +25,10 @@ type storeHost struct {
 	graphroot string
 	podnsFail int // fail the PodnsUnit start once this many have run; 0 never
 	podns     int
+	// atPodns records, at each PodnsUnit start, which of podman's
+	// libpod/tmp files are present (stale is set by the test).
+	stale   []string
+	atPodns [][]string
 }
 
 func storeTestEnv(t *testing.T) (*env, *storeHost) {
@@ -40,6 +44,13 @@ func storeTestEnv(t *testing.T) (*env, *storeHost) {
 		switch {
 		case c.Path == "systemd-run" && slices.Contains(c.Args, "--unit="+PodnsUnit):
 			sh.podns++
+			var present []string
+			for _, p := range sh.stale {
+				if _, err := os.Stat(p); err == nil {
+					present = append(present, filepath.Base(p))
+				}
+			}
+			sh.atPodns = append(sh.atPodns, present)
 			if sh.podnsFail > 0 && sh.podns >= sh.podnsFail {
 				return Result{Code: 1}, errors.New("podns failed")
 			}
@@ -295,5 +306,37 @@ func TestContainerStoreBindFailsClosed(t *testing.T) {
 	}
 	if _, bound, _ := v2.e.boundStore(); !bound {
 		t.Fatal("the record of a store that may still be bound was dropped")
+	}
+}
+
+// podman's namespaces are stopped before a bind or an unbind, so its pause
+// pid file is stale. podman 4.9 finds alive missing after a store switch,
+// takes its first-boot path, which tries to join the pid in pause.pid
+// without the stale check, and fails with "cannot re-exec process to join
+// the existing user namespace". So both files go before podman starts.
+func TestStoreSwitchDropsStalePauseState(t *testing.T) {
+	v, sh := storeTestEnv(t)
+	ctx := context.Background()
+	tmp := filepath.Join(v.e.runtimeDir(testUID), "libpod", "tmp")
+	sh.stale = []string{filepath.Join(tmp, "pause.pid"), filepath.Join(tmp, "alive")}
+	plant := func() {
+		must(t, os.MkdirAll(tmp, 0o700))
+		for _, p := range sh.stale {
+			must(t, os.WriteFile(p, []byte("4242"), 0o600))
+		}
+	}
+	plant()
+	must(t, v.e.Start(ctx, cachedSpec("chk-app", core.KindCheck, "acme/app")))
+	plant()
+	must(t, v.e.Reset(ctx))
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	if len(sh.atPodns) != 2 {
+		t.Fatalf("podns started %d times, want a bind and an unbind", len(sh.atPodns))
+	}
+	for i, present := range sh.atPodns {
+		if len(present) != 0 {
+			t.Fatalf("podns start %d found stale %v", i, present)
+		}
 	}
 }

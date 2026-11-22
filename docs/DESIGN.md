@@ -263,7 +263,9 @@ one runs cold at `jobs/<name>` as before.
   restarts podman's namespaces with `BindPaths=<store>:<state>/linux/container-store` in the
   user manager, `tentmaker-podns.service` and the job unit, and writes the runner's
   `~/.config/containers/storage.conf` (root's folder) naming that path as podman's graphroot,
-  with a runroot of its own. Then it checks that `podman info` reports that graphroot and removes
+  with a runroot of its own. Each switch, bind or unbind, also deletes podman's `alive` and
+  `pause.pid` files in the runtime dir, as a reboot would: podman 4.9 with no `alive` file joins
+  the pid in `pause.pid` without checking it and fails on a stale one. Then it checks that `podman info` reports that graphroot and removes
   every container, pod, volume and network a past job left in the store; images stay. The job
   gets `CONTAINERS_STORAGE_CONF` so its own `podman` uses the same store. Later jobs of the repo
   use the bound store; `Reset` (when nothing runs) starts podman unbound again and only then
