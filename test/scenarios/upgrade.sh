@@ -23,8 +23,16 @@ API=http://127.0.0.1:$PORT
 SCN_VERSION=$A scn_up --channel dev
 tm_repo_add "$BR"
 
+# update and rollback change the binary the service runs. That is the one on
+# PATH only when only root can change it there: on the hosted Linux runner
+# /usr/local/bin is writable by every user, so setup copies it to
+# /usr/local/libexec/tentmaker and says so (docs/DESIGN.md).
+SVC_BIN=$(jqr -r '.binary // empty' "$W/setup.json")
+[ -n "$SVC_BIN" ] || die "setup --json names no service binary"
+[ "$OS" = windows ] && SVC_BIN=$(cygpath -u "$SVC_BIN")
+measure_s service_binary "$SVC_BIN"
 svc_version() { tm_status 2>/dev/null | jqr -r '.version // empty'; }
-bin_version() { timeout 30 tentmaker version --json 2>/dev/null | jqr -r '.version // empty'; }
+bin_version() { timeout 30 "$SVC_BIN" version --json 2>/dev/null | jqr -r '.version // empty'; }
 # job MARK: one commit, which must succeed.
 n=0
 job() {
