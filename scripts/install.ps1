@@ -119,6 +119,14 @@ function Install-Tentmaker {
     elseif ($Channel -eq 'dev') { $dl = "$base/download/dev"; $what = 'the dev channel' }
     else { $dl = "$base/latest/download"; $what = 'the latest stable release' }
 
+    function Icacls([string]$path) {
+        $ErrorActionPreference = 'Continue'
+        $out = & icacls.exe $path @args /Q 2>&1
+        $code = $LASTEXITCODE
+        $ErrorActionPreference = 'Stop'
+        if ($code -ne 0) { Fail "icacls $path $($args -join ' ') failed: $out" 'run the installer from an Administrator PowerShell' }
+    }
+
     function Fetch([string]$src, [string]$dst) {
         if ($src -notmatch '^https?://') {
             $local = $src -replace '/', '\'
@@ -175,7 +183,29 @@ function Install-Tentmaker {
         New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
         $target = Join-Path $InstallDir 'tentmaker.exe'
         $staged = Join-Path $InstallDir 'tentmaker.new.exe'
+        # The service runs this binary as SYSTEM, and setup refuses one that
+        # anyone but SYSTEM and Administrators could change. An elevated
+        # user owns what it creates, and an owner can always rewrite the
+        # DACL, so a system install gives the folder and the binary to
+        # Administrators. Our own folder also gets a DACL of its own: the
+        # inherited CREATOR OWNER entry of Program Files names the user.
+        $lock = $isAdmin -and $isSystem
+        if ($lock -and (Split-Path -Leaf $InstallDir) -eq 'Tentmaker') {
+            $was = (Get-Acl -LiteralPath $InstallDir).GetOwner([Security.Principal.SecurityIdentifier]).Value
+            Icacls $InstallDir '/setowner' '*S-1-5-32-544'
+            Icacls $InstallDir '/inheritance:r' '/grant:r' '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' '*S-1-5-32-545:(OI)(CI)RX'
+            if (@('S-1-5-18', 'S-1-5-32-544') -notcontains $was) {
+                # Until now its owner could plant files here; the rollback
+                # copy is the one the service would run.
+                $prev = "$target.prev"
+                if (Test-Path -LiteralPath $prev) {
+                    Remove-Item -LiteralPath $prev -Force
+                    Say "removed $prev, which $was could have changed"
+                }
+            }
+        }
         Copy-Item -LiteralPath $extracted -Destination $staged -Force
+        if ($lock) { Icacls $staged '/setowner' '*S-1-5-32-544' }
         # PowerShell 5.1 turns native stderr into errors under 'Stop'.
         $ErrorActionPreference = 'Continue'
         $out = & $staged version 2>&1

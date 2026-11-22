@@ -91,6 +91,36 @@ try {
     $threw = $false
     try { & $installer -InstallDir $dir3 -NoSetup -Channel beta } catch { $threw = $true }
     if ($threw) { Pass 'rejects unknown channel' } else { Bad 'accepted channel beta' }
+
+    # 6. A system install (Administrator) leaves nothing the user owns: the
+    # SYSTEM service refuses a binary its user could change, and an owner can
+    # always rewrite the DACL. A rollback copy planted while the user owned
+    # the folder is removed.
+    $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
+        [Security.Principal.WindowsBuiltInRole]::Administrator)
+    if ($isAdmin) {
+        $env:TENTMAKER_DOWNLOAD_BASE = Join-Path $work 'good'
+        $sysParent = Join-Path $env:ProgramFiles ('tm-test-' + [Guid]::NewGuid().ToString('N'))
+        $sys = Join-Path $sysParent 'Tentmaker'
+        $machinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
+        try {
+            New-Item -ItemType Directory -Path $sys -Force | Out-Null
+            Set-Content -LiteralPath (Join-Path $sys 'tentmaker.exe.prev') -Value 'planted'
+            & $installer -InstallDir $sys -NoSetup
+            $me = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+            foreach ($p in @($sys, (Join-Path $sys 'tentmaker.exe'))) {
+                $acl = Get-Acl -LiteralPath $p
+                $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+                if ($owner -eq 'S-1-5-32-544') { Pass "system install: Administrators own $p" } else { Bad "system install: $p is owned by $owner" }
+                $mine = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]) | Where-Object { $_.IdentityReference.Value -eq $me })
+                if ($mine.Count -eq 0) { Pass "system install: no entry for this user on $p" } else { Bad "system install: $p has an entry for $me" }
+            }
+            if (Test-Path -LiteralPath (Join-Path $sys 'tentmaker.exe.prev')) { Bad 'system install kept a planted tentmaker.exe.prev' } else { Pass 'system install removed a planted tentmaker.exe.prev' }
+        } catch { Bad "system install threw: $_" } finally {
+            Remove-Item -LiteralPath $sysParent -Recurse -Force -ErrorAction SilentlyContinue
+            [Environment]::SetEnvironmentVariable('Path', $machinePath, 'Machine')
+        }
+    } else { Write-Host 'skip system install: not Administrator' }
 } finally {
     Remove-Item Env:TENTMAKER_DOWNLOAD_BASE -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
