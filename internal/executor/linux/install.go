@@ -275,6 +275,8 @@ func Install(ctx context.Context, o Options) error {
 		{filepath.Join(e.root, ".local", "state"), 0o700, uid, gid},
 		{e.priv, 0o700, 0, 0},
 		{e.secretDir(), 0o700, 0, 0},
+		{e.slotsDir(), 0o700, 0, 0},
+		{e.cacheMount(), 0o755, 0, 0},
 		{e.p.Lib, 0o755, 0, 0},
 		{e.shimDir(), 0o755, 0, 0},
 		{filepath.Join(e.p.Lib, "guest"), 0o755, 0, 0},
@@ -301,11 +303,12 @@ func Install(ctx context.Context, o Options) error {
 			return err
 		}
 	}
-	// Nothing but jobs/, .config, .local and podman's files lives in the home.
+	// Nothing but jobs/, the cache mount point, .config, .local and podman's
+	// files lives in the home.
 	if entries, err := os.ReadDir(e.root); err == nil {
 		for _, ent := range entries {
 			switch ent.Name() {
-			case "jobs", ".config", ".local":
+			case "jobs", "repo-cache", ".config", ".local":
 			default:
 				os.RemoveAll(filepath.Join(e.root, ent.Name()))
 			}
@@ -537,6 +540,7 @@ func Uninstall(ctx context.Context, o Options, purge bool) error {
 		}
 	}
 	note(os.RemoveAll(e.secretDir()))
+	note(os.RemoveAll(e.slotsDir()))
 	if purge {
 		if uerr == nil {
 			h.Run(ctx, Cmd{Path: "loginctl", Args: []string{"disable-linger", User}})
@@ -549,6 +553,7 @@ func Uninstall(ctx context.Context, o Options, purge bool) error {
 		note(os.RemoveAll(e.root))
 		note(os.RemoveAll(e.priv))
 		note(os.RemoveAll(e.p.Opt))
+		note(os.RemoveAll(filepath.Join(e.o.CacheDir, "repos")))
 		if entries, err := os.ReadDir(filepath.Join(e.o.CacheDir, "dist")); err == nil {
 			for _, ent := range entries {
 				if strings.HasPrefix(ent.Name(), "actions-runner-linux-") {

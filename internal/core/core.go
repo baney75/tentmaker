@@ -124,6 +124,15 @@ type Forge interface {
 	CancelRun(ctx context.Context, repo string, runID int64) error
 }
 
+// CheapPoller is a forge whose unchanged polls cost no rate limit (GitHub
+// answers a conditional GET with 304, which its primary limit doesn't
+// count). The broker polls such a forge's repos at a short fixed interval
+// while CheapPolls is true; it is false when the forge says its rate limit
+// runs low, and then the broker backs off as for any other forge.
+type CheapPoller interface {
+	CheapPolls() bool
+}
+
 // ExecState is an executor's view of one runner it started.
 type ExecState string
 
@@ -158,7 +167,21 @@ type ExecSpec struct {
 	Limits      Resources     // hard per-job limit
 	MaxDuration time.Duration // the executor kills the job after this
 	TestWorkers int           // exported to the job as TENTMAKER_JOBS
+	// Cache names the repo whose persistent build cache the job may use,
+	// or is zero for none. The worker sets it only from an offer the broker
+	// marked cache-safe (WorkOffer.Cache), so no fork job ever sees one.
+	Cache CacheRepo
 }
+
+// CacheRepo names one repo's persistent cache: the forge's name in the
+// config and the repo's owner/name. A job only ever sees its own repo's.
+type CacheRepo struct {
+	Forge string `json:"forge"`
+	Repo  string `json:"repo"`
+}
+
+// IsZero reports whether no cache is named.
+func (c CacheRepo) IsZero() bool { return c.Forge == "" || c.Repo == "" }
 
 // NamePattern is the only shape a runner name may take. Executors refuse
 // anything else, since names reach argv, unit names and paths.
@@ -354,6 +377,12 @@ type WorkOffer struct {
 	Grant    Grant    `json:"grant"`
 	Secret   []byte   `json:"secret"` // Grant.Secret on the wire (tailnet only, encrypted by WireGuard)
 	Platform Platform `json:"platform"`
+	// Cache says the broker vouches that no fork job can reach this runner,
+	// so the worker may give it the repo's persistent cache: always for a
+	// check job (checks mode never plans a fork's commit), and in runner
+	// mode only when the forge runs no fork PR workflows for the repo. An
+	// older broker never sets it, so its jobs get no cache.
+	Cache bool `json:"cache,omitempty"`
 }
 
 // WorkResponse answers a WorkRequest.

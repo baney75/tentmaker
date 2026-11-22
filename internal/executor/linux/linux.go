@@ -29,6 +29,7 @@ import (
 	"github.com/baney75/tentmaker/internal/config"
 	"github.com/baney75/tentmaker/internal/core"
 	"github.com/baney75/tentmaker/internal/executor/guestbin"
+	"github.com/baney75/tentmaker/internal/repocache"
 )
 
 // Name is the executor's name.
@@ -121,6 +122,9 @@ type Options struct {
 	// Pin overrides the pinned actions/runner (tests).
 	Pin   *Pin
 	Sleep func(time.Duration)
+	// CacheMax caps the repo caches under <CacheDir>/repos (config
+	// cache_max); 0 means repocache.DefaultMax, below 0 turns them off.
+	CacheMax int64
 }
 
 // Executor is the linux-podman executor.
@@ -137,6 +141,9 @@ type Executor struct {
 	gid   int
 	known bool
 	guest guestbin.Syncer
+	// slotMu orders slot claims; cache holds the per-repo caches.
+	slotMu sync.Mutex
+	cache  *repocache.Store
 }
 
 // New returns the executor. It touches nothing until a method is called.
@@ -162,6 +169,17 @@ func New(o Options) *Executor {
 	e := &Executor{o: o, p: o.Paths.withDefaults(), log: o.Log, h: o.Host, arch: o.Arch}
 	e.root = filepath.Join(o.StateDir, "linux")
 	e.priv = filepath.Join(o.StateDir, "linux-private")
+	cacheRoot := ""
+	if o.CacheDir != "" {
+		cacheRoot = filepath.Join(o.CacheDir, "repos")
+	}
+	e.cache = repocache.New(repocache.Options{
+		Root:  cacheRoot,
+		Max:   o.CacheMax,
+		Chown: e.h.Lchown,
+		InUse: e.cacheInUse,
+		Owner: -1,
+	})
 	return e
 }
 
@@ -198,7 +216,6 @@ func (e *Executor) MaxSlots() int { return 0 }
 
 // Layout.
 func (e *Executor) jobsDir() string            { return filepath.Join(e.root, "jobs") }
-func (e *Executor) jobDir(name string) string  { return filepath.Join(e.jobsDir(), name) }
 func (e *Executor) secretDir() string          { return filepath.Join(e.priv, "secrets") }
 func (e *Executor) secretPath(n string) string { return filepath.Join(e.secretDir(), n) }
 func (e *Executor) baselinePath() string       { return filepath.Join(e.priv, "units.baseline") }
@@ -213,6 +230,20 @@ func (e *Executor) guestBinary() string {
 	return filepath.Join(e.p.Lib, "guest", "tentmaker-linux-"+e.arch)
 }
 func unitName(name string) string { return UnitPrefix + name + ".service" }
+
+// jobDir is a job's folder: its slot when it has a repo cache, else
+// jobs/<name>. A slot record that can't be read falls back to jobs/<name>,
+// which then reads as missing; Clean refuses to finish such a job (see
+// Clean), so its folder is never lost track of.
+func (e *Executor) jobDir(name string) string {
+	if r, ok, err := e.slotOf(name); err == nil && ok {
+		return filepath.Join(e.jobsDir(), r.Slot)
+	}
+	return filepath.Join(e.jobsDir(), name)
+}
+
+// dirName is the job folder's own name, which the job script takes.
+func (e *Executor) dirName(name string) string { return filepath.Base(e.jobDir(name)) }
 
 func checkName(name string) error {
 	if !core.NamePattern.MatchString(name) {
@@ -288,17 +319,28 @@ func (e *Executor) Start(ctx context.Context, spec core.ExecSpec) (err error) {
 	if err := e.ensureNet(ctx, uid); err != nil {
 		return fmt.Errorf("%v; run sudo tentmaker setup", err)
 	}
-	dir := e.jobDir(spec.Name)
-	if _, err := os.Lstat(dir); err == nil {
+	if slotRe.MatchString(spec.Name) {
+		return fmt.Errorf("job name %s looks like a job folder slot", spec.Name)
+	}
+	if _, ok, err := e.slotOf(spec.Name); err != nil || ok {
 		return fmt.Errorf("job %s already exists", spec.Name)
 	}
-	if err := e.prepareJob(dir, kind, spec, uid, gid); err != nil {
+	if _, err := os.Lstat(e.jobDir(spec.Name)); err == nil {
+		return fmt.Errorf("job %s already exists", spec.Name)
+	}
+	e.claimCache(spec, uid, gid)
+	dir := e.jobDir(spec.Name)
+	undo := func() {
 		os.RemoveAll(dir)
+		e.dropSlot(spec.Name)
+	}
+	if err := e.prepareJob(dir, kind, spec, uid, gid); err != nil {
+		undo()
 		return err
 	}
 	netns, err := e.startNetns(ctx, spec.Name, uid, gid)
 	if err != nil {
-		os.RemoveAll(dir)
+		undo()
 		return fmt.Errorf("%v; no job runs without a network namespace of its own", err)
 	}
 	// The secret waits in a root-only 0600 file. systemd opens it as the
@@ -310,19 +352,55 @@ func (e *Executor) Start(ctx context.Context, spec core.ExecSpec) (err error) {
 	sp := e.secretPath(spec.Name)
 	if err := config.WriteAtomic(sp, spec.Grant.Secret, 0o600); err != nil {
 		e.stopNetns(context.WithoutCancel(ctx), spec.Name)
-		os.RemoveAll(dir)
+		undo()
 		return fmt.Errorf("write the job's stdin file: %v", err)
 	}
 	defer os.Remove(sp)
 	if _, err := e.h.Run(ctx, Cmd{Path: "systemd-run", Args: e.unitArgs(spec, kind, uid, gid, sp, netns), Timeout: time.Minute}); err != nil {
 		e.h.Run(context.WithoutCancel(ctx), Cmd{Path: "systemctl", Args: []string{"stop", unitName(spec.Name)}, Timeout: time.Minute})
 		e.stopNetns(context.WithoutCancel(ctx), spec.Name)
-		os.RemoveAll(dir)
+		undo()
 		return fmt.Errorf("start unit %s: %s", unitName(spec.Name), redact(err.Error(), spec.Grant.Secret))
 	}
+	_, cached, _ := e.slotOf(spec.Name)
 	e.log.Info("job started", "executor", Name, "name", spec.Name, "kind", kind,
-		"memory", spec.Limits.MemoryBytes, "cpus", spec.Limits.CPUs)
+		"memory", spec.Limits.MemoryBytes, "cpus", spec.Limits.CPUs, "cache", cached, "dir", dir)
 	return nil
+}
+
+// claimCache gives a job with a named repo its slot and that repo's cache.
+// Any failure leaves the job cold (no slot, no cache) rather than failing
+// it: the cache only makes jobs faster.
+func (e *Executor) claimCache(spec core.ExecSpec, uid, gid int) {
+	if spec.Cache.IsZero() || !e.cache.Enabled() {
+		return
+	}
+	if _, err := e.claimSlot(spec.Name, spec.Cache); err != nil {
+		e.log.Warn("job runs without its repo cache", "name", spec.Name, "repo", spec.Cache.Repo, "error", err)
+		return
+	}
+	if err := os.MkdirAll(e.cacheMount(), 0o755); err != nil {
+		e.dropSlot(spec.Name)
+		e.log.Warn("job runs without its repo cache", "name", spec.Name, "repo", spec.Cache.Repo, "error", err)
+		return
+	}
+	if _, err := e.cache.Prepare(spec.Cache, uid, gid); err != nil {
+		e.dropSlot(spec.Name)
+		e.log.Warn("job runs without its repo cache", "name", spec.Name, "repo", spec.Cache.Repo, "error", err)
+	}
+}
+
+// cacheSource is the host folder of a job's repo cache, or "" for none.
+func (e *Executor) cacheSource(name string) string {
+	r, ok, err := e.slotOf(name)
+	if err != nil || !ok {
+		return ""
+	}
+	p, err := e.cache.Path(core.CacheRepo{Forge: r.Forge, Repo: r.Repo})
+	if err != nil {
+		return ""
+	}
+	return p
 }
 
 // syncGuestBinary refreshes the check jobs' tentmaker binary when it
@@ -383,6 +461,27 @@ func (e *Executor) jobEnv(spec core.ExecSpec, uid int) []string {
 	if spec.Kind == core.KindCheck {
 		env = append(env, "TENTMAKER_TOOLS="+e.toolsDir())
 	}
+	if e.cacheSource(spec.Name) != "" {
+		env = overrideEnv(env, e.cacheEnv())
+	}
+	return env
+}
+
+// overrideEnv sets each KEY=value of over in env, replacing an earlier
+// value for the same key in place.
+func overrideEnv(env, over []string) []string {
+	for _, kv := range over {
+		k, _, _ := strings.Cut(kv, "=")
+		done := false
+		for i, old := range env {
+			if strings.HasPrefix(old, k+"=") {
+				env[i], done = kv, true
+			}
+		}
+		if !done {
+			env = append(env, kv)
+		}
+	}
 	return env
 }
 
@@ -418,6 +517,10 @@ func (e *Executor) unitArgs(spec core.ExecSpec, kind string, uid, gid int, stdin
 	for _, p := range e.jobMounts(uid, dir) {
 		args = append(args, "-p", p)
 	}
+	// Its own repo's cache, in its own mount namespace only.
+	if src := e.cacheSource(spec.Name); src != "" {
+		args = append(args, "-p", "BindPaths="+src+":"+e.cacheMount())
+	}
 	args = append(args,
 		"-p", "StandardInput=file:"+stdinFile,
 		"-p", "StandardOutput=journal",
@@ -432,7 +535,7 @@ func (e *Executor) unitArgs(spec core.ExecSpec, kind string, uid, gid int, stdin
 			e.guestBinary(), "check-run", "--out", filepath.Join(dir, "out"))
 	default:
 		args = append(args, "--working-directory="+filepath.Join(dir, "runner"), "--",
-			e.jobScript(), e.jobsDir(), spec.Name)
+			e.jobScript(), e.jobsDir(), filepath.Base(dir))
 	}
 	return args
 }
@@ -441,6 +544,7 @@ func (e *Executor) unitArgs(spec core.ExecSpec, kind string, uid, gid int, stdin
 // dir, then hands it to the runner user bottom-up, so no job can swap a path
 // under root's feet while it is being built.
 func (e *Executor) prepareJob(dir, kind string, spec core.ExecSpec, uid, gid int) error {
+	var linked map[string]bool
 	if err := os.Mkdir(dir, 0o700); err != nil {
 		return fmt.Errorf("create the job dir: %w", err)
 	}
@@ -458,7 +562,8 @@ func (e *Executor) prepareJob(dir, kind string, spec core.ExecSpec, uid, gid int
 		if err != nil {
 			return fmt.Errorf("runner template: %w (run tentmaker setup)", err)
 		}
-		if err := copyRunner(tpl, filepath.Join(dir, "runner")); err != nil {
+		linked, err = copyRunner(tpl, filepath.Join(dir, "runner"))
+		if err != nil {
 			return fmt.Errorf("copy the runner: %w", err)
 		}
 		// The runner passes .env to every step: the job's own HOME, caches and podman.
@@ -470,35 +575,52 @@ func (e *Executor) prepareJob(dir, kind string, spec core.ExecSpec, uid, gid int
 			return err
 		}
 	}
-	return chownTree(e.h, dir, uid, gid)
+	return chownTree(e.h, dir, uid, gid, linked)
 }
 
-// copyRunner copies the template, linking its large read-only externals.
-func copyRunner(tpl, dst string) error {
+// copyRunner copies the template, linking its large read-only externals
+// and hard-linking the files of bin/ (82 MB in 266 files in 2.334.0, which
+// a copy rewrote for every job). It returns the hard links, which share an
+// inode with the root-owned template and so must never be chowned.
+//
+// A hard link is safe because the runner never writes into bin/ (no
+// self-update: JIT runners run with it off) and a root-owned file with no
+// group or other write bit stays read-only to the CI user, who can only
+// unlink its own name for it. Anything else is copied: the top-level files
+// (.env is written into the copy), a file the CI user could write, and any
+// file when linking fails (a template on another filesystem).
+func copyRunner(tpl, dst string) (map[string]bool, error) {
 	if err := os.Mkdir(dst, 0o755); err != nil {
-		return err
+		return nil, err
 	}
 	entries, err := os.ReadDir(tpl)
 	if err != nil {
-		return err
+		return nil, err
 	}
+	linked := map[string]bool{}
 	for _, ent := range entries {
 		src := filepath.Join(tpl, ent.Name())
 		if ent.Name() == "externals" {
 			if err := os.Symlink(src, filepath.Join(dst, "externals")); err != nil {
-				return err
+				return nil, err
 			}
 			continue
 		}
-		if err := copyTree(src, filepath.Join(dst, ent.Name())); err != nil {
-			return err
+		var links map[string]bool
+		if ent.Name() == "bin" {
+			links = linked
+		}
+		if err := copyTree(src, filepath.Join(dst, ent.Name()), links); err != nil {
+			return nil, err
 		}
 	}
-	return nil
+	return linked, nil
 }
 
 // copyTree copies files, dirs and symlinks (as links), keeping permissions.
-func copyTree(src, dst string) error {
+// With links non-nil it hard-links each regular file that is safe to share
+// (see copyRunner) and records it in links.
+func copyTree(src, dst string, links map[string]bool) error {
 	return filepath.WalkDir(src, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -519,6 +641,12 @@ func copyTree(src, dst string) error {
 		case d.IsDir():
 			return os.Mkdir(to, info.Mode().Perm()|0o700)
 		case info.Mode().IsRegular():
+			if links != nil && shareable(info) {
+				if err := os.Link(p, to); err == nil {
+					links[to] = true
+					return nil
+				}
+			}
 			return copyFile(p, to, info.Mode().Perm())
 		}
 		return nil // sockets, devices: never in a runner release
@@ -542,9 +670,20 @@ func copyFile(src, dst string, mode os.FileMode) error {
 	return out.Close()
 }
 
+// shareable reports whether a template file may be hard-linked into a job:
+// root's, with no group or other write bit, and no set-id bit.
+func shareable(fi fs.FileInfo) bool {
+	if fi.Mode().Perm()&0o022 != 0 || fi.Mode()&(fs.ModeSetuid|fs.ModeSetgid) != 0 {
+		return false
+	}
+	uid, ok := fileOwner(fi)
+	return ok && uid == os.Geteuid()
+}
+
 // chownTree hands a tree to uid:gid children first, so the top directory
 // (0700, root's until the end) keeps everyone else out while it walks.
-func chownTree(h Host, top string, uid, gid int) error {
+// It skips the paths in skip (hard links to the template).
+func chownTree(h Host, top string, uid, gid int, skip map[string]bool) error {
 	var paths []string
 	// WalkDir never descends a symlink (the externals link stays a link).
 	err := filepath.WalkDir(top, func(p string, d fs.DirEntry, err error) error {
@@ -558,6 +697,9 @@ func chownTree(h Host, top string, uid, gid int) error {
 		return err
 	}
 	for i := len(paths) - 1; i >= 0; i-- {
+		if skip[paths[i]] {
+			continue
+		}
 		if err := h.Lchown(paths[i], uid, gid); err != nil {
 			return fmt.Errorf("chown %s: %w", paths[i], err)
 		}
@@ -631,7 +773,26 @@ func (e *Executor) Clean(ctx context.Context, name string) error {
 	// A failed unit stays loaded (no --collect) until this.
 	e.h.Run(ctx, Cmd{Path: "systemctl", Args: []string{"reset-failed", unitName(name)}, Timeout: 30 * time.Second})
 	e.stopNetns(ctx, name)
-	return e.removeJobDir(ctx, e.jobDir(name))
+	rec, cached, err := e.slotOf(name)
+	if err != nil {
+		// Without the record the slot folder can't be found; keep the job
+		// listed so a later Clean or Reset deals with it.
+		return err
+	}
+	if err := e.removeJobDir(ctx, e.jobDir(name)); err != nil {
+		return err
+	}
+	if cached {
+		e.dropSlot(name)
+		evicted, err := e.cache.Done(core.CacheRepo{Forge: rec.Forge, Repo: rec.Repo})
+		if err != nil {
+			e.log.Warn("repo cache eviction", "error", err)
+		}
+		if len(evicted) > 0 {
+			e.log.Info("repo caches evicted", "repos", strings.Join(evicted, " "))
+		}
+	}
+	return nil
 }
 
 // removeJobDir deletes a job tree. Container root writes files as a
@@ -653,12 +814,23 @@ func (e *Executor) removeJobDir(ctx context.Context, dir string) error {
 // List implements core.Executor: job dirs and loaded job units.
 func (e *Executor) List(ctx context.Context) ([]string, error) {
 	seen := map[string]bool{}
+	held, err := e.slots()
+	if err != nil {
+		return nil, err
+	}
+	claimed := map[string]bool{}
+	for n, r := range held {
+		seen[n] = true
+		claimed[r.Slot] = true
+	}
 	entries, err := os.ReadDir(e.jobsDir())
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
 	for _, ent := range entries {
-		if core.NamePattern.MatchString(ent.Name()) {
+		// A slot folder is listed by its job's name; one no record claims is
+		// a leftover, listed by its own name so it gets cleaned.
+		if core.NamePattern.MatchString(ent.Name()) && !claimed[ent.Name()] {
 			seen[ent.Name()] = true
 		}
 	}
@@ -768,6 +940,13 @@ func (e *Executor) Reset(ctx context.Context) error {
 			os.Remove(filepath.Join(e.secretDir(), ent.Name()))
 		}
 	}
+	// The job folders are gone, so are their slots. The caches stay.
+	if err := os.RemoveAll(e.slotsDir()); err != nil {
+		problems = append(problems, err.Error())
+	}
+	if err := os.MkdirAll(e.slotsDir(), 0o700); err != nil {
+		problems = append(problems, err.Error())
+	}
 	extra, err := e.unexpectedUnits(ctx, uid)
 	if err != nil {
 		problems = append(problems, err.Error())
@@ -844,7 +1023,7 @@ func (e *Executor) CheckResult(ctx context.Context, name string) (core.CheckResu
 	if err := checkName(name); err != nil {
 		return core.CheckResult{}, err
 	}
-	res := readCheckResult(e.jobsDir(), name+"/out", name)
+	res := readCheckResult(e.jobsDir(), e.dirName(name)+"/out", name)
 	// The OOM stop either killed check-run before it wrote a result or made
 	// it report "cancelled"; say what happened instead.
 	out, err := e.h.Run(ctx, Cmd{Path: "systemctl", Args: []string{"show", "--property=Result", "--property=MemoryMax", unitName(name)}, Timeout: 30 * time.Second})
