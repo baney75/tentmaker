@@ -39,6 +39,8 @@ type fakeGit struct {
 	calls     []string
 	messages  []string
 	pushes    int
+	pushErr   error // returned by push when set
+	commitErr error // returned by commit when set
 }
 
 func (g *fakeGit) run(ctx context.Context, dir string, stdin io.Reader, args ...string) (string, error) {
@@ -72,9 +74,15 @@ func (g *fakeGit) run(ctx context.Context, dir string, stdin io.Reader, args ...
 	case "symbolic-ref":
 		return g.branch + "\n", nil
 	case "commit":
+		if g.commitErr != nil {
+			return "", g.commitErr
+		}
 		b, _ := io.ReadAll(stdin)
 		g.messages = append(g.messages, string(b))
 	case "push":
+		if g.pushErr != nil {
+			return "", g.pushErr
+		}
 		g.pushes++
 		g.remoteSHA = "c0ffee0000000000000000000000000000000001"
 	}
@@ -369,5 +377,71 @@ func TestSetupPRWaitsForDoctor(t *testing.T) {
 	}
 	if !strings.Contains(f.stdout.String(), "no pull request was opened") {
 		t.Fatal(f.stdout.String())
+	}
+}
+
+// GitHub refuses a workflow change pushed with gh's default OAuth scopes; the
+// fix must name the missing scope, and the failed run must undo its edits
+// on tentmaker/migrate before it goes back to the user's branch.
+func TestMigratePRWorkflowScopeHintAndCleanup(t *testing.T) {
+	f, g, _, _ := gitFixture(t)
+	f.ghValue = canary
+	g.pushErr = errors.New("git push: ! [remote rejected] HEAD -> tentmaker/migrate (refusing to allow an OAuth App to create or update workflow `.github/workflows/ci.yml` without `workflow` scope)")
+	if code := f.run("", "migrate", "--pr"); code == ExitOK {
+		t.Fatal("a rejected push exited OK")
+	}
+	if out := f.stdout.String() + f.stderr.String(); !strings.Contains(out, "gh auth refresh -h github.com -s workflow") {
+		t.Fatalf("no workflow scope fix in:\n%s", out)
+	}
+	assertCleanedUp(t, g)
+}
+
+func TestMigratePRCleansUpAfterAFailedCommit(t *testing.T) {
+	f, g, _, _ := gitFixture(t)
+	f.ghValue = canary
+	g.commitErr = errors.New("git commit: Please tell me who you are")
+	if code := f.run("", "migrate", "--pr"); code == ExitOK {
+		t.Fatal("a failed commit exited OK")
+	}
+	assertCleanedUp(t, g)
+}
+
+func assertCleanedUp(t *testing.T, g *fakeGit) {
+	t.Helper()
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	reset, back := -1, -1
+	for i, c := range g.calls {
+		switch c {
+		case "reset --quiet --hard":
+			reset = i
+		case "checkout --quiet feature":
+			back = i
+		}
+	}
+	if reset < 0 || back < 0 || reset > back {
+		t.Fatalf("want reset --hard on the migrate branch, then checkout feature: %v", g.calls)
+	}
+}
+
+func TestGitEnvKeepsTheAgentAndNeverPrompts(t *testing.T) {
+	env := gitEnv(func(k string) string {
+		return map[string]string{"SSH_AUTH_SOCK": "/run/user/1000/agent.sock"}[k]
+	})
+	want := []string{"GIT_TERMINAL_PROMPT=0", "GIT_SSH_COMMAND=ssh -o BatchMode=yes", "SSH_AUTH_SOCK=/run/user/1000/agent.sock"}
+	if strings.Join(env, "|") != strings.Join(want, "|") {
+		t.Fatalf("gitEnv = %v", env)
+	}
+	// A user's own GIT_SSH_COMMAND wins.
+	env = gitEnv(func(k string) string { return map[string]string{"GIT_SSH_COMMAND": "ssh -i k"}[k] })
+	if strings.Join(env, "|") != "GIT_TERMINAL_PROMPT=0" {
+		t.Fatalf("gitEnv with GIT_SSH_COMMAND = %v", env)
+	}
+}
+
+func TestPushFixNamesSSHTrouble(t *testing.T) {
+	fix := pushFix("o/n", errors.New("git push: git@github.com: Permission denied (publickey)."))
+	if !strings.Contains(fix, "ssh-agent") {
+		t.Fatalf("pushFix = %q", fix)
 	}
 }

@@ -80,6 +80,7 @@ fakesudo="$work/fakesudo"
 cat >"$fakesudo" <<'EOF'
 #!/bin/sh
 printf '%s\n' "$*" >"$TM_SUDO_LOG"
+if [ "$1" = -v ]; then exit 0; fi
 if [ "$1" = -n ]; then shift; fi
 exec "$@"
 EOF
@@ -96,8 +97,10 @@ run() {
 	prefix="$work/p$n/bin"
 	export TM_SETUP_LOG="$work/setup$n.log" TM_SUDO_LOG="$work/sudo$n.log"
 	rc=0
-	out=$(TENTMAKER_DOWNLOAD_BASE="$base" TENTMAKER_SUDO="$fakesudo" "$sh_" "$installer" --prefix "$prefix" "$@" </dev/null 2>&1) || rc=$?
+	out=$(SSH_AUTH_SOCK=${TM_AGENT:-} TENTMAKER_DOWNLOAD_BASE="$base" TENTMAKER_SUDO="$fakesudo" ${TM_WRAP:-} "$sh_" "$installer" --prefix "$prefix" "$@" </dev/null 2>&1) || rc=$?
 }
+
+have_setsid() { command -v setsid >/dev/null 2>&1 && setsid -w true </dev/null >/dev/null 2>&1; }
 
 installed() { "$prefix/tentmaker" version 2>/dev/null || echo "(not installed)"; }
 
@@ -128,6 +131,17 @@ check_shell() {
 		case $(cat "$TM_SUDO_LOG" 2>/dev/null) in
 			"-n $prefix/tentmaker setup --yes"*) ok "$s: sudo -n with no TTY" ;;
 			*) bad "$s: sudo called as [$(cat "$TM_SUDO_LOG" 2>/dev/null)]" ;;
+		esac
+		# No controlling terminal at all (an agent or a CI job): the
+		# /dev/tty probe must not end the script before setup runs.
+		if have_setsid; then
+			TM_WRAP="setsid -w" run "$s" "$good" --yes -- --repo owner/name
+			if [ $rc = 0 ] && [ -s "$TM_SETUP_LOG" ]; then ok "$s: setup runs with no controlling terminal"; else bad "$s: no ctty rc=$rc setup=[$(cat "$TM_SETUP_LOG" 2>/dev/null)]: $out"; fi
+		fi
+		TM_AGENT=/tmp/agent.sock run "$s" "$good" --yes -- --repo owner/name
+		case $(cat "$TM_SUDO_LOG" 2>/dev/null) in
+			"-n env SSH_AUTH_SOCK=/tmp/agent.sock $prefix/tentmaker setup --yes"*) ok "$s: keeps the ssh-agent socket through sudo" ;;
+			*) bad "$s: agent socket not passed: sudo called as [$(cat "$TM_SUDO_LOG" 2>/dev/null)]" ;;
 		esac
 	fi
 

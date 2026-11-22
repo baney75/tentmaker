@@ -284,17 +284,23 @@ main() {
 		else
 			sudo_cmd=${TENTMAKER_SUDO:-sudo}
 			have "$sudo_cmd" || die "setup needs root and sudo is not installed" "run as root: $bin setup --yes$(quote_args "$@")"
+			# sudo resets the environment; keep the ssh-agent socket so
+			# setup --pr can push over an SSH origin.
+			agent=
+			if [ -n "${SSH_AUTH_SOCK:-}" ]; then agent="SSH_AUTH_SOCK=$SSH_AUTH_SOCK"; fi
 			if [ -t 0 ]; then
-				"$sudo_cmd" "$bin" setup --yes "$@" || die "setup failed (exit $?)" "fix the error above, then run: $setup_cmd --yes$(quote_args "$@")"
+				"$sudo_cmd" ${agent:+env "$agent"} "$bin" setup --yes "$@" || die "setup failed (exit $?)" "fix the error above, then run: $setup_cmd --yes$(quote_args "$@")"
 			else
 				# No terminal on stdin (curl | sh). A person at a terminal
 				# types the sudo password on /dev/tty; an agent with no
 				# terminal skips this and sudo -n never waits.
-				if [ -z "${TENTMAKER_SUDO:-}" ] && { : </dev/tty; } 2>/dev/null; then
+				# The probe runs in a subshell: a failed redirection on the
+				# special built-in : would end a POSIX shell (dash) here.
+				if (: </dev/tty) 2>/dev/null; then
 					"$sudo_cmd" -v </dev/tty ||
 						die "sudo did not accept the password" "run it yourself: $setup_cmd --yes$(quote_args "$@")"
 				fi
-				"$sudo_cmd" -n "$bin" setup --yes "$@" ||
+				"$sudo_cmd" -n ${agent:+env "$agent"} "$bin" setup --yes "$@" ||
 					die "setup did not run: sudo needs a password or setup failed (exit $?)" \
 						"run it yourself: $setup_cmd --yes$(quote_args "$@")"
 			fi

@@ -136,14 +136,29 @@ func (a *app) migratePR(ctx context.Context, dir, platform string, o github.Migr
 		return v, fail("", "make branch %s: %v", migrateBranch, err)
 	}
 	defer func() {
+		// Cleanup runs even when ctx was canceled mid-push, with its own
+		// timeouts (gitIn), so the checkout is never left on our branch.
+		cctx := context.WithoutCancel(ctx)
+		if err != nil {
+			// Drop whatever this run wrote or staged on tentmaker/migrate, so
+			// the edits can't follow the checkout back to the user's branch.
+			if _, rerr := a.git(cctx, top, "reset", "--quiet", "--hard"); rerr != nil {
+				err = errors.Join(err, fmt.Errorf("undo the migrate edits on %s: %v", migrateBranch, rerr))
+			}
+		}
 		if back == migrateBranch {
 			return
 		}
-		if _, cerr := a.git(ctx, top, "checkout", "--quiet", back); cerr != nil && err == nil {
-			err = fail("git checkout "+back, "go back to %s: %v", back, cerr)
+		if _, cerr := a.git(cctx, top, "checkout", "--quiet", back); cerr != nil {
+			cf := fail("git checkout "+back, "go back to %s: %v", back, cerr)
+			if err == nil {
+				err = cf
+			} else {
+				err = errors.Join(err, cf)
+			}
 		}
 		if noBranch != nil && v.Changed == 0 { // a branch only this run made
-			a.git(ctx, top, "branch", "-D", migrateBranch)
+			a.git(cctx, top, "branch", "-D", migrateBranch)
 		}
 	}()
 
@@ -194,7 +209,7 @@ func (a *app) migratePR(ctx context.Context, dir, platform string, o github.Migr
 	lease, _, _ := strings.Cut(remote, "\t")
 	if _, err := a.git(ctx, top, "push", "--quiet", "--force-with-lease=refs/heads/"+migrateBranch+":"+strings.TrimSpace(lease),
 		"origin", "HEAD:refs/heads/"+migrateBranch); err != nil {
-		return v, fail("check that you can push to "+repo+" (git push works from this checkout), then run it again", "git push: %v", err)
+		return v, fail(pushFix(repo, err), "git push: %v", err)
 	}
 
 	pr := core.PullRequest{Repo: repo, Head: migrateBranch, Base: base, Title: prTitle, Body: prBody(v)}
@@ -209,6 +224,20 @@ func (a *app) migratePR(ctx context.Context, dir, platform string, o github.Migr
 	}
 	v.Note = fmt.Sprintf("%s pull request #%d: %s", verb, res.Number, res.URL)
 	return v, nil
+}
+
+// pushFix names the fix for a failed push. GitHub refuses a push that changes
+// .github/workflows from an OAuth token without the workflow scope, which is
+// gh's default login, so a plain "can you push" hint would mislead.
+func pushFix(repo string, err error) string {
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "workflow` scope") || strings.Contains(msg, "workflow scope"):
+		return "give your gh login the workflow scope (as yourself, not root): gh auth refresh -h github.com -s workflow, then run it again"
+	case strings.Contains(msg, "Permission denied (publickey") || strings.Contains(msg, "Host key verification failed"):
+		return "git could not use your SSH key: start ssh-agent with your key loaded, or run tentmaker migrate --pr without sudo, then run it again"
+	}
+	return "check that you can push to " + repo + " (git push works from this checkout), then run it again"
 }
 
 // defaultBranch reads `git ls-remote --symref origin HEAD`.
@@ -386,6 +415,20 @@ func openPRWithToken(ctx context.Context, token string, pr core.PullRequest) (co
 	return c.OpenOrUpdatePR(ctx, pr)
 }
 
+// gitEnv is the environment git runs with: no prompts of any kind (ssh
+// prompts on the terminal and ignores GIT_TERMINAL_PROMPT, so BatchMode),
+// and the invoking user's ssh-agent socket, which sudo would drop.
+func gitEnv(getenv func(string) string) []string {
+	env := []string{"GIT_TERMINAL_PROMPT=0"}
+	if getenv("GIT_SSH_COMMAND") == "" && getenv("GIT_SSH") == "" {
+		env = append(env, "GIT_SSH_COMMAND=ssh -o BatchMode=yes")
+	}
+	if sock := getenv("SSH_AUTH_SOCK"); sock != "" {
+		env = append(env, "SSH_AUTH_SOCK="+sock)
+	}
+	return env
+}
+
 // runGit runs git -C dir args, as user through sudo when user is set and
 // not root, with no terminal prompts. It returns stdout; an error carries
 // git's stderr with any URL credentials removed.
@@ -405,10 +448,10 @@ func runGit(ctx context.Context, user, dir string, stdin io.Reader, args ...stri
 		if err != nil {
 			return "", errors.New("env not found")
 		}
-		cmd = exec.CommandContext(ctx, sudo, append([]string{"-n", "-H", "-u", user, "--", envBin, "GIT_TERMINAL_PROMPT=0", git}, full...)...)
+		cmd = exec.CommandContext(ctx, sudo, append(append([]string{"-n", "-H", "-u", user, "--", envBin}, gitEnv(os.Getenv)...), append([]string{git}, full...)...)...)
 	} else {
 		cmd = exec.CommandContext(ctx, git, full...)
-		cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+		cmd.Env = append(os.Environ(), gitEnv(os.Getenv)...)
 	}
 	cmd.WaitDelay = 2 * time.Second
 	cmd.Stdin = stdin
