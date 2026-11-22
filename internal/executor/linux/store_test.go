@@ -340,3 +340,30 @@ func TestStoreSwitchDropsStalePauseState(t *testing.T) {
 		}
 	}
 }
+
+// A debug command in a kept job sees the job's container store where the
+// job did, so its own podman finds what CONTAINERS_STORAGE_CONF names.
+func TestDebugUnitSeesTheBoundStore(t *testing.T) {
+	v, _ := storeTestEnv(t)
+	ctx := context.Background()
+	must(t, v.e.Start(ctx, cachedSpec("chk-app", core.KindCheck, "acme/app")))
+	store := storePath(t, v, "acme/app")
+	next := v.f.respond
+	failed := showResponder("failed", "loaded", false)
+	v.f.respond = func(c Cmd) (Result, error) {
+		if c.Path == "systemctl" && len(c.Args) > 0 && c.Args[0] == "show" {
+			return failed(c)
+		}
+		return next(c)
+	}
+	must(t, v.e.Keep(ctx, "chk-app"))
+	_, err := v.e.DebugExec(ctx, "chk-app", "podman images", debugSpec())
+	must(t, err)
+	c := lastSystemdRun(t, v.f)
+	if !slices.Contains(unitBinds(c), store+":"+v.e.storeMount()) {
+		t.Fatalf("debug unit binds %q, want the store too", unitBinds(c))
+	}
+	if got := unitEnv(c)["CONTAINERS_STORAGE_CONF"]; got != v.e.storageConf() {
+		t.Fatalf("debug CONTAINERS_STORAGE_CONF=%q", got)
+	}
+}

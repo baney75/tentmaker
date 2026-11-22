@@ -1060,7 +1060,7 @@ default, at most 1h. Then `tentmaker debug JOB-ID` opens a shell in it and the M
   the runner's `.runner`, `.credentials` and `.credentials_rsaparams` through an `os.Root`. A
   debug command is a transient unit `tentmaker-debug-<job>-<random>` built like the job's: the
   runner's uid and gid, the job's `MemoryMax` and `CPUQuota`, `NoNewPrivileges`, `PrivateTmp`,
-  the job's mounts (not its repo cache), its environment (no secrets), `RuntimeMaxSec` of the timeout,
+  the job's mounts (not its repo cache; its container store when bound), its environment (no secrets), `RuntimeMaxSec` of the timeout,
   and `NetworkNamespacePath` of the job's own namespace holder. If the holder is gone it refuses:
   no debug command runs outside the job's namespace. `debug_exec` runs `systemd-run --wait
   --pipe ... /bin/sh -s` with the command on stdin, so the command is in no argv on the host;
