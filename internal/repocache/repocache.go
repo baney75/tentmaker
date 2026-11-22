@@ -368,3 +368,92 @@ func trunc(s string, n int) string {
 	}
 	return s[:n] + "..."
 }
+
+// ActionsDir is the folder in a repo's cache that holds its GitHub Actions
+// cache entries (internal/actionscache). It is the daemon's, mode 0700,
+// inside a folder the CI user owns and cached jobs see through their bind
+// mount: a job can rename or delete it but never read or change what is in
+// it, so the entries count toward cache_max and leave with the repo when it
+// is evicted.
+const ActionsDir = ".tentmaker-actions"
+
+// ErrNoActionsDir means the repo has no Actions cache folder yet (and
+// ActionsRoot was not asked to make one).
+var ErrNoActionsDir = errors.New("the repo has no actions cache yet")
+
+// ActionsBudget is how many bytes one repo's Actions cache entries may
+// hold: half of the cap, so they never push the repo's build caches out.
+func (s *Store) ActionsBudget() int64 {
+	if !s.Enabled() {
+		return 0
+	}
+	return s.o.Max / 2
+}
+
+// ActionsRoot opens repo c's Actions cache folder as an os.Root, making it
+// when create is set and the repo's folder exists (Prepare made it). Every
+// step goes through the root-owned store root, so a symlink a job puts
+// where the folder was can't point the daemon anywhere else, and the
+// folder must be a real directory owned by the daemon with mode 0700, or
+// it is refused. The caller closes the root.
+func (s *Store) ActionsRoot(c core.CacheRepo, create bool) (*os.Root, error) {
+	if !s.Enabled() {
+		return nil, errors.New("the repo cache is off")
+	}
+	k, err := Key(c)
+	if err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.ensureRoot(); err != nil {
+		return nil, fmt.Errorf("repo cache: %w", err)
+	}
+	top, err := os.OpenRoot(s.o.Root)
+	if err != nil {
+		return nil, fmt.Errorf("repo cache: %w", err)
+	}
+	defer top.Close()
+	repoRoot, err := top.OpenRoot(k)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, ErrNoActionsDir
+	}
+	if err != nil {
+		return nil, fmt.Errorf("repo cache: %w", err)
+	}
+	defer repoRoot.Close()
+	if create {
+		if err := repoRoot.Mkdir(ActionsDir, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
+			return nil, fmt.Errorf("repo cache: %w", err)
+		}
+	}
+	ar, err := repoRoot.OpenRoot(ActionsDir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, ErrNoActionsDir
+	}
+	if err != nil {
+		return nil, fmt.Errorf("repo cache: actions folder: %w", err)
+	}
+	fi, err := ar.Stat(".")
+	if err == nil {
+		err = s.checkActionsDir(fi)
+	}
+	if err != nil {
+		ar.Close()
+		return nil, fmt.Errorf("repo cache: actions folder of %s: %w", c.Repo, err)
+	}
+	return ar, nil
+}
+
+func (s *Store) checkActionsDir(fi fs.FileInfo) error {
+	if !fi.IsDir() {
+		return errors.New("not a folder")
+	}
+	if uid, ok := ownerOf(fi); ok && uid != s.o.Owner {
+		return fmt.Errorf("owned by uid %d, not %d", uid, s.o.Owner)
+	}
+	if fi.Mode().Perm() != 0o700 {
+		return fmt.Errorf("mode %v, not 0700", fi.Mode().Perm())
+	}
+	return nil
+}

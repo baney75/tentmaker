@@ -31,9 +31,12 @@ type WorkerOptions struct {
 	// relay to check jobs (GET /v1/relay/<id>). Nil means DefaultRelayAddr;
 	// an empty answer means no relay, so check offers are declined.
 	RelayAddr func() string
-	StateDir  string
-	Log       *slog.Logger
-	Now       func() time.Time
+	// ActionsCache is the device's GitHub Actions cache service; nil means
+	// none, and runner jobs use GitHub's.
+	ActionsCache ActionsCache
+	StateDir     string
+	Log          *slog.Logger
+	Now          func() time.Time
 	// Runs keeps run history; nil keeps none.
 	Runs RunRecorder
 }
@@ -144,6 +147,8 @@ type jobRec struct {
 	// "" if none; Cached says it got that cache. See cacheDecisionLocked.
 	Trust  string `json:"trust,omitempty"`
 	Cached bool   `json:"cached,omitempty"`
+	// Actions is the job's Actions cache grant (actions.go), nil for none.
+	Actions *actionsRec `json:"actions,omitempty"`
 
 	// For run history (history.go).
 	Workflow string     `json:"workflow,omitempty"`
@@ -327,6 +332,7 @@ func (w *Worker) reconcile(ctx context.Context) {
 		w.mu.Lock()
 		e.reconciled, e.lastErr = true, ""
 		w.mu.Unlock()
+		w.regrantActions(e)
 	}
 }
 
@@ -487,12 +493,14 @@ func (w *Worker) finish(ctx context.Context, e *execInfo, j *jobRec, why string)
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.dropRelaysLocked(j.Name)
+	w.revokeActions(j.Name)
 	for i, x := range w.st.Jobs {
 		if x == j {
 			w.st.Jobs = append(w.st.Jobs[:i], w.st.Jobs[i+1:]...)
 			break
 		}
 	}
+	w.holdActionsLocked()
 	rep := w.reportLocked(j.Source)
 	rep.Ended = append(rep.Ended, j.Name)
 	if res != nil {
@@ -850,6 +858,7 @@ func (w *Worker) exchange(ctx context.Context, now time.Time, d core.Decision, a
 				}
 			}
 		}
+		w.confirmActionsLocked(name, resp.Confirm)
 		w.mu.Unlock()
 		for _, j := range stops {
 			w.log.Info("broker asked to stop a runner", "source", name, "runner", j.Name, "repo", j.Repo)
@@ -1017,7 +1026,19 @@ func (w *Worker) start(ctx context.Context, src core.WorkSource, off core.WorkOf
 	}
 	spec.Cache, rec.Trust, rec.Cached = c, trustKey(offerCache(off)), !c.IsZero()
 	rec.Slot = w.freeSlotLocked()
+	w.limitActionsLocked(rec.Trust)
+	if rec.Actions = w.actionsLocked(e, off, kind, c); rec.Actions != nil {
+		// Granted before the runner exists, so its first cache call is known.
+		b, _ := w.actionsBinding(e, rec)
+		if err := w.o.ActionsCache.Grant(b); err != nil {
+			w.log.Warn("job uses GitHub's Actions cache: grant failed", "runner", name, "error", err)
+			rec.Actions = nil
+		} else {
+			spec.ActionsCache = w.o.ActionsCache.URL()
+		}
+	}
 	w.st.Jobs = append(w.st.Jobs, rec)
+	w.holdActionsLocked()
 	w.ranLocked(rec.Trust)
 	w.mu.Unlock()
 	if err := w.save(); err != nil {
@@ -1049,6 +1070,8 @@ func (w *Worker) boot(ctx context.Context, e *execInfo, rec *jobRec, spec core.E
 			}
 		}
 		w.dropRelaysLocked(name)
+		w.revokeActions(name)
+		w.holdActionsLocked()
 		w.mu.Unlock()
 		w.stopAndClean(ctx, e, name)
 		w.mu.Lock()

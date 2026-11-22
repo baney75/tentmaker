@@ -109,6 +109,8 @@ type infoCache struct {
 	// noForks: a private repo whose fork PR workflows are off, so no fork
 	// job can reach a runner registered to it (see cacheSafe).
 	noForks bool
+	// defaultBranch is the repo's, for the Actions cache (actionsOffer).
+	defaultBranch string
 }
 
 // grantRec is one runner the broker granted. It holds no secret.
@@ -134,6 +136,10 @@ type grantRec struct {
 	TookRun    int64         `json:"took_run,omitempty"`
 	Identified bool          `json:"identified,omitempty"`
 	Fork       bool          `json:"fork,omitempty"`
+	// TookEvent and TookBranch are the taken job's run event and head
+	// branch, sent to the worker as WorkResponse.Confirm.
+	TookEvent  string `json:"took_event,omitempty"`
+	TookBranch string `json:"took_branch,omitempty"`
 	// Settled means nothing more needs checking at the forge: the runner was
 	// identified as a same-repo job, or the broker deleted or stopped it.
 	Settled  bool      `json:"settled,omitempty"`
@@ -363,6 +369,15 @@ func (b *Broker) Work(ctx context.Context, req core.WorkRequest) (core.WorkRespo
 	}
 	dev.Stop = keep
 	resp.Stop = dedupe(resp.Stop)
+
+	// Confirmations: the job each running runner took, every response
+	// while it runs, so a lost response costs nothing.
+	for _, rec := range b.grants {
+		if rec.Device == req.Device && rec.Kind == core.KindRunner && rec.Identified && running[rec.Name] {
+			resp.Confirm = append(resp.Confirm, core.RunnerJob{Runner: rec.Name, Event: rec.TookEvent, HeadBranch: rec.TookBranch})
+		}
+	}
+	sort.Slice(resp.Confirm, func(i, k int) bool { return resp.Confirm[i].Runner < resp.Confirm[k].Runner })
 
 	if dev.Quarantine {
 		// The contract has no "I reset" field: a worker that got the
@@ -659,7 +674,36 @@ func (b *Broker) realize(ctx context.Context, req core.WorkRequest, rec *grantRe
 	b.log.Info("runner granted", "runner", rec.Name, "runner_id", g.RunnerID, "device", req.Device,
 		"repo", rec.Repo, "job_id", rec.Job.ID, "job", rec.Job.Name, "platform", rec.Platform.String(),
 		"labels", strings.Join(rec.Labels, ","))
-	return core.WorkOffer{Job: rec.Job, Grant: g, Secret: g.Secret, Platform: rec.Platform, Cache: b.cacheSafe(rec), Drain: rec.drain}, true
+	return core.WorkOffer{Job: rec.Job, Grant: g, Secret: g.Secret, Platform: rec.Platform, Cache: b.cacheSafe(rec), Drain: rec.drain,
+		Actions: b.actionsOffer(rec)}, true
+}
+
+// actionsOffer marks a runner offer for a github.com repo: only there does
+// the toolkit use the cache service v2 the device's Actions cache speaks
+// (GHES keeps the older protocol). The worker decides whether the job
+// actually uses it, with the same trust rules as the repo cache.
+func (b *Broker) actionsOffer(rec *grantRec) *core.ActionsOffer {
+	name := rec.Forge
+	if name == "" {
+		name = "github"
+	}
+	fc, ok := b.o.Config.Forges[name]
+	if !ok {
+		fc.Kind = name
+	}
+	if fc.Kind == "" {
+		fc.Kind = name
+	}
+	if fc.Kind != "github" || (fc.URL != "" && strings.TrimRight(fc.URL, "/") != "https://api.github.com") {
+		return nil
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	off := &core.ActionsOffer{}
+	if c := b.infos[rec.Forge+":"+rec.Repo]; c != nil && c.err == "" {
+		off.DefaultBranch = c.defaultBranch
+	}
+	return off
 }
 
 // cacheSafe says whether a runner job may use its repo's persistent cache.
@@ -1014,6 +1058,7 @@ func (b *Broker) pollRunner(ctx context.Context, r *repoState, now time.Time) {
 		} else {
 			nc.why = repoRefusal(r, info)
 			nc.noForks = !info.Public && info.ForkPolicy == "off"
+			nc.defaultBranch = info.DefaultBranch
 		}
 		b.mu.Lock()
 		old := b.infos[r.key()]
@@ -1274,6 +1319,7 @@ func (b *Broker) tookLocked(rec *grantRec, j core.Job) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	rec.TookJob, rec.TookRun, rec.Identified, rec.Fork = j.ID, j.RunID, true, j.FromFork
+	rec.TookEvent, rec.TookBranch = j.Event, j.HeadBranch
 	rec.Settled = !j.FromFork
 }
 

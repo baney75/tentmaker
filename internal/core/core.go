@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
 	"regexp"
 	"time"
 )
@@ -174,6 +175,31 @@ type ExecSpec struct {
 	// or is zero for none. The worker sets it only from an offer the broker
 	// marked cache-safe (WorkOffer.Cache), so no fork job ever sees one.
 	Cache CacheRepo
+	// ActionsCache is the base URL of the device's GitHub Actions cache
+	// service (http://127.0.0.1:7436/) for a runner job the worker
+	// registered with it, or "" for none. An ActionsCacher points the job's
+	// toolkit at it; any other executor ignores it. It holds no secret: the
+	// service names the job by its connection.
+	ActionsCache string
+}
+
+// ActionsOffer marks a runner offer for a github.com repo, whose jobs may
+// use the device's Actions cache service (internal/actionscache), and
+// carries what the worker needs to scope it like GitHub does.
+type ActionsOffer struct {
+	// DefaultBranch is the repo's default branch, whose entries every job
+	// of the repo may read; "" when the broker doesn't know it.
+	DefaultBranch string `json:"default_branch,omitempty"`
+}
+
+// ActionsCacher is an executor whose runner jobs can use the Actions cache
+// service. ActionsCacheReady says its runner is patched and verified so a
+// job's .env decides where the toolkit's cache and results calls go;
+// false means jobs keep GitHub's own service. ActionsRoot opens a repo's
+// entry folder (repocache.Store.ActionsRoot).
+type ActionsCacher interface {
+	ActionsCacheReady() bool
+	ActionsRoot(repo CacheRepo, create bool) (*os.Root, error)
 }
 
 // CacheRepo names one repo's persistent cache: the forge's name in the
@@ -456,6 +482,9 @@ type WorkOffer struct {
 	// the broker skipped another repo's job for the device's OnlyRepo, and
 	// that job gets in once the device holds no cache.
 	Drain bool `json:"drain,omitempty"`
+	// Actions is set on runner offers for github.com repos (nil for checks,
+	// other forges and older brokers): the job may use the Actions cache.
+	Actions *ActionsOffer `json:"actions,omitempty"`
 }
 
 // RepoCacher is an executor that gives a job ExecSpec.Cache. Executors
@@ -474,6 +503,18 @@ type WorkResponse struct {
 	// Quarantine tells the worker to take nothing from this broker until it
 	// has reset (a runner took a job the broker couldn't identify).
 	Quarantine bool `json:"quarantine"`
+	// Confirm names the job each running runner took, once the broker has
+	// read it from the forge. The worker narrows the runner's Actions cache
+	// grant to it (actionscache.Binding.Confirm); until then the grant may
+	// not write.
+	Confirm []RunnerJob `json:"confirm,omitempty"`
+}
+
+// RunnerJob is the job a runner took, as the forge reports it.
+type RunnerJob struct {
+	Runner     string `json:"runner"`
+	Event      string `json:"event"`
+	HeadBranch string `json:"head_branch"`
 }
 
 // WorkSource hands out work: the local broker, or a remote one over the mesh.

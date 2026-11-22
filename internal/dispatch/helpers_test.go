@@ -209,6 +209,8 @@ type wrig struct {
 	dir     string
 	sources []core.WorkSource
 	silent  bool
+	// actions is the worker's Actions cache service (nil: none).
+	actions ActionsCache
 	// runs, when set before the worker is built, keeps its run history.
 	runs RunRecorder
 	// async leaves the worker's Starts running after a tick; by default
@@ -309,15 +311,16 @@ func (r *rig) newWorker(wr *wrig) *Worker {
 	cfg := r.cfg
 	cfg.Device = wr.name
 	return NewWorker(WorkerOptions{
-		Config:    cfg,
-		Device:    wr.name,
-		Executors: []core.Executor{wr.ex},
-		Budget:    wr.budget,
-		Sources:   func() []core.WorkSource { return wr.sources },
-		StateDir:  wr.dir,
-		Log:       r.log.With("worker", wr.name),
-		Now:       r.clk.Now,
-		Runs:      wr.runs,
+		Config:       cfg,
+		Device:       wr.name,
+		Executors:    []core.Executor{wr.ex},
+		Budget:       wr.budget,
+		Sources:      func() []core.WorkSource { return wr.sources },
+		StateDir:     wr.dir,
+		Log:          r.log.With("worker", wr.name),
+		Now:          r.clk.Now,
+		ActionsCache: wr.actions,
+		Runs:         wr.runs,
 	})
 }
 

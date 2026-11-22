@@ -26,10 +26,13 @@ import (
 //   - tentmaker-uplink-NAME is pasta, the namespace's only way out. pasta
 //     joins the holder's namespaces and opens every outside socket as the
 //     runner, so the per-uid rules (netrules.go) still decide what a job
-//     reaches. It forwards one port into the host: the job's own
-//     127.0.0.1:RelayPort goes to the host's relay. It maps no other host
-//     loopback port (--no-map-gw, -T only the relay) and publishes no job
-//     port on the host (-t none, -u none).
+//     reaches. It forwards two ports into the host: the job's own
+//     127.0.0.1:RelayPort goes to the host's relay and 127.0.0.1:CachePort
+//     to the host's Actions cache service. It maps no other host loopback
+//     port (--no-map-gw, -T only those two) and publishes no job port on
+//     the host (-t none, -u none). The cache service names the job by this
+//     pasta process (actionscache.ProcPeers), so a job's own pasta must be
+//     its only way to the host's loopback.
 //
 // The job unit enters the namespace with NetworkNamespacePath= and gets a
 // resolv.conf of the host's real resolvers, because the 127.0.0.53 stub is
@@ -51,9 +54,10 @@ func (e *Executor) jobResolvConf() string { return filepath.Join(e.priv, "resolv
 // process pid.
 func PastaArgs(pid int) []string {
 	return []string{"--config-net", "--quiet",
-		// No host loopback but the relay: the gateway address stays the
-		// gateway, and only RelayPort is forwarded to the host.
-		"--no-map-gw", "-T", strconv.Itoa(RelayPort), "-U", "none",
+		// No host loopback but the relay and the Actions cache: the
+		// gateway address stays the gateway, and only RelayPort and
+		// CachePort are forwarded to the host.
+		"--no-map-gw", "-T", strconv.Itoa(RelayPort) + "," + strconv.Itoa(CachePort), "-U", "none",
 		// No job port is published on the host.
 		"-t", "none", "-u", "none",
 		strconv.Itoa(pid)}
@@ -253,3 +257,16 @@ func (e *Executor) netnsUnits(ctx context.Context) ([]string, error) {
 	}
 	return out, nil
 }
+
+// UplinkCgroup is the cgroup folder of job name's uplink unit, where its
+// pasta runs, or "" for a bad name. The Actions cache service names the job
+// behind a loopback connection by it (actionscache.ProcPeers).
+func (e *Executor) UplinkCgroup(name string) string {
+	if checkName(name) != nil {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(e.p.CgroupControllers), Slice, uplinkUnit(name))
+}
+
+// ProcDir is the proc mount the executor reads.
+func (e *Executor) ProcDir() string { return e.p.Proc }

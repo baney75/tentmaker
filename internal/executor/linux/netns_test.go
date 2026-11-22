@@ -15,7 +15,7 @@ import (
 
 func TestPastaArgs(t *testing.T) {
 	got := strings.Join(PastaArgs(77), " ")
-	want := "--config-net --quiet --no-map-gw -T " + strconv.Itoa(RelayPort) + " -U none -t none -u none 77"
+	want := "--config-net --quiet --no-map-gw -T " + strconv.Itoa(RelayPort) + "," + strconv.Itoa(CachePort) + " -U none -t none -u none 77"
 	if got != want {
 		t.Fatalf("pasta args\n got %s\nwant %s", got, want)
 	}
@@ -204,5 +204,15 @@ func TestResetStopsJobNetns(t *testing.T) {
 		if !strings.Contains(cmds, "systemctl stop "+u) {
 			t.Errorf("Reset left %s running", u)
 		}
+	}
+}
+
+func TestUplinkCgroup(t *testing.T) {
+	e := New(Options{Paths: Paths{CgroupControllers: "/sys/fs/cgroup/cgroup.controllers"}})
+	if got := e.UplinkCgroup("tm-abc-1"); got != "/sys/fs/cgroup/tentmaker.slice/tentmaker-uplink-tm-abc-1.service" {
+		t.Fatalf("UplinkCgroup = %q", got)
+	}
+	if got := e.UplinkCgroup("../x"); got != "" {
+		t.Fatalf("a bad name gave %q", got)
 	}
 }

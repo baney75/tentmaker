@@ -120,8 +120,10 @@ type Options struct {
 	Host     Host
 	Paths    Paths
 	// Pin overrides the pinned actions/runner (tests).
-	Pin   *Pin
-	Sleep func(time.Duration)
+	Pin *Pin
+	// WorkerDLL overrides the pinned Runner.Worker.dll hashes (tests).
+	WorkerDLL *DLLPin
+	Sleep     func(time.Duration)
 	// CacheMax caps the repo caches under <CacheDir>/repos (config
 	// cache_max); 0 means repocache.DefaultMax, below 0 turns them off.
 	CacheMax int64
@@ -144,6 +146,11 @@ type Executor struct {
 	// slotMu orders slot claims; cache holds the per-repo caches.
 	slotMu sync.Mutex
 	cache  *repocache.Store
+	// patchMu guards the Actions cache patch state (patch.go).
+	patchMu        sync.Mutex
+	patchFor       string // the template the result is for
+	patchOK        bool
+	patchedDLLPath string
 }
 
 // New returns the executor. It touches nothing until a method is called.
@@ -570,6 +577,22 @@ func (e *Executor) prepareJob(dir, kind string, spec core.ExecSpec, uid, gid int
 		var env strings.Builder
 		for _, kv := range e.jobEnv(spec, uid) {
 			env.WriteString(kv + "\n")
+		}
+		if spec.ActionsCache != "" {
+			// The device's Actions cache. Without the verified patched dll
+			// the worker's own values would win, so the job uses GitHub's.
+			base, err := cacheURL(spec.ActionsCache)
+			if err != nil {
+				return err
+			}
+			if e.ensureCachePatch() {
+				if err := e.usePatchedDLL(filepath.Join(dir, "runner"), linked); err != nil {
+					return fmt.Errorf("the patched runner: %w", err)
+				}
+				for _, kv := range actionsEnv(base) {
+					env.WriteString(kv + "\n")
+				}
+			}
 		}
 		if err := os.WriteFile(filepath.Join(dir, "runner", ".env"), []byte(env.String()), 0o600); err != nil {
 			return err

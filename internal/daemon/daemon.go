@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/baney75/tentmaker/internal/actionscache"
 	"github.com/baney75/tentmaker/internal/budget"
 	"github.com/baney75/tentmaker/internal/checks"
 	"github.com/baney75/tentmaker/internal/config"
@@ -96,8 +97,12 @@ type Options struct {
 	ControlAddr string // default control.DefaultAddr; "-" serves no control API
 	// Identify names each control API caller; default
 	// control.HostIdentify(RunnerUser). A CI job gets 403.
-	Identify    control.Identify
-	RelayAddr   string // default control.DefaultRelayAddr; "-" serves no relay (check offers are declined)
+	Identify  control.Identify
+	RelayAddr string // default control.DefaultRelayAddr; "-" serves no relay (check offers are declined)
+	// CacheAddr is where the GitHub Actions cache service listens (Linux
+	// runner jobs only); default control.DefaultCacheAddr, "-" serves none
+	// and jobs use GitHub's cache.
+	CacheAddr   string
 	Updater     Updater
 	Service     func(ctx context.Context) (service.State, error) // for doctor; nil = the daemon is the service
 	TotalMemory func() (int64, error)
@@ -158,6 +163,9 @@ func (o *Options) defaults() {
 	}
 	if o.RelayAddr == "" {
 		o.RelayAddr = control.DefaultRelayAddr
+	}
+	if o.CacheAddr == "" {
+		o.CacheAddr = control.DefaultCacheAddr
 	}
 	if o.Updater == nil {
 		o.Updater = update.Default
@@ -298,6 +306,7 @@ type Daemon struct {
 	guard    updateGuard
 	ctlAddr  string
 	relAddr  string
+	actions  *actionscache.Service // nil when CacheAddr is "-"
 	restart  chan struct{}
 	exitErr  error
 	exitOnce sync.Once
@@ -307,7 +316,7 @@ type Daemon struct {
 func New(o Options) *Daemon {
 	o.defaults()
 	runCtx, cancel := context.WithCancel(context.Background())
-	return &Daemon{
+	d := &Daemon{
 		runCtx:    runCtx,
 		cancelRun: cancel,
 		o:         o,
@@ -318,6 +327,11 @@ func New(o Options) *Daemon {
 		restart:   make(chan struct{}),
 		guard:     updateGuard{fs: osStateFS{}, dir: o.Paths.State},
 	}
+	// Only the Linux executor can name a job by its connection.
+	if o.CacheAddr != "-" && runtime.GOOS == "linux" {
+		d.actions = actionscache.New(actionscache.Options{Log: o.Log, JobOf: d.cacheJobOf()})
+	}
+	return d
 }
 
 func (d *Daemon) device() string {
@@ -430,6 +444,10 @@ func (d *Daemon) Run(ctx context.Context) error {
 	if d.o.RelayAddr != "-" {
 		rel = d.startRelay(runCtx)
 	}
+	var cache *comp
+	if d.actions != nil {
+		cache = d.startCache(runCtx)
+	}
 	loops := startComp(runCtx, d.log, "loops", func(ctx context.Context) error {
 		var wg sync.WaitGroup
 		wg.Add(3)
@@ -452,6 +470,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	}
 	loops.stop()
 	d.shutdown()
+	cache.stop()
 	rel.stop()
 	ctl.stop()
 	return d.exitErr
@@ -654,7 +673,7 @@ func (d *Daemon) apply(cfg config.Config) {
 		}
 		execs, eps := d.o.Executors(cfg, binary, log)
 		d.setProblems("executor", eps)
-		w := dispatch.NewWorker(dispatch.WorkerOptions{
+		wo := dispatch.WorkerOptions{
 			Config:    cfg,
 			Device:    cfg.Device,
 			Executors: execs,
@@ -665,7 +684,11 @@ func (d *Daemon) apply(cfg config.Config) {
 			Now:       d.o.Now,
 			RelayAddr: d.RelayAddress,
 			Runs:      historyProxy{d},
-		})
+		}
+		if d.actions != nil {
+			wo.ActionsCache = d.actions
+		}
+		w := dispatch.NewWorker(wo)
 		wc := startComp(d.runCtx, log, "worker", w.Run)
 		d.mu.Lock()
 		d.worker, d.wComp, d.execs = w, wc, execs
