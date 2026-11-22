@@ -33,12 +33,47 @@ import (
 // changes gets a cancel-superseded concurrency block when it has none,
 // except a reusable (workflow_call) one.
 //
+// It also leaves alone jobs the platform can't run: `services:` on macOS
+// or Windows (no Docker there) and `container:` on Windows; and runs-on
+// labels that ask for a GPU or a larger runner.
+//
 // report lines start with "changed" or "left". changed is true when out
-// differs from src.
+// differs from src. MigrateWorkflow is Migrate with no options.
 func MigrateWorkflow(src []byte, platform string) (out []byte, report []string, changed bool, err error) {
+	r, err := Migrate(src, platform, MigrateOptions{})
+	return r.Out, r.Report, r.Changed, err
+}
+
+// MigrateOptions change what Migrate writes.
+type MigrateOptions struct {
+	// All sends fork pull requests to the pool too: runs-on becomes the
+	// plain label list, without the fork-safe expression. The broker still
+	// never runs a fork's job, so such jobs wait for a runner.
+	All bool
+}
+
+// Move is one runs-on that Migrate rewrote.
+type Move struct {
+	Line   int    `json:"line"`   // 1-based, in the source
+	Job    string `json:"job"`    // the job id
+	Before string `json:"before"` // the old runs-on value
+	After  string `json:"after"`  // the new runs-on value
+}
+
+// MigrateResult is Migrate's answer.
+type MigrateResult struct {
+	Out     []byte   `json:"-"`
+	Report  []string `json:"report"`
+	Changed bool     `json:"changed"`
+	Moves   []Move   `json:"moves"`
+}
+
+// Migrate is MigrateWorkflow with options, and it also returns each
+// rewritten runs-on as a Move.
+func Migrate(src []byte, platform string, o MigrateOptions) (MigrateResult, error) {
 	spec, ok := platforms[platform]
 	if !ok {
-		return src, nil, false, fmt.Errorf("migrate: platform %q must be linux, macos or windows", platform)
+		return MigrateResult{Out: src}, fmt.Errorf("migrate: platform %q must be linux, macos or windows", platform)
 	}
 	text := string(src)
 	lines := splitLines(text)
@@ -53,6 +88,8 @@ func MigrateWorkflow(src []byte, platform string) (out []byte, report []string, 
 	keys := runsOnKeys(src)
 	var b strings.Builder
 	var changes, notes []string
+	var moves []Move
+	var report []string
 	for i := 0; i < len(lines); {
 		line, eol := chomp(lines[i])
 		where := fmt.Sprintf("line %d", i+1)
@@ -126,10 +163,18 @@ func MigrateWorkflow(src []byte, platform string) (out []byte, report []string, 
 				notes = append(notes, fmt.Sprintf("left %s: job '%s' has %s matrix legs but deploys or holds credentials; it stays on hosted runners", where, own.label, spec.name))
 			case own.sudo:
 				notes = append(notes, fmt.Sprintf("left %s: job '%s' uses sudo, which Tentmaker's Linux sandbox doesn't have; it stays on hosted runners", where, own.label))
+			case unmovable(own, spec) != "":
+				notes = append(notes, fmt.Sprintf("left %s: job '%s' %s", where, own.label, unmovable(own, spec)))
 			default:
-				b.WriteString(indent + "runs-on: " + matrixExpr("matrix."+key[1], labels, spec) + comment + eol)
-				changes = append(changes, fmt.Sprintf("changed %s: runs-on matrix.%s: the %s leg(s) go to Tentmaker (other legs and fork PRs keep the matrix value)",
-					where, key[1], strings.Join(labels, ", ")))
+				after := matrixExpr("matrix."+key[1], labels, spec, o.All)
+				b.WriteString(indent + "runs-on: " + after + comment + eol)
+				moves = append(moves, Move{Line: i + 1, Job: own.id, Before: strings.TrimSpace(items[0]), After: after})
+				keep := "other legs and fork PRs keep the matrix value"
+				if o.All {
+					keep = "other legs keep the matrix value; --all: fork PRs go to the pool and wait, since Tentmaker never runs them"
+				}
+				changes = append(changes, fmt.Sprintf("changed %s: runs-on matrix.%s: the %s leg(s) go to Tentmaker (%s)",
+					where, key[1], strings.Join(labels, ", "), keep))
 				i = end
 				continue
 			}
@@ -149,16 +194,35 @@ func MigrateWorkflow(src []byte, platform string) (out []byte, report []string, 
 			case own.sudo:
 				notes = append(notes, fmt.Sprintf("left %s: job '%s' uses sudo, which Tentmaker's Linux sandbox doesn't have; it stays on hosted runners", where, own.label))
 				keep()
+			case unmovable(own, spec) != "":
+				notes = append(notes, fmt.Sprintf("left %s: job '%s' %s", where, own.label, unmovable(own, spec)))
+				keep()
 			default:
-				b.WriteString(indent + "runs-on: " + poolExpr(hosted, spec) + comment + eol)
-				changes = append(changes, fmt.Sprintf("changed %s: runs-on %s -> Tentmaker %s pool (fork PRs stay on %s)", where, hosted, spec.name, hosted))
+				after := poolExpr(hosted, spec)
+				forks := "fork PRs stay on " + hosted
+				if o.All {
+					after = poolList(spec)
+					forks = "--all: fork PRs go to the pool and wait, since Tentmaker never runs them"
+				}
+				b.WriteString(indent + "runs-on: " + after + comment + eol)
+				moves = append(moves, Move{Line: i + 1, Job: own.id, Before: hosted, After: after})
+				changes = append(changes, fmt.Sprintf("changed %s: runs-on %s -> Tentmaker %s pool (%s)", where, hosted, spec.name, forks))
 			}
 			i = end
 			continue
 		}
 		var reasons []string
 		seen := map[string]bool{}
+		selfHosted := false
 		for _, it := range items {
+			if strings.EqualFold(bare(it), "self-hosted") {
+				selfHosted = true
+			}
+		}
+		for _, it := range items {
+			if selfHosted {
+				break // already on its own machines: not ours to judge
+			}
 			if r := classify(it, spec); r != "pool" && r != "" && !seen[r] {
 				seen[r] = true
 				reasons = append(reasons, r)
@@ -194,7 +258,18 @@ func MigrateWorkflow(src []byte, platform string) (out []byte, report []string, 
 		}
 	}
 	report = append(report, notes...)
-	return []byte(result), report, result != text, nil
+	return MigrateResult{Out: []byte(result), Report: report, Changed: result != text, Moves: moves}, nil
+}
+
+// unmovable says why a job this platform can't run stays hosted, or "".
+func unmovable(j jobInfo, spec platformSpec) string {
+	switch {
+	case j.services && spec.osLabel != "linux":
+		return "uses services:, which need Docker, and Tentmaker's " + spec.name + " runners have none; it stays on hosted runners"
+	case j.container && spec.osLabel == "Windows":
+		return "uses container:, which Tentmaker's Windows runners can't run; it stays on hosted runners"
+	}
+	return ""
 }
 
 type platformSpec struct {
@@ -244,6 +319,10 @@ var (
 	jobsRe        = regexp.MustCompile(`(?m)^jobs:`)
 	tokenRe       = regexp.MustCompile(`[A-Za-z0-9_.-]+`)
 	jobNameRe     = regexp.MustCompile(`(?m)^\s+name:\s*(.+?)\s*$`)
+	// largeRe: a label that asks for a GPU or a larger runner, like gpu,
+	// gpu-t4-4-core, ubuntu-latest-8-cores, ubuntu-22.04-16core or
+	// macos-14-xlarge.
+	largeRe = regexp.MustCompile(`(?i)(^|[-_.])(gpu|cuda|nvidia|large|xlarge|\d+-?cores?)([-_.]|$)`)
 )
 
 const concurrencyBlock = "# Added by tentmaker: a new push to a pull request cancels its older run.\n" +
@@ -257,11 +336,27 @@ func poolJSON(spec platformSpec) string {
 	return `["self-hosted","tentmaker","` + spec.osLabel + `"]`
 }
 
+// ForkSafeRunsOn is the runs-on value Migrate writes for a job on hosted
+// image hosted ("ubuntu-latest") on platform: Tentmaker for everything but
+// fork pull requests, which stay on hosted. "" for an unknown platform.
+func ForkSafeRunsOn(hosted, platform string) string {
+	spec, ok := platforms[platform]
+	if !ok {
+		return ""
+	}
+	return poolExpr(hosted, spec)
+}
+
+// poolList is the plain runs-on list --all writes.
+func poolList(spec platformSpec) string {
+	return "[self-hosted, tentmaker, " + spec.osLabel + "]"
+}
+
 func poolExpr(hosted string, spec platformSpec) string {
 	return "${{ github.event.pull_request.head.repo.fork && '" + hosted + "' || fromJSON('" + poolJSON(spec) + "') }}"
 }
 
-func matrixExpr(key string, labels []string, spec platformSpec) string {
+func matrixExpr(key string, labels []string, spec platformSpec, all bool) string {
 	tests := make([]string, len(labels))
 	for i, l := range labels {
 		tests[i] = key + " == '" + l + "'"
@@ -269,6 +364,9 @@ func matrixExpr(key string, labels []string, spec platformSpec) string {
 	test := strings.Join(tests, " || ")
 	if len(labels) > 1 {
 		test = "(" + test + ")"
+	}
+	if all {
+		return "${{ " + test + " && fromJSON('" + poolJSON(spec) + "') || " + key + " }}"
 	}
 	return "${{ " + test + " && !github.event.pull_request.head.repo.fork && fromJSON('" + poolJSON(spec) + "') || " + key + " }}"
 }
@@ -282,6 +380,9 @@ func classify(label string, spec platformSpec) string {
 	l := bare(label)
 	if spec.hosted.MatchString(l) {
 		return "pool"
+	}
+	if largeRe.MatchString(l) {
+		return "a GPU or larger-runner label; Tentmaker runs jobs in a CPU and memory slice of an ordinary machine, so it stays where it is"
 	}
 	if strings.HasPrefix(l, spec.family) {
 		return spec.why
@@ -335,7 +436,10 @@ func sensitiveBody(body string) bool {
 }
 
 type jobInfo struct {
+	id        string // job id
 	label     string // job id and name
+	services  bool   // has a job-level services: key
+	container bool   // has a job-level container: key
 	sensitive bool
 	sudo      bool // uses sudo (counted for Linux only)
 	gui       bool // launches a GUI app (counted for macOS only)
@@ -416,7 +520,27 @@ func jobsByLine(lines []string, platform string) map[int]jobInfo {
 				label += " " + strings.TrimRight(nm[1], "\r")
 			}
 		}
-		info := jobInfo{label: label, sensitive: sensitiveName.MatchString(label) || sensitiveBody(body)}
+		info := jobInfo{id: bl.id, label: label, sensitive: sensitiveName.MatchString(label) || sensitiveBody(body)}
+		child := -1 // the indent of the job's own keys
+		for k := bl.start + 1; k < bl.end; k++ {
+			if strings.TrimSpace(lines[k]) == "" || isComment(lines[k]) {
+				continue
+			}
+			l, _ := chomp(lines[k])
+			m := keyRe.FindStringSubmatch(l)
+			if child < 0 {
+				child = indentOf(lines[k])
+			}
+			if m == nil || len(m[1]) != child {
+				continue
+			}
+			switch m[2] {
+			case "services":
+				info.services = true
+			case "container":
+				info.container = true
+			}
+		}
 		for k := bl.start; k < bl.end; k++ {
 			if isComment(lines[k]) {
 				continue

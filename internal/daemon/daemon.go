@@ -1169,6 +1169,39 @@ func (h ctlHandler) Pause(ctx context.Context, reason string, dur time.Duration)
 }
 func (h ctlHandler) Resume(ctx context.Context) error { return h.d.Resume(ctx) }
 func (h ctlHandler) Reload(ctx context.Context) error { return h.d.Reload(ctx) }
+func (h ctlHandler) OpenPR(ctx context.Context, pr core.PullRequest) (core.PullRequestResult, error) {
+	return h.d.OpenPR(ctx, pr)
+}
+
+// prTimeout bounds OpenPR's forge calls.
+const prTimeout = 60 * time.Second
+
+// OpenPR opens or updates a pull request with this device's GitHub token,
+// for a repo this device serves. The token stays in the daemon.
+func (d *Daemon) OpenPR(ctx context.Context, pr core.PullRequest) (core.PullRequestResult, error) {
+	d.mu.RLock()
+	cfg, forges := d.cfg, d.forges
+	d.mu.RUnlock()
+	served := false
+	for _, r := range cfg.Repos {
+		if RepoForge(r) == "github" && strings.EqualFold(r.Name, pr.Repo) {
+			served = true
+		}
+	}
+	if !served {
+		return core.PullRequestResult{}, fmt.Errorf("this device does not serve %s; add it first: sudo tentmaker repo add %s", pr.Repo, pr.Repo)
+	}
+	pq, ok := forges.Forges["github"].(core.PullRequester)
+	if !ok {
+		pq, ok = forges.StatusForges["github"].(core.PullRequester)
+	}
+	if !ok {
+		return core.PullRequestResult{}, errors.New("this device holds no GitHub token; connect one: sudo tentmaker connect github")
+	}
+	ctx, cancel := context.WithTimeout(ctx, prTimeout)
+	defer cancel()
+	return pq.OpenOrUpdatePR(ctx, pr)
+}
 
 // Relay streams a running check job's source archive (control.Relayer). The
 // relay listener serves it; the control API does not.
@@ -1184,5 +1217,6 @@ func (h ctlHandler) Relay(ctx context.Context, id string, w io.Writer) error {
 
 var (
 	_ control.Relayer    = ctlHandler{}
+	_ control.PROpener   = ctlHandler{}
 	_ core.ArchiveSource = brokerProxy{}
 )

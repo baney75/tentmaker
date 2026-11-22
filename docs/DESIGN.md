@@ -148,6 +148,13 @@ func (c *Client) CheapPolls() bool   // core.CheapPoller: limit unknown, past it
 func (c *Client) SetForkApproval(ctx context.Context, repo string) error       // require approval for all outside contributors (public) / disable fork PR workflows (private)
 func (c *Client) SetReadOnlyToken(ctx context.Context, repo string) error      // default GITHUB_TOKEN read-only
 func MigrateWorkflow(src []byte, platform string) (out []byte, report []string, changed bool, err error)
+func Migrate(src []byte, platform string, o MigrateOptions) (MigrateResult, error) // MigrateWorkflow plus options and Moves
+type MigrateOptions struct { All bool }                                         // All: no fork-safe expression
+type Move struct { Line int; Job, Before, After string }                        // one rewritten runs-on
+type MigrateResult struct { Out []byte; Report []string; Changed bool; Moves []Move }
+func ForkSafeRunsOn(hosted, platform string) string                            // the fork-safe runs-on for one hosted image
+func (c *Client) OpenOrUpdatePR(ctx context.Context, pr core.PullRequest) (core.PullRequestResult, error) // core.PullRequester
+func (c *Client) FirstJob(ctx context.Context, repo string) (core.FirstJob, error)                       // core.FirstJobReporter
 func TokenFromGH(ctx context.Context) (string, error)                          // `gh auth token`
 
 // forgejo (also Gitea)
@@ -161,6 +168,37 @@ the reset when fewer than 200 requests remain, `POST /repos/{o}/{r}/actions/runn
 with `runner_group_id` 1, delete runners, cancel runs. A job's `FromFork` is true when the run's
 `head_repository.full_name` differs from the repo. Retries: 3 tries with jittered backoff on 5xx
 and network errors; never retry a 4xx except 429/403-rate-limit after waiting.
+
+Optional forge interfaces in core, which only the GitHub client implements:
+
+```go
+type PullRequest struct { Repo, Head, Base, Title, Body string }   // Base "" = default branch
+type PullRequestResult struct { Number int; URL string; Created bool }
+type PullRequester interface {
+    OpenOrUpdatePR(ctx context.Context, pr PullRequest) (PullRequestResult, error)
+}
+type FirstJob struct {
+    Online       []string  // online runners labeled tentmaker
+    RanJob, RanOn string   // the newest job that ran on one, and its runner
+    RanAt        time.Time
+    Queued       int       // jobs labeled tentmaker with no runner yet
+    OldestQueued time.Time
+}
+type FirstJobReporter interface {
+    FirstJob(ctx context.Context, repo string) (FirstJob, error)
+}
+```
+
+`OpenOrUpdatePR` lists open pulls with `head=<owner>:<Head>` and `base`; it PATCHes the first one's
+title and body, or POSTs a new one. `FirstJob` reads `GET /actions/runners` and the jobs of the
+newest five runs.
+
+Migrate also leaves alone, with a reason in the report: a job with a job-level `services:` on
+macOS or Windows (no Docker there), a job-level `container:` on Windows, and a runs-on label that
+asks for a GPU or a larger runner (`gpu`, `cuda`, `nvidia`, `large`, `xlarge`, `N-cores`) unless
+the list already says `self-hosted`. With `All`, a moved job gets `[self-hosted, tentmaker, <os>]`
+(a matrix keeps its other legs) and fork pull requests go to the pool, where they wait, since the
+broker never runs a fork's job.
 
 ## Executors (internal/executor/...)
 
@@ -831,6 +869,30 @@ section is rewritten.
   user (Windows: Administrators write, the CI user reads), and the Linux and Windows executors
   pass it to check jobs as `TENTMAKER_TOOLS`. Before, check-run fell back to a folder inside the
   jobs directory that nothing created and that a reset would wipe.
+
+**onboarding**
+
+- `migrate --pr` owns the branch `tentmaker/migrate`: it builds it from `origin/<default branch>`
+  (read with `git ls-remote --symref origin HEAD`), runs migrate there, commits only the files it
+  changed, and pushes with `--force-with-lease` set to what origin had a moment before. It refuses
+  a dirty working tree and always puts the checkout back on the branch it was on.
+- Under sudo every git command runs as `$SUDO_USER` (`sudo -n -H -u`), with
+  `GIT_TERMINAL_PROMPT=0`, so the user's own git credentials push and no file in the checkout ends
+  up owned by root; the workflow files migrate rewrote as root are given back to their folder's
+  owner. Each git call has a timeout (30 s, 2 min for fetch, push and ls-remote), and git's stderr
+  in an error has URL credentials removed.
+- The pull request token is gh's (as `$SUDO_USER` under sudo), else the service's: `POST /v1/pr`
+  (control token) makes the daemon open it with its stored GitHub token, for a repo it serves. The
+  token never leaves the daemon.
+- `setup --repo-here` reads origin from `.git/config`, or for a linked worktree from the owning
+  repo's config (`gitdir:` then `commondir`). `setup --pr` runs `migrate --pr` only when every
+  setup step and doctor passed (warnings are fine).
+- Doctor's `first-job` check passes when GitHub lists an online runner labeled `tentmaker` for the
+  repo, or a recent job ran on one. Before any job targets the pool it warns, so `setup --pr`
+  still runs; a job for the pool queued longer than 3 minutes with no runner fails.
+- install.sh, piped with no terminal on stdin, runs `sudo -v </dev/tty` first when `/dev/tty`
+  opens, so a person can type the sudo password for the one-liner; agents (no terminal) keep
+  `sudo -n`.
 
 **release**
 

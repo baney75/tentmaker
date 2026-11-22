@@ -22,6 +22,12 @@
     $env:TENTMAKER_YES         = '1'         # run tentmaker setup --yes
     $env:TENTMAKER_SETUP_ARGS  = '--json --memory 4GiB --boost-memory 12GiB --repo owner/name'
 
+  From a checkout of your repo, this sets up the machine and opens a pull
+  request that moves Windows CI onto it (setup runs in the current folder):
+
+    $env:TENTMAKER_YES = '1'; $env:TENTMAKER_SETUP_ARGS = '--repo-here --pr'
+    irm https://raw.githubusercontent.com/baney75/tentmaker/main/scripts/install.ps1 | iex
+
   TENTMAKER_SETUP_ARGS is split on spaces; an argument with a space in it
   needs the parameter form below. Saved as a file, or as a script block, it
   takes parameters:
