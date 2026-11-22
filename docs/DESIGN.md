@@ -590,12 +590,18 @@ are rediscovered every 30 s; a peer failing 3 calls in a row is skipped for a mi
   which it is); without elevation setup makes no copy. `update` and `rollback` do the same before
   they write the new binary or the `.prev` copy; before, an elevated `update` left them owned by
   the user and the next `rollback` refused them. `install.ps1`, run as Administrator into a
-  system folder, gives the binary to Administrators, and a folder named `Tentmaker` (the default
-  `%ProgramFiles%\Tentmaker`) gets Administrators as owner and a protected DACL (SYSTEM and
-  Administrators full, Users read and execute), because the inherited CREATOR OWNER entry of
-  Program Files would name the user. When that folder, or `tentmaker.exe.prev` itself, was owned
-  by anyone else before, the installer deletes `tentmaker.exe.prev`, the copy rollback would
-  run, which that owner could have planted. Before, every Windows install failed setup with "owned by S-1-5-21-..., not
+  system folder, installs only into a folder named `Tentmaker` (the default
+  `%ProgramFiles%\Tentmaker`) and never lets the user own it or the binary, even for a moment,
+  because an owner can always rewrite a DACL and a handle opened while the user owned an object
+  keeps working after the owner changes. A new folder is created with Administrators as owner and
+  a protected DACL: SYSTEM and Administrators full, Users read and execute, and OWNER RIGHTS read
+  and execute, which takes the owner's implicit rights away from every file made in it. An
+  existing folder Administrators or SYSTEM own gets that DACL in place of its own, so an entry
+  planted earlier does not survive; one anyone else owns is moved aside to
+  `Tentmaker.untrusted-<ticks>`, and the install fails if it can't be. A `tentmaker.exe.prev`
+  anyone else owns is deleted, since rollback would run it. The archive is read once and checked
+  and extracted from the same bytes, since the temp folder is the user's, and the staged binary is
+  always a new file. Before, every Windows install failed setup with "owned by S-1-5-21-..., not
   SYSTEM or Administrators".
 - `setup --json` reports `binary`, the path the service runs. After a copy it is not the binary
   on PATH, and `update` and `rollback` change only it.

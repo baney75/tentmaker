@@ -133,6 +133,27 @@ try {
             if ($LASTEXITCODE -ne 0) { throw "icacls $prev /setowner: $out" }
             & $installer -InstallDir $sys -NoSetup
             if (Test-Path -LiteralPath $prev) { Pass 'system reinstall kept an Administrators-owned tentmaker.exe.prev' } else { Bad 'system reinstall removed an Administrators-owned tentmaker.exe.prev' }
+            # A folder Administrators own, but with an entry planted while
+            # someone else did, and a staged file planted beside it: the
+            # install replaces the DACL outright and makes a new file.
+            Set-Content -LiteralPath (Join-Path $sys 'tentmaker.new.exe') -Value 'planted'
+            $out = & icacls.exe $sys /grant '*S-1-5-32-545:(OI)(CI)M' "*${me}:(OI)(CI)F" /Q 2>&1
+            if ($LASTEXITCODE -ne 0) { throw "icacls $sys /grant: $out" }
+            & $installer -InstallDir $sys -NoSetup
+            $write = [Security.AccessControl.FileSystemRights]'WriteData, AppendData, WriteAttributes, WriteExtendedAttributes, Delete, ChangePermissions, TakeOwnership'
+            foreach ($p in @($sys, (Join-Path $sys 'tentmaker.exe'))) {
+                $rules = @((Get-Acl -LiteralPath $p).GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))
+                $loose = @($rules | Where-Object { $_.AccessControlType -eq 'Allow' -and @('S-1-5-18', 'S-1-5-32-544') -notcontains $_.IdentityReference.Value -and ($_.FileSystemRights -band $write) })
+                if ($loose.Count -eq 0) { Pass "system install: only SYSTEM and Administrators can change $p" } else { Bad "system install: $p lets $($loose[0].IdentityReference.Value) change it ($($loose[0].FileSystemRights))" }
+                if (@($rules | Where-Object { $_.IdentityReference.Value -eq 'S-1-3-4' }).Count -gt 0) { Pass "system install: OWNER RIGHTS limits the owner of $p" } else { Bad "system install: $p has no OWNER RIGHTS entry" }
+            }
+            $got = (& (Join-Path $sys 'tentmaker.exe') version 2>&1 | Out-String).Trim()
+            if ($got -eq $Expect) { Pass 'system install replaced a planted tentmaker.new.exe' } else { Bad "system install: tentmaker.exe says '$got'" }
+            # A system install outside a Tentmaker folder would put the DACL
+            # on a folder others share, so it is refused.
+            $threw = $false
+            try { & $installer -InstallDir (Join-Path $sysParent 'Other') -NoSetup } catch { $threw = $true }
+            if ($threw -and -not (Test-Path -LiteralPath (Join-Path $sysParent 'Other\tentmaker.exe'))) { Pass 'system install refuses a folder not named Tentmaker' } else { Bad 'system install went into a folder not named Tentmaker' }
         } catch { Bad "system install threw: $_" } finally {
             Remove-Item -LiteralPath $sysParent -Recurse -Force -ErrorAction SilentlyContinue
             [Environment]::SetEnvironmentVariable('Path', $machinePath, 'Machine')
