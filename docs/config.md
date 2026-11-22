@@ -26,6 +26,7 @@ Forge tokens never go in this file. They live in the OS secret store; set them w
 | `deny_repo_patterns` | list of strings | `[]` | Repos this device's broker never grants jobs for. Shell-style patterns matched without case, like `"acme/*"`. A malformed pattern denies every repo. |
 | `state_dir` | string | per OS: `/var/lib/tentmaker`, `/Library/Application Support/Tentmaker/state`, `%ProgramData%\Tentmaker\state` | Runner state, job directories and the control token. |
 | `cache_dir` | string | per OS: `/var/cache/tentmaker`, `/Library/Caches/Tentmaker`, `%ProgramData%\Tentmaker\cache` | Downloads such as runner archives, VM images and binaries for other platforms. |
+| `history_max` | int | `2000` | How many job records (and their log tails, up to 512 KiB each) this device keeps in `state_dir/runs`. The oldest go first. `0` means the default. |
 | `cache_max` | size | `10GiB` | The most the per-repo build caches under `cache_dir/repos` may hold (Linux). Past it, whole repos go, least recently used first, never one with a job on the device. `0` turns the caches off. |
 
 ## `[budget]`
@@ -121,6 +122,53 @@ How devices on one tailnet form a pool.
 | `mesh.pool` | string | `"default"` | Devices with the same pool name share work. |
 | `mesh.port` | int | `7433` | The peer API port, served on tailnet addresses only. 0 to 65535. |
 | `mesh.members` | list of strings | `[]` | Tailnet logins served besides your own. Devices owned by the same tailnet user are always served. Add `"tagged-devices"` to serve tagged devices. |
+
+## `[[alerts]]`
+
+Webhooks the device that ran a job calls when it ends. Each device sends alerts for its own jobs,
+so put the same `[[alerts]]` on every device that should report.
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `url` | string | | The webhook, `http://` or `https://`. Set this or `url_secret`, not both. |
+| `url_secret` | string | | The name of a secret that holds the webhook URL, for URLs that are themselves credentials (Slack, Discord). The config is readable by local users; the secrets folder is not. Same name rules as a device. |
+| `on` | string | required | `"failure"` (failed or errored jobs), `"recovered"` (a success after a failure of the same repo and job on this device) or `"slow"` (any job that ran at least `min_duration`). |
+| `repos` | list of strings | `[]` (all) | Only these repos. Path globs, like `"baney75/*"`, compared without case. |
+| `min_duration` | duration | `0` | Only jobs that ran at least this long. Required for `slow`. |
+
+The body fits the URL: `hooks.slack.com` gets Slack's `{"text"}`, a `/api/webhooks/` URL gets
+Discord's `{"content"}` with mentions off, `ntfy.sh` or an `ntfy.` host gets a plain text body
+with `Title`, `Tags`, `Priority` and `Click` headers, and anything else gets JSON:
+`{"event", "repo", "workflow", "job", "device", "conclusion", "failed_step", "run_url",
+"duration_s", "ended_at", "id"}`. Every field is redacted. One alert sends at most one message
+per repo and job every 15 minutes, each call has a 10 s timeout, and alerts wait in a queue of
+64 that drops and counts (one log line a minute) rather than slowing a job down.
+`tentmaker alerts test` sends a test message through each.
+
+To keep a Slack URL out of the config on Linux or macOS, write it as a secret file, then name it:
+
+```sh
+sudo sh -c 'umask 077; cat > /etc/tentmaker/secrets/slack-ci'   # paste the URL, then Ctrl-D
+```
+
+```toml
+[[alerts]]
+url_secret = "slack-ci"
+on = "failure"
+repos = ["baney75/*"]
+
+[[alerts]]
+url = "https://ntfy.sh/my-ci-topic"
+on = "recovered"
+
+[[alerts]]
+url = "https://ntfy.sh/my-ci-topic"
+on = "slow"
+min_duration = "20m"
+```
+
+On Windows the secrets are DPAPI-encrypted and there is no command yet to add one by hand, so
+use `url` there.
 
 ## `[update]`
 

@@ -42,6 +42,9 @@ type BrokerOptions struct {
 	// finds work a worker could take; the daemon kicks its worker so the
 	// grant doesn't wait for the worker's next tick.
 	OnWork func()
+	// Reports takes the forge's result for each runner job that ended
+	// (history.go); nil reads none.
+	Reports ReportRecorder
 }
 
 // Broker is the forge side of dispatch. It implements core.WorkSource.
@@ -72,6 +75,9 @@ type Broker struct {
 	// retries counts check grants that expired before their worker ran
 	// them, by checkKey; memory only.
 	retries map[string]*checkRetry
+	// reports are ended runner jobs whose forge result is still to read;
+	// memory only.
+	reports []*reportReq
 }
 
 type repoState struct {
@@ -445,6 +451,7 @@ func (b *Broker) endLocked(rec *grantRec, now time.Time) {
 	rec.Ended, rec.EndedAt = true, now
 	if rec.Settled {
 		b.log.Info("runner ended", "runner", rec.Name, "device", rec.Device, "repo", rec.Repo, "job_id", rec.TookJob)
+		b.queueReportLocked(rec)
 		delete(b.grants, rec.Name)
 	}
 }
@@ -976,6 +983,7 @@ func (b *Broker) Tick(ctx context.Context) error {
 	}
 	b.sweepSilent(ctx, now)
 	b.monitor(ctx, now)
+	b.sendReports(ctx, now)
 	b.flushPosts(ctx, now)
 	b.mu.Lock()
 	b.pruneArchivesLocked()
@@ -1378,6 +1386,7 @@ func (b *Broker) verdict(ctx context.Context, f core.Forge, rec *grantRec, r gra
 	settle := func() {
 		b.mu.Lock()
 		if b.grants[rec.Name] == rec {
+			b.queueReportLocked(rec)
 			delete(b.grants, rec.Name)
 		}
 		b.mu.Unlock()

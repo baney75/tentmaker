@@ -115,6 +115,13 @@ type Env struct {
 	// setup creates next (Windows; elsewhere root already owns them). nil
 	// does nothing. Default binsafe.OwnNewFiles.
 	OwnNewFiles func() error
+	// Git runs git in dir, as the person who ran sudo when run under sudo,
+	// with stdin, and returns its stdout. Default: the git on PATH, with a
+	// timeout and no credential prompts.
+	Git func(ctx context.Context, dir string, stdin io.Reader, args ...string) (string, error)
+	// OpenPR opens or updates a GitHub pull request with token. Default:
+	// the GitHub client.
+	OpenPR func(ctx context.Context, token string, pr core.PullRequest) (core.PullRequestResult, error)
 	// Command runs a host tool (journalctl, git) with output to out.
 	Command   func(ctx context.Context, out io.Writer, name string, args ...string) error
 	RunBundle func(ctx context.Context, b core.CheckBundle, outDir string, log io.Writer) core.CheckResult
@@ -175,7 +182,15 @@ func DefaultEnv() *Env {
 		ServiceBinDirs: binsafe.ServiceDirs(runtime.GOOS, os.Getenv),
 		OwnNewFiles:    binsafe.OwnNewFiles,
 		Command:        runCommand,
-		RunBundle:      checks.RunBundle,
+		Git: func(ctx context.Context, dir string, stdin io.Reader, args ...string) (string, error) {
+			user := ""
+			if runtime.GOOS != "windows" && isRoot() {
+				user = os.Getenv("SUDO_USER")
+			}
+			return runGit(ctx, user, dir, stdin, args...)
+		},
+		OpenPR:    openPRWithToken,
+		RunBundle: checks.RunBundle,
 		RunDaemon: func(ctx context.Context, o daemon.Options) error {
 			return daemon.New(o).Run(ctx)
 		},
@@ -255,11 +270,15 @@ func init() {
 		"repo":      {usageRepo, (*app).cmdRepo},
 		"connect":   {"tentmaker connect github|forgejo|gitlab [--url URL] [--token-stdin] [--json]", (*app).cmdConnect},
 		"devices":   {"tentmaker devices add HOST [--channel stable|dev] [--memory S] [--boost-memory S] [--repo R]... [--json]", (*app).cmdDevices},
-		"migrate":   {"tentmaker migrate [PATH] [--platform linux|macos|windows] [--write] [--json]", (*app).cmdMigrate},
+		"migrate":   {usageMigrate, (*app).cmdMigrate},
 		"pause":     {"tentmaker pause [--for DURATION] [REASON...] [--json]", (*app).cmdPause},
 		"resume":    {"tentmaker resume [--json]", (*app).cmdResume},
 		"doctor":    {"tentmaker doctor [--json]", (*app).cmdDoctor},
-		"logs":      {"tentmaker logs [-f] [-n LINES] [--json]", (*app).cmdLogs},
+		"logs":      {"tentmaker logs [JOB-ID] [-f|--follow] [-n LINES] [--json]\n\nWith no JOB-ID, the service's own log. With one, that CI job's log tail (redacted); --follow streams it until the job ends.", (*app).cmdLogs},
+		"runs":      {usageRuns, (*app).cmdRuns},
+		"rerun":     {usageRerun, (*app).cmdRerun},
+		"stats":     {usageStats, (*app).cmdStats},
+		"alerts":    {usageAlerts, (*app).cmdAlerts},
 		"update":    {"tentmaker update [--channel stable|dev] [--check] [--force] [--json]", (*app).cmdUpdate},
 		"rollback":  {"tentmaker rollback [--json]", (*app).cmdRollback},
 		"uninstall": {"tentmaker uninstall [--purge] [--yes] [--json]", (*app).cmdUninstall},
@@ -287,7 +306,12 @@ Usage:
   tentmaker pause [--for D] [REASON...]
   tentmaker resume
   tentmaker doctor                find problems, each with its fix
-  tentmaker logs [-f] [-n LINES]
+  tentmaker logs [-f] [-n LINES]  the service's log
+  tentmaker runs [--failed]       recent CI jobs across the pool
+  tentmaker logs JOB-ID [-f]      one job's log tail
+  tentmaker rerun JOB-ID|RUN-URL  rerun a run's failed jobs
+  tentmaker stats [--since 7d]    jobs, failure rate, waits, est. savings
+  tentmaker alerts test           send a test alert to every webhook
   tentmaker update [--check]      update to the newest release
   tentmaker rollback              go back to the previous version
   tentmaker uninstall [--purge]

@@ -211,6 +211,8 @@ type wrig struct {
 	silent  bool
 	// actions is the worker's Actions cache service (nil: none).
 	actions ActionsCache
+	// runs, when set before the worker is built, keeps its run history.
+	runs RunRecorder
 	// async leaves the worker's Starts running after a tick; by default
 	// the rig waits for them, so a tick's starts are done when it returns.
 	async bool
@@ -318,6 +320,7 @@ func (r *rig) newWorker(wr *wrig) *Worker {
 		Log:          r.log.With("worker", wr.name),
 		Now:          r.clk.Now,
 		ActionsCache: wr.actions,
+		Runs:         wr.runs,
 	})
 }
 

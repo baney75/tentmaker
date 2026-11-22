@@ -290,6 +290,7 @@ type Daemon struct {
 	worker     *dispatch.Worker
 	broker     *dispatch.Broker
 	node       *mesh.Node
+	hist       *history
 	execs      []core.Executor
 	forges     Forges
 	problems   map[string][]core.Problem // by component
@@ -593,6 +594,7 @@ func (d *Daemon) apply(cfg config.Config) {
 				Log:          log,
 				Now:          d.o.Now,
 				OnWork:       d.kickWorker,
+				Reports:      historyProxy{d},
 			})
 			bc = startComp(d.runCtx, log, "broker", b.Run)
 			log.Info("broker started", "forges", forges.Tokens, "repos", len(cfg.Repos))
@@ -605,6 +607,18 @@ func (d *Daemon) apply(cfg config.Config) {
 		d.mu.Lock()
 		d.forges = forges
 		d.mu.Unlock()
+	}
+
+	// Run history and alerts.
+	hkey := keyOf(cfg.Device, cfg.StateDir, cfg.HistoryMax, cfg.Alerts)
+	if hkey != d.keys["history"] {
+		h := d.newHistory(cfg, log)
+		d.mu.Lock()
+		old := d.hist
+		d.hist = h
+		d.mu.Unlock()
+		old.close()
+		d.keys["history"] = hkey
 	}
 
 	// Mesh node.
@@ -626,6 +640,7 @@ func (d *Daemon) apply(cfg config.Config) {
 				Device: cfg.Device, Pool: cfg.Mesh.Pool, Port: cfg.Mesh.Port, Members: cfg.Mesh.Members,
 				Tailscale: d.o.Tailscale, Broker: src, Version: d.o.Version,
 				Status: func() any { return d.Status(context.Background()) },
+				Runs:   runsSource{d},
 				Log:    log,
 			})
 			nc := startComp(d.runCtx, log, "mesh", n.Run)
@@ -668,6 +683,7 @@ func (d *Daemon) apply(cfg config.Config) {
 			Log:       log,
 			Now:       d.o.Now,
 			RelayAddr: d.RelayAddress,
+			Runs:      historyProxy{d},
 		}
 		if d.actions != nil {
 			wo.ActionsCache = d.actions
@@ -1192,6 +1208,39 @@ func (h ctlHandler) Pause(ctx context.Context, reason string, dur time.Duration)
 }
 func (h ctlHandler) Resume(ctx context.Context) error { return h.d.Resume(ctx) }
 func (h ctlHandler) Reload(ctx context.Context) error { return h.d.Reload(ctx) }
+func (h ctlHandler) OpenPR(ctx context.Context, pr core.PullRequest) (core.PullRequestResult, error) {
+	return h.d.OpenPR(ctx, pr)
+}
+
+// prTimeout bounds OpenPR's forge calls.
+const prTimeout = 60 * time.Second
+
+// OpenPR opens or updates a pull request with this device's GitHub token,
+// for a repo this device serves. The token stays in the daemon.
+func (d *Daemon) OpenPR(ctx context.Context, pr core.PullRequest) (core.PullRequestResult, error) {
+	d.mu.RLock()
+	cfg, forges := d.cfg, d.forges
+	d.mu.RUnlock()
+	served := false
+	for _, r := range cfg.Repos {
+		if RepoForge(r) == "github" && strings.EqualFold(r.Name, pr.Repo) {
+			served = true
+		}
+	}
+	if !served {
+		return core.PullRequestResult{}, fmt.Errorf("this device does not serve %s; add it first: sudo tentmaker repo add %s", pr.Repo, pr.Repo)
+	}
+	pq, ok := forges.Forges["github"].(core.PullRequester)
+	if !ok {
+		pq, ok = forges.StatusForges["github"].(core.PullRequester)
+	}
+	if !ok {
+		return core.PullRequestResult{}, errors.New("this device holds no GitHub token; connect one: sudo tentmaker connect github")
+	}
+	ctx, cancel := context.WithTimeout(ctx, prTimeout)
+	defer cancel()
+	return pq.OpenOrUpdatePR(ctx, pr)
+}
 
 // Relay streams a running check job's source archive (control.Relayer). The
 // relay listener serves it; the control API does not.
@@ -1207,5 +1256,6 @@ func (h ctlHandler) Relay(ctx context.Context, id string, w io.Writer) error {
 
 var (
 	_ control.Relayer    = ctlHandler{}
+	_ control.PROpener   = ctlHandler{}
 	_ core.ArchiveSource = brokerProxy{}
 )

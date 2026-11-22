@@ -62,6 +62,9 @@ type Job struct {
 	// JobID.
 	RunnerID   int64  `json:"runner_id,omitempty"`
 	RunnerName string `json:"runner_name,omitempty"`
+	// HTMLURL is the job's page on the forge, when the forge says (GitHub's
+	// html_url). Run history links to it.
+	HTMLURL string `json:"html_url,omitempty"`
 }
 
 // Key identifies a job across the pool. A check job's key is its commit and
@@ -303,6 +306,62 @@ type ArchiveSource interface {
 	FetchArchive(ctx context.Context, ref, device string, w io.Writer) error
 }
 
+// JobLog is the tail of one job's log as an executor reads it: the
+// runner's diag logs (_diag/Runner_*.log, then _diag/Worker_*.log) for a
+// runner job, check-run's log.txt for a check job. Size is the total size
+// of the files read, so a caller polling a running job can tell what is
+// new. Data is raw: the caller redacts it before it keeps or shows it.
+type JobLog struct {
+	Data []byte `json:"-"`
+	Size int64  `json:"size"`
+}
+
+// Usage is what one job used, read from its sandbox. Zero fields are
+// unknown.
+type Usage struct {
+	PeakMemoryBytes int64   `json:"peak_memory_bytes,omitempty"`
+	CPUSeconds      float64 `json:"cpu_seconds,omitempty"`
+	// CacheBytes is the size of the repo cache the job started with.
+	CacheBytes int64 `json:"cache_bytes,omitempty"`
+}
+
+// JobInspector is an executor that can show a job's log and what it used,
+// while it runs and after it exits, until Clean. Linux and Windows
+// implement JobLog; only Linux (the job's cgroup) implements JobUsage with
+// numbers. Every file is read so a job can't point the daemon elsewhere
+// (no symlink leaves the job folder, regular files only).
+type JobInspector interface {
+	JobLog(ctx context.Context, name string, max int64) (JobLog, error)
+	JobUsage(ctx context.Context, name string) (Usage, error)
+}
+
+// JobReport is how a finished runner job went, as the forge saw it.
+// Conclusion is the forge's own word ("success", "failure", "cancelled",
+// "timed_out", ...); it is "" while the job is not completed. Log is the
+// tail of the job's own log (step output), raw; the caller redacts it.
+type JobReport struct {
+	// HeadSHA, Workflow and StartedAt identify the job, so a broker's copy
+	// of a peer's record matches a query by commit.
+	HeadSHA    string
+	Workflow   string
+	StartedAt  time.Time
+	Conclusion string
+	FailedStep string
+	Log        []byte
+	LogErr     error // the log could not be read; the conclusion still holds
+}
+
+// JobReporter is a forge that can say how a job ended and hand over its
+// log (GitHub). The forge token never leaves the broker that holds it.
+type JobReporter interface {
+	JobReport(ctx context.Context, repo string, jobID, maxLog int64) (JobReport, error)
+}
+
+// Rerunner is a forge that can rerun the failed jobs of a run (GitHub).
+type Rerunner interface {
+	RerunFailed(ctx context.Context, repo string, runID int64) error
+}
+
 // CheckResult is the outcome of one check job.
 type CheckResult struct {
 	Runner      string        `json:"runner"`
@@ -509,4 +568,44 @@ func itoa(n int64) string {
 		b[i] = '-'
 	}
 	return string(b[i:])
+}
+
+// PullRequest is a pull request a forge should open, or update when one
+// from Head into Base is already open. Head is a branch of Repo itself.
+type PullRequest struct {
+	Repo  string `json:"repo"` // "owner/name"
+	Head  string `json:"head"` // branch name, like tentmaker/migrate
+	Base  string `json:"base"` // "" = the repo's default branch
+	Title string `json:"title"`
+	Body  string `json:"body"`
+}
+
+// PullRequestResult says which pull request a PullRequester opened or updated.
+type PullRequestResult struct {
+	Number  int    `json:"number"`
+	URL     string `json:"url"`
+	Created bool   `json:"created"` // false: an open one was updated
+}
+
+// PullRequester is a forge that can open pull requests (GitHub). It is
+// optional: forges that lack it can't take `tentmaker migrate --pr`.
+type PullRequester interface {
+	OpenOrUpdatePR(ctx context.Context, pr PullRequest) (PullRequestResult, error)
+}
+
+// FirstJob is what the forge says about Tentmaker runners for one repo:
+// whether one is online now, the last job that ran on one, and jobs for the
+// pool that wait. Doctor's first-job check reads it.
+type FirstJob struct {
+	Online       []string  `json:"online"`        // names of online runners labeled tentmaker
+	RanJob       string    `json:"ran_job"`       // the newest job that ran on such a runner
+	RanOn        string    `json:"ran_on"`        // its runner's name
+	RanAt        time.Time `json:"ran_at"`        // when it was created
+	Queued       int       `json:"queued"`        // jobs labeled tentmaker waiting for a runner
+	OldestQueued time.Time `json:"oldest_queued"` // when the oldest of those was created
+}
+
+// FirstJobReporter is a forge that can report FirstJob (GitHub). Optional.
+type FirstJobReporter interface {
+	FirstJob(ctx context.Context, repo string) (FirstJob, error)
 }

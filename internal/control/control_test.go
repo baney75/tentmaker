@@ -22,6 +22,7 @@ type fakeHandler struct {
 	paused  string
 	pauseD  time.Duration
 	reloads int
+	reruns  []RerunRequest
 }
 
 func (f *fakeHandler) Status(ctx context.Context) (any, error) {
@@ -157,19 +158,19 @@ func TestRunnerGetsNothing(t *testing.T) {
 	h, c, _ := startAs(t, func(net.Conn) (Caller, error) { return Caller{Runner: true, Who: "uid 900"}, nil })
 	ctx := context.Background()
 	var e *Error
-	for _, path := range []string{"/v1/status", "/v1/pool", "/v1/doctor"} {
+	for _, path := range []string{"/v1/status", "/v1/pool", "/v1/doctor", "/v1/runs", "/v1/runs/log?id=tm-a-1"} {
 		if err := c.Get(ctx, path, nil); !errors.As(err, &e) || e.Status != http.StatusForbidden {
 			t.Errorf("GET %s as a CI job: %v, want 403", path, err)
 		}
 	}
-	for _, path := range []string{"/v1/pause", "/v1/resume", "/v1/reload"} {
-		if err := c.Post(ctx, path, nil); !errors.As(err, &e) || e.Status != http.StatusForbidden {
+	for _, path := range []string{"/v1/pause", "/v1/resume", "/v1/reload", "/v1/rerun", "/v1/alerts/test"} {
+		if err := c.Post(ctx, path, RerunRequest{Repo: "o/r", RunID: 1}); !errors.As(err, &e) || e.Status != http.StatusForbidden {
 			t.Errorf("POST %s as a CI job with the token: %v, want 403", path, err)
 		}
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.paused != "" || h.reloads != 0 {
+	if h.paused != "" || h.reloads != 0 || len(h.reruns) != 0 {
 		t.Fatalf("the daemon acted for a CI job: paused %q, reloads %d", h.paused, h.reloads)
 	}
 }

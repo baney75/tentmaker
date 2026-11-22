@@ -69,6 +69,21 @@ func (f *fakeController) MigrateWorkflows(ctx context.Context, repoPath, platfor
 func (f *fakeController) InstallOnDevice(ctx context.Context, host, channel, memory, boost string) (any, error) {
 	return nil, f.rec("install %s %s %s %s", host, channel, memory, boost)
 }
+func (f *fakeController) Runs(ctx context.Context, repo, sha string, failed bool, limit int) (any, error) {
+	return map[string]any{"records": []any{}}, f.rec("runs %s %s %v %d", repo, sha, failed, limit)
+}
+func (f *fakeController) Logs(ctx context.Context, id string, lines int) (any, error) {
+	return map[string]any{"id": id, "lines": []string{"x"}}, f.rec("logs %s %d", id, lines)
+}
+func (f *fakeController) Rerun(ctx context.Context, target string) (any, error) {
+	return map[string]any{"broker": "box"}, f.rec("rerun %s", target)
+}
+func (f *fakeController) Stats(ctx context.Context, since, repo string) (any, error) {
+	return map[string]any{"estimate": "estimated"}, f.rec("stats %s %s", since, repo)
+}
+func (f *fakeController) WaitForRun(ctx context.Context, repo, sha, runURL string, timeout time.Duration) (any, error) {
+	return map[string]any{"done": true}, f.rec("wait %s %s %s %s", repo, sha, runURL, timeout)
+}
 func (f *fakeController) Update(ctx context.Context, channel string) (any, error) {
 	f.rec("update %s", channel)
 	if f.block != nil {
@@ -229,7 +244,8 @@ func TestFullSession(t *testing.T) {
 	if err := json.Unmarshal(m.Result, &list); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"status", "pool", "doctor", "set_budget", "add_repo", "remove_repo", "pause", "resume", "migrate_workflows", "install_on_device", "update"}
+	want := []string{"status", "pool", "doctor", "set_budget", "add_repo", "remove_repo", "pause", "resume", "migrate_workflows",
+		"install_on_device", "update", "runs", "logs", "rerun", "stats", "wait_for_run"}
 	if len(list.Tools) != len(want) {
 		t.Fatalf("got %d tools, want %d", len(list.Tools), len(want))
 	}
@@ -299,6 +315,44 @@ func TestFullSession(t *testing.T) {
 	if fc.last() != "resume" {
 		t.Errorf("resume: %q", fc.last())
 	}
+	for _, rt := range []string{"runs", "logs", "stats", "wait_for_run"} {
+		if list.Tools[byName[rt]].Annotations["readOnlyHint"] != true {
+			t.Errorf("%s should be read-only", rt)
+		}
+	}
+	if a := list.Tools[byName["rerun"]].Annotations; a["readOnlyHint"] != false || a["openWorldHint"] != true {
+		t.Errorf("rerun annotations %v", a)
+	}
+	if req := list.Tools[byName["logs"]].InputSchema.Required; len(req) != 1 || req[0] != "job_id" {
+		t.Errorf("logs required %v", req)
+	}
+
+	// The run history tools, with their defaults.
+	run := func(id int, name string, args map[string]any, want string) {
+		t.Helper()
+		r, rerr := s.tool(id, name, args)
+		if rerr != nil || r.IsError || fc.last() != want {
+			t.Errorf("%s: %+v %+v, call %q, want %q", name, r, rerr, fc.last(), want)
+		}
+	}
+	run(15, "runs", nil, "runs   false 20")
+	run(16, "runs", map[string]any{"repo": "o/r", "sha": "abcdef1", "failed": true, "limit": 5}, "runs o/r abcdef1 true 5")
+	run(17, "logs", map[string]any{"job_id": "tm-box-1"}, "logs tm-box-1 200")
+	run(18, "logs", map[string]any{"job_id": "tm-box-1", "lines": 80}, "logs tm-box-1 80")
+	run(19, "rerun", map[string]any{"target": "tm-box-1"}, "rerun tm-box-1")
+	run(20, "rerun", map[string]any{"target": "https://github.com/o/r/actions/runs/9"}, "rerun https://github.com/o/r/actions/runs/9")
+	run(21, "stats", nil, "stats 7d ")
+	run(22, "stats", map[string]any{"since": "30d", "repo": "o/r"}, "stats 30d o/r")
+	run(23, "wait_for_run", map[string]any{"repo": "o/r", "sha": "abcdef1234"}, "wait o/r abcdef1234  10m0s")
+	run(24, "wait_for_run", map[string]any{"run_url": "https://github.com/o/r/actions/runs/9", "timeout_s": 60},
+		"wait   https://github.com/o/r/actions/runs/9 1m0s")
+	for i, bad := range []map[string]any{{}, {"repo": "o/r"}, {"sha": "abcdef1"},
+		{"repo": "o/r", "sha": "abcdef1", "run_url": "https://github.com/o/r/actions/runs/9"}} {
+		r, _ := s.tool(30+i, "wait_for_run", bad)
+		if !r.IsError || !strings.Contains(r.Content[0].Text, "repo and sha, or run_url") {
+			t.Errorf("wait_for_run %v: %+v", bad, r)
+		}
+	}
 
 	s.in.Close()
 	select {
@@ -333,6 +387,15 @@ func TestBadRequests(t *testing.T) {
 		{`{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"install_on_device","arguments":{"host":"-oProxyCommand=x"}}}`, codeInvalidParams},
 		{`{"jsonrpc":"2.0","id":12,"method":"tools/call","params":{"name":"update","arguments":{"channel":"beta"}}}`, codeInvalidParams},
 		{`{"jsonrpc":"2.0","id":13,"method":"tools/call","params":{"name":"status","arguments":[1]}}`, codeInvalidParams},
+		{`{"jsonrpc":"2.0","id":14,"method":"tools/call","params":{"name":"logs","arguments":{}}}`, codeInvalidParams},
+		{`{"jsonrpc":"2.0","id":15,"method":"tools/call","params":{"name":"logs","arguments":{"job_id":"../../etc/passwd"}}}`, codeInvalidParams},
+		{`{"jsonrpc":"2.0","id":16,"method":"tools/call","params":{"name":"logs","arguments":{"job_id":"tm-a-1","lines":0}}}`, codeInvalidParams},
+		{`{"jsonrpc":"2.0","id":17,"method":"tools/call","params":{"name":"runs","arguments":{"limit":2.5}}}`, codeInvalidParams},
+		{`{"jsonrpc":"2.0","id":18,"method":"tools/call","params":{"name":"runs","arguments":{"sha":"zzz"}}}`, codeInvalidParams},
+		{`{"jsonrpc":"2.0","id":19,"method":"tools/call","params":{"name":"rerun","arguments":{"target":"https://example.com/x"}}}`, codeInvalidParams},
+		{`{"jsonrpc":"2.0","id":20,"method":"tools/call","params":{"name":"stats","arguments":{"since":"forever"}}}`, codeInvalidParams},
+		{`{"jsonrpc":"2.0","id":21,"method":"tools/call","params":{"name":"wait_for_run","arguments":{"run_url":"https://github.com/o/r/pull/1"}}}`, codeInvalidParams},
+		{`{"jsonrpc":"2.0","id":22,"method":"tools/call","params":{"name":"wait_for_run","arguments":{"repo":"o/r","sha":"abcdef1","timeout_s":86400}}}`, codeInvalidParams},
 	}
 	for _, tc := range cases {
 		s.send(tc.line)
@@ -384,6 +447,11 @@ func TestConcurrentAndCancel(t *testing.T) {
 	// A ping is answered while the update runs.
 	if m := s.call(2, "ping", nil); m.Error != nil {
 		t.Fatal(m.Error)
+	}
+	// Cancel only once the update is running: a cancel that wins the race
+	// stops the call before it starts, which is right but not this test.
+	for deadline := time.Now().Add(5 * time.Second); fc.last() == "" && time.Now().Before(deadline); {
+		time.Sleep(time.Millisecond)
 	}
 	s.send(`{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":"slow","reason":"user"}}`)
 	// The canceled call sends nothing; the next response is the ping.

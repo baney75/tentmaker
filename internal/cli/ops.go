@@ -150,7 +150,7 @@ func workflowFiles(p string) ([]string, error) {
 	return out, nil
 }
 
-func (a *app) migrate(p, platform string, write bool) (migrateView, error) {
+func (a *app) migrate(p, platform string, write bool, o github.MigrateOptions) (migrateView, error) {
 	if p == "" {
 		wd, err := a.env.Getwd()
 		if err != nil {
@@ -184,8 +184,9 @@ func (a *app) migrate(p, platform string, write bool) (migrateView, error) {
 			v.Files = append(v.Files, mf)
 			continue
 		}
-		out, report, ch, err := github.MigrateWorkflow(src, platform)
-		mf.Changed, mf.Report = ch, nonNil(report)
+		res, err := github.Migrate(src, platform, o)
+		ch := res.Changed
+		mf.Changed, mf.Report, mf.Moves = ch, nonNil(res.Report), res.Moves
 		if err != nil {
 			mf.Error = err.Error()
 			v.OK = false
@@ -193,7 +194,7 @@ func (a *app) migrate(p, platform string, write bool) (migrateView, error) {
 		if ch {
 			v.Changed++
 			if write && err == nil {
-				if werr := config.WriteAtomic(fp, out, st.Mode().Perm()); werr != nil {
+				if werr := config.WriteAtomic(fp, res.Out, st.Mode().Perm()); werr != nil {
 					mf.Error = werr.Error()
 					v.OK = false
 				}
@@ -215,6 +216,8 @@ func (a *app) cmdMigrate(args []string) (any, error) {
 	f := a.flags("migrate", commands["migrate"].usage)
 	platform := f.String("platform", "", "linux, macos or windows")
 	write := f.Bool("write", false, "write the changes")
+	pr := f.Bool("pr", false, "commit the changes on branch "+migrateBranch+", push it and open or update a pull request")
+	all := f.Bool("all", false, "send fork pull requests to the pool too (no fork-safe expression)")
 	pos, err := a.parse(f, args)
 	if err != nil {
 		return nil, err
@@ -226,7 +229,15 @@ func (a *app) cmdMigrate(args []string) (any, error) {
 	if len(pos) == 1 {
 		p = pos[0]
 	}
-	v, err := a.migrate(p, *platform, *write)
+	if *pr {
+		pv, err := a.migratePR(a.ctx, p, *platform, github.MigrateOptions{All: *all})
+		if err != nil {
+			return nil, err
+		}
+		a.printMigratePR(pv)
+		return pv, nil
+	}
+	v, err := a.migrate(p, *platform, *write, github.MigrateOptions{All: *all})
 	if err != nil {
 		return nil, err
 	}
@@ -247,19 +258,23 @@ type logsView struct {
 func (a *app) cmdLogs(args []string) (any, error) {
 	f := a.flags("logs", commands["logs"].usage)
 	follow := f.Bool("f", false, "follow")
+	f.BoolVar(follow, "follow", false, "follow")
 	n := f.Int("n", 100, "lines")
 	pos, err := a.parse(f, args)
 	if err != nil {
 		return nil, err
 	}
-	if len(pos) > 0 {
-		return nil, usage("usage: "+commands["logs"].usage, "unexpected argument %q", pos[0])
+	if len(pos) > 1 {
+		return nil, usage("usage: "+firstLine(commands["logs"].usage), "unexpected argument %q", pos[1])
 	}
 	if *n <= 0 || *n > 100000 {
 		return nil, usage("use -n from 1 to 100000", "-n %d is out of range", *n)
 	}
 	if *follow && a.json {
 		return nil, usage("drop -f, or drop --json", "-f streams lines, and --json prints one object")
+	}
+	if len(pos) == 1 {
+		return a.cmdJobLog(pos[0], *n, f.set("n"), *follow)
 	}
 	if a.env.Paths.Log == "" {
 		return a.journalLogs(*n, *follow)

@@ -33,6 +33,27 @@ Devices on one [Tailscale](https://tailscale.com) tailnet form a pool and share 
 
 ## Quick start
 
+From a checkout of your GitHub repo, on Linux or macOS:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/baney75/tentmaker/main/scripts/install.sh | sh -s -- --yes -- --repo-here --pr
+```
+
+What just happened:
+
+1. The installer put `tentmaker` on this machine and ran `sudo tentmaker setup --yes` with the repo of this checkout's `origin` and your `gh` sign-in.
+2. Setup installed the sandbox and the service, and `tentmaker doctor` checked them.
+3. `tentmaker migrate --pr` pushed the branch `tentmaker/migrate` and opened a pull request that moves your jobs onto this machine. Merge it, then run `tentmaker doctor` to see the first job reach your runner.
+
+| | Tentmaker | GitHub-hosted runners | Managed runner services |
+| --- | --- | --- | --- |
+| Cost | Free on your own hardware | Per minute past the free allowance | Per minute |
+| Personal repos | Yes | Yes | Often organizations only |
+| macOS | Yes, your Mac | Yes, at the highest per-minute rate | Some, at a higher rate |
+| Data that leaves your network | Job traffic only | All of it: jobs run on GitHub's machines | All of it: jobs run on their machines |
+
+Fork pull requests stay on GitHub-hosted runners, so those still work as the fallback. Prefer to look first? Run the steps one at a time, as below.
+
 Each installer downloads the release for your CPU, checks its sha256 against the release's `SHA256SUMS`, and refuses to install if they differ. None of them prompt.
 
 **Linux and macOS**
@@ -136,9 +157,13 @@ This is routing, not the security boundary: a fork PR can edit the workflow it r
 tentmaker migrate                      # report what it would change in this checkout
 tentmaker migrate --platform macos     # the same, for macOS jobs
 tentmaker migrate --write              # edit .github/workflows in place
+tentmaker migrate --pr                 # commit the edits on tentmaker/migrate and open a pull request
+tentmaker migrate --all                # send fork pull requests to the pool too, where they wait
 ```
 
-It leaves alone, and reports, jobs that deploy, publish, release or sign, use an environment, ask for write permissions or read secrets; Linux jobs that use `sudo`; and runner images Tentmaker doesn't stand in for. A workflow it changes gets a concurrency block that cancels a pull request's older run. Review the diff and commit it yourself.
+It leaves alone, and reports, jobs that deploy, publish, release or sign, use an environment, ask for write permissions or read secrets; Linux jobs that use `sudo`; jobs with `services:` on macOS or Windows, or `container:` on Windows, which those runners can't run; jobs that ask for a GPU or a larger runner; and runner images Tentmaker doesn't stand in for. A workflow it changes gets a concurrency block that cancels a pull request's older run.
+
+With `--write`, review the diff and commit it yourself. With `--pr`, it refuses a dirty working tree, builds `tentmaker/migrate` from the default branch, pushes it and opens the pull request through the GitHub API (or updates the one already open). The body has a before and after table of every `runs-on` it changed. It signs in with `gh auth token`, or with the device's stored token when you run it with `sudo`.
 
 On GitHub, runner mode needs a token that is an admin of the repo, because registering runners takes the Administration: write permission. `gh auth token` from a repo owner has it.
 
@@ -214,7 +239,42 @@ Tentmaker also serves an MCP server. Register it with Claude Code:
 claude mcp add tentmaker -- tentmaker mcp
 ```
 
-Its read tools (`status`, `pool`, `doctor`) work as any user. Tools that change the device need the MCP server to run as root or Administrator, and return an error that says so otherwise. See [docs/agents.md](docs/agents.md).
+Its read tools (`status`, `pool`, `doctor`, `runs`, `logs`, `stats`, `wait_for_run`) work as any user. Tools that change the device need the MCP server to run as root or Administrator, and return an error that says so otherwise. See [docs/agents.md](docs/agents.md).
+
+## Watch your CI
+
+Every device keeps a record of each job it ran: conclusion, the step that failed, queue wait,
+duration, peak memory and CPU seconds from the job's cgroup on Linux, and a redacted tail of the
+log. The pool view merges every device's records over the tailnet, so one command shows them
+all.
+
+```text
+$ tentmaker runs
+CONCLUSION         REPO          JOB        DEVICE  QUEUED  DURATION  PEAK MEM  ENDED      ID
+running            baney75/app   build      mac     -       2m00s     -         -          tm-mac-1
+failure (go test)  baney75/site  ci / test  box     30s     4m30s     3.0GiB    5m00s ago  tm-box-1
+success            baney75/site  ci / lint  box     -       1m00s     512MiB    8m00s ago  tm-box-2
+
+$ tentmaker logs tm-box-1 -n 4
+    login_test.go:41: got 500, want 200
+FAIL
+FAIL	github.com/baney75/site/auth	0.311s
+##[error]Process completed with exit code 1.
+
+$ sudo tentmaker rerun tm-box-1
+Asked the forge to rerun the failed jobs of run 41 in baney75/site (through box).
+
+$ tentmaker stats --since 7d
+REPO          JOBS  FAILED  QUEUE P50  QUEUE P95  RUN P50  RUN P95  MINUTES  EST. SAVED
+baney75/site  2     50%     30s        30s        1m00s    4m30s    6        $0.04
+Last 7d. estimated saving: billed minutes at GitHub-hosted per-minute rates as of 2026-01-01 (Linux $0.006, Windows $0.010, macOS $0.062); an estimate, not a bill
+```
+
+`tentmaker logs JOB-ID --follow` streams a running job. Alerts go to ntfy, Slack, Discord or any
+webhook on failure, on recovery and on slow jobs; see `[[alerts]]` in
+[docs/config.md](docs/config.md) and check them with `sudo tentmaker alerts test`. An agent gets
+the same through MCP, plus `wait_for_run`, which blocks until a commit's jobs end and returns the
+failed step and the last 80 log lines ([docs/agents.md](docs/agents.md)).
 
 ## Security model
 
@@ -289,7 +349,7 @@ On Windows, run `tentmaker uninstall` in an Administrator PowerShell. If the bin
 | logs | journald, unit `tentmaker` | `/Library/Logs/Tentmaker/tentmaker.log` | `%ProgramData%\Tentmaker\logs\tentmaker.log` |
 | service | `tentmaker.service` | `/Library/LaunchDaemons/dev.tentmaker.daemon.plist` | Windows service `Tentmaker` |
 
-`tentmaker logs -f` follows the log on any OS. `tentmaker doctor` checks the service, sandbox, forge credentials, tailnet, disk, memory and config, and prints the fix for each problem.
+`tentmaker logs -f` follows the log on any OS. `tentmaker doctor` checks the service, sandbox, forge credentials, tailnet, disk, memory and config, and prints the fix for each problem. For each GitHub repo it also checks the first job: that GitHub lists a Tentmaker runner online for the repo, or that a job already ran on one.
 
 ## Requirements
 

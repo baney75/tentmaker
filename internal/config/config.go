@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"math"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -214,7 +215,30 @@ type Config struct {
 	StateDir  string           `toml:"state_dir" json:"state_dir"`
 	CacheDir  string           `toml:"cache_dir" json:"cache_dir"`
 	CacheMax  Size             `toml:"cache_max" json:"cache_max"`
+	// HistoryMax is how many ended jobs the run history keeps on this
+	// device (0 = DefaultHistoryMax).
+	HistoryMax int     `toml:"history_max" json:"history_max"`
+	Alerts     []Alert `toml:"alerts" json:"alerts"`
 }
+
+// DefaultHistoryMax is the run history size when history_max is 0.
+const DefaultHistoryMax = 2000
+
+// Alert is one webhook the device POSTs to when a job it ran ends.
+type Alert struct {
+	// URL is the webhook. A Slack or Discord webhook URL is itself a
+	// secret: keep it in the secret store and name it in URLSecret.
+	URL       string `toml:"url,omitempty" json:"url,omitempty"`
+	URLSecret string `toml:"url_secret,omitempty" json:"url_secret,omitempty"`
+	// On is "failure" (a job failed), "recovered" (a job passed after it
+	// failed) or "slow" (a job took min_duration or longer).
+	On          string   `toml:"on" json:"on"`
+	Repos       []string `toml:"repos,omitempty" json:"repos,omitempty"` // empty = every repo
+	MinDuration Duration `toml:"min_duration,omitempty" json:"min_duration,omitempty"`
+}
+
+// alertSecretRe is secrets.NamePattern; config can't import secrets.
+var alertSecretRe = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
 
 // Default returns the config a fresh install starts with. Memory defaults
 // scale with the machine: everyday is a quarter of RAM (at least 2 GiB, at
@@ -338,6 +362,42 @@ func (c Config) Validate() []string {
 	}
 	if c.Mesh.Port < 0 || c.Mesh.Port > 65535 {
 		p = append(p, "mesh.port is out of range")
+	}
+	if c.HistoryMax < 0 {
+		p = append(p, "history_max can't be negative")
+	}
+	for i, a := range c.Alerts {
+		p = append(p, a.problems(i)...)
+	}
+	return p
+}
+
+func (a Alert) problems(i int) []string {
+	var p []string
+	at := fmt.Sprintf("alerts[%d]", i)
+	switch {
+	case (a.URL == "") == (a.URLSecret == ""):
+		p = append(p, at+": set exactly one of url and url_secret")
+	case a.URLSecret != "" && !alertSecretRe.MatchString(a.URLSecret):
+		p = append(p, at+".url_secret is not a secret name (1 to 64 of a-z, 0-9, '.', '_' and '-')")
+	case a.URL != "":
+		// The URL is never quoted back: a webhook URL can carry its key.
+		u, err := url.Parse(a.URL)
+		if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+			p = append(p, at+".url must be an http or https URL")
+		}
+	}
+	switch a.On {
+	case "failure", "recovered":
+	case "slow":
+		if a.MinDuration <= 0 {
+			p = append(p, at+`: on = "slow" needs min_duration, like "20m"`)
+		}
+	default:
+		p = append(p, at+`.on must be "failure", "recovered" or "slow"`)
+	}
+	if a.MinDuration < 0 {
+		p = append(p, at+".min_duration can't be negative")
 	}
 	return p
 }

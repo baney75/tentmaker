@@ -32,11 +32,20 @@ tentmaker repo add OWNER/NAME [--forge github|forgejo|gitlab] [--mode runner|che
 tentmaker repo remove OWNER/NAME
 tentmaker connect github|forgejo|gitlab [--url URL] [--token-stdin]
 tentmaker devices add HOST [--channel stable|dev] [--memory S] [--boost-memory S] [--repo R]...
-tentmaker migrate [PATH] [--platform linux|macos|windows] [--write]
+tentmaker migrate [PATH] [--platform linux|macos|windows] [--write] [--all]
+tentmaker migrate --pr [PATH] [--platform linux|macos|windows] [--all]
 tentmaker pause [--for DURATION] [REASON...]
 tentmaker resume
 tentmaker doctor [--json]
-tentmaker logs [-f] [-n LINES]
+tentmaker logs [-f] [-n LINES]   The service's own log.
+tentmaker logs JOB-ID [--follow] [-n LINES]
+                                  One job's redacted log tail, from whichever device ran it.
+tentmaker runs [--repo R] [--sha SHA] [--failed] [-n 20] [--json]
+                                  The pool's run history, newest first, running jobs included.
+tentmaker rerun JOB-ID|RUN-URL    Rerun the run's failed jobs through the forge (needs root).
+tentmaker stats [--since 7d] [--repo R] [--json]
+                                  Queue wait and duration p50/p95, minutes, estimated saving.
+tentmaker alerts test             Send a test message to every [[alerts]] webhook (needs root).
 tentmaker update [--channel stable|dev] [--check]
 tentmaker rollback
 tentmaker uninstall [--purge] [--yes]
@@ -48,9 +57,41 @@ tentmaker check-run --out DIR     Run inside a sandbox: CheckBundle JSON on stdi
 ```
 
 Commands that change the device (setup, budget set, schedule add/remove, repo add/remove,
-connect, pause, resume, update, rollback, uninstall) need root or Administrator and exit 3
-with the exact command to rerun (`sudo tentmaker ...`, or "open PowerShell as
-Administrator"). status, pool, budget, repo list, doctor, logs, version and migrate do not.
+connect, pause, resume, update, rollback, uninstall, rerun, alerts test) need root or
+Administrator and exit 3 with the exact command to rerun (`sudo tentmaker ...`, or "open
+PowerShell as Administrator"). status, pool, budget, repo list, doctor, logs, runs, stats,
+version and migrate do not.
+
+## Run history: runs, logs, rerun, stats
+
+Every device keeps one record per job it ran in `<state>/runs` (the last `history_max`,
+default 2000) and a redacted log tail of up to 512 KiB per job. With the mesh on, `runs`,
+`logs JOB-ID`, `rerun` and `stats` ask every device in the pool and merge the answers; a device
+that doesn't answer is listed under `errors` (`not counted:` in text), never silently dropped.
+Without the service, `runs` and `logs` read this device's own history and say so.
+
+- `runs --json` prints `{"service", "records": [Record], "queued": [...], "errors": [...]}`. A
+  Record has `id` (the job id, the runner name, like `tm-box-1a2b3c`), `repo`, `workflow`,
+  `job`, `run_id`, `run_url`, `sha`, `device`, `platform`, `queued_at`, `started_at`,
+  `ended_at`, `conclusion` (`success`, `failure`, `cancelled`, `error`, `unknown`, `running`),
+  `failed_step`, `note`, `peak_memory_bytes`, `cpu_seconds`, `cache_bytes` and `has_log`.
+  `-n` is 1 to 5000.
+- `logs JOB-ID` prints the tail as it is; `-n` keeps the last lines; `--follow` (or `-f`)
+  polls every second until the job ends. `--json` prints `{"id", "device", "running",
+  "lines"}`. The tail is redacted: tokens, JIT configs, bearer and basic credentials and
+  URLs with passwords are replaced with `***` before the device stores or serves it. Any
+  local user but the CI user reads job logs, so an agent's MCP server needs no root.
+- `rerun` takes a job id or a run URL (`https://github.com/OWNER/NAME/actions/runs/ID`) and
+  asks the broker that serves the repo to rerun the run's failed jobs. The forge token stays
+  on the broker. Checks-mode jobs have no forge run and are refused with a fix.
+- `stats --json` prints `{"since", "until", "repos": [...], "total", "estimate"}`, each repo
+  with `jobs`, `failed`, `failure_rate`, `queue_wait_p50_s`, `queue_wait_p95_s`,
+  `duration_p50_s`, `duration_p95_s`, `minutes`, `billed_minutes` and
+  `estimated_saving_usd`. The saving is billed minutes (each job rounded up, as GitHub bills)
+  at GitHub-hosted per-minute rates, labeled as an estimate. `--since` takes `h` and `d`
+  windows up to 3650 days.
+- `alerts test` sends one test message through every alert and prints how each went; it exits
+  1 when any failed. Errors name the webhook's host only, never its URL.
 
 ## status
 
@@ -98,6 +139,10 @@ Flags (all optional; with `--yes` every missing value takes its default):
 --no-service             write config and install executors, don't install the service
 --macos-guests           macOS: pull the macOS VM image (about 80 GiB) even when free disk
                          doesn't cover it plus room for a job; it still has to fit
+--repo-here              add the GitHub repo of the current directory's `origin` as --repo,
+                         with no prompt; outside a checkout it is a usage error
+--pr                     after doctor passes, run `tentmaker migrate --pr` in the current
+                         checkout (github only)
 ```
 
 Steps, each reported as one line on a TTY and as an entry in `steps` with `--json`:
@@ -121,8 +166,45 @@ Steps, each reported as one line on a TTY and as an entry in `steps` with `--jso
    service and exits 0, and doctor reports the problem.
 5. Install and start the service (internal/service), wait up to 20 s for the control API.
 6. Run doctor and print its result plus the next step.
+7. With `--pr`, when every step and doctor passed (warnings are fine): `migrate --pr` in the
+   current checkout, reported as the step `pr` and as `pr` in `--json`. When doctor failed, no
+   pull request is opened and the step says to fix doctor, then run `tentmaker migrate --pr`.
+
+The one line that takes a checkout from nothing to a pull request:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/baney75/tentmaker/main/scripts/install.sh | sh -s -- --yes -- --repo-here --pr
+```
 
 Running setup again is safe: it keeps existing values unless a flag overrides them.
+
+## migrate
+
+`tentmaker migrate` reads the workflows under `.github/workflows` of PATH (default: the current
+directory) and prints how each GitHub-hosted `runs-on` would change; `--write` writes the files.
+A moved job keeps fork pull requests on the hosted runner:
+
+```yaml
+runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted","tentmaker","linux"]') }}
+```
+
+`--all` drops that expression and sends fork pull requests to the pool too, where they wait,
+since Tentmaker never runs a fork's job. Migrate leaves a job where it is, and says why, when it
+uses `services:` on macOS or Windows, `container:` on Windows, or a GPU or larger-runner label.
+
+`--pr` makes it a pull request. It needs no root; under sudo, git runs as `$SUDO_USER`.
+
+1. PATH must be a git checkout whose `origin` is on github.com, with a clean working tree.
+2. It builds the branch `tentmaker/migrate` from `origin/<default branch>`, rewrites the
+   workflows there, commits only those files, and pushes with `--force-with-lease`.
+3. It opens the pull request through the GitHub API, or updates the open one from that branch.
+   The token is `gh auth token` (as `$SUDO_USER` under sudo), else the service's stored GitHub
+   token through POST /v1/pr. It never runs `gh` to make the pull request.
+4. It puts the checkout back on the branch it was on.
+
+The body has a before and after table of every moved `runs-on`, the fork-safe expression, a note
+that the hosted runners still work as the fallback, and the jobs it left alone. `--json` prints
+`{ok, repo, branch, base, commit, files, changed, pr: {number, url, created}, token_source, note}`.
 
 ## Files
 
@@ -149,13 +231,18 @@ caller it can't name, and everyone but root and SYSTEM when the runner's ids can
 other local user reads GET /v1/status and /v1/pool. GET /v1/doctor makes the daemon call the
 forges, so it needs the token or an admin caller (root, SYSTEM or an elevated Administrator); a
 `tentmaker doctor` that can't use it runs doctor locally. Run as a user, that local doctor skips the
-sandbox checks, which read state only root can read, and says to run `sudo tentmaker doctor`. POST /v1/pause {reason, for_s},
-/v1/resume, /v1/reload need the token in `Authorization: Bearer`, read from
+sandbox checks, which read state only root can read, and says to run `sudo tentmaker doctor`. GET /v1/runs (the runs.Query
+fields as URL parameters: repo, sha, id, run_id, failed, since, limit) answers runs.Answer;
+GET /v1/runs/log?id=ID&max=BYTES answers runs.LogAnswer and is open to local users but the CI
+user. POST /v1/rerun {repo, run_id} and POST /v1/alerts/test need the token. POST /v1/pause {reason, for_s},
+/v1/resume, /v1/reload and /v1/pr need the token in `Authorization: Bearer`, read from
 `<state>/control.token` (32 random bytes hex, mode 0600 root, or SYSTEM+Administrators on
 Windows), created by the daemon at start. The client sends the token on GETs too when it can
 read it. The
 CLI writes config itself and then calls /v1/reload. If the daemon isn't running, read-only
 commands fall back to computing what they can locally and say "service not running".
+POST /v1/pr {repo, head, base, title, body} opens or updates a pull request with the device's
+stored GitHub token, for a repo this device serves, and returns {number, url, created}.
 
 The source archive relay listens apart, on 127.0.0.1:7435, and serves only GET
 /v1/relay/<id> (everything else is 404). CI jobs reach 7435. The caller check, not the fence, keeps them off
@@ -184,3 +271,5 @@ there.
 `tentmaker mcp` serves internal/mcp with a Controller backed by the same code as the CLI.
 Register it with: `claude mcp add tentmaker -- tentmaker mcp`. Mutating tools need the
 MCP server process to run as root/Administrator; otherwise they return an error saying so.
+The run history tools are `runs`, `logs`, `rerun` (mutating), `stats` and `wait_for_run`;
+docs/agents.md has their arguments and the agent loop.

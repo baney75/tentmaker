@@ -82,4 +82,34 @@ claude mcp add tentmaker -- tentmaker mcp
 | `install_on_device` | yes, on the other host | Install and set up Tentmaker on a tailnet host over Tailscale SSH. |
 | `update` | yes | Update to the newest release on a channel, with rollback. Passing `channel` also saves it for auto-updates (the CLI's `update --channel` does not; use `setup --yes --channel`). |
 
+| `runs` | no | The pool's job history, newest first: `repo`, `sha`, `failed`, `limit` (default 20, at most 500). |
+| `logs` | no | A job's redacted log tail: `job_id`, `lines` (default 200, at most 5000). |
+| `rerun` | yes, on the forge | Rerun a run's failed jobs: `target` is a job id or a run URL. The token stays on the broker. |
+| `stats` | no | p50 and p95 queue wait and duration, minutes and an estimated saving per repo: `since` (default `7d`), `repo`. |
+| `wait_for_run` | no | Block until every job for `repo` at `sha` (or the run at `run_url`) has ended, or `timeout_s` (default 600, 10 to 3600) passes. Returns each job's conclusion and, for failures, the failed step and the last 80 log lines. |
+
 Tools that change the device need the MCP server process to run as root or Administrator. Run as a normal user, they return an error saying so, and the read tools still work. For those changes, an agent can fall back to the CLI with `sudo`.
+
+## The agent loop
+
+An agent that pushes a fix can watch its own CI without a browser or a forge token:
+
+1. Push the commit.
+2. Call `wait_for_run` with `repo` and `sha` (7 or more characters). It waits until every
+   Tentmaker job for that commit has ended and nothing more has queued for 20 s, then returns
+   `conclusion` and one entry per job.
+3. On `success`, stop. On `failure`, each failed job carries `failed_step` and `log_tail`, the
+   last 80 lines of its redacted log, which is usually enough to see the error. For a GitHub
+   runner job the log is the job's own log from GitHub, with each step's output, which the
+   broker reads with its token once the job ends (the record says `log_source: "forge"`). If
+   the broker can't read it, the record falls back to the runner's trace log and says
+   `log_source: "runner-diag"`; that log names the failed step but holds no test output. For more, call
+   `logs` with the job's `id` and a bigger `lines`.
+4. Fix, push and go back to step 2. For a flaky failure with no code change, call `rerun` with
+   the job id instead (it needs the MCP server to run as root).
+5. `timed_out: true` means jobs were still running; call `wait_for_run` again. A `note` that
+   says no job was seen means Tentmaker never got the commit's jobs: check `runs-on` with
+   `migrate_workflows` and the device with `doctor`.
+
+The same loop works from a shell: `tentmaker runs --sha SHA --json`, `tentmaker logs JOB-ID`,
+`sudo tentmaker rerun JOB-ID`.
