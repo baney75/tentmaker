@@ -366,6 +366,13 @@ func Install(ctx context.Context, o Options) error {
 	if err := writeRoot(h, e.podmanConf(), []byte(podmanConfText), 0o644); err != nil {
 		return err
 	}
+	// The manager's environment also takes /etc/environment (systemd's
+	// environment.d generator), which on some hosts names another user's
+	// XDG_RUNTIME_DIR; podman's service then fails to start. A unit's own
+	// Environment= wins over the manager's.
+	if err := writeRoot(h, e.podmanServiceDropIn(), []byte(podmanServiceDropInText(e.runtimeDir(uid))), 0o644); err != nil {
+		return err
+	}
 	link := filepath.Join(e.root, ".config", "systemd", "user", "sockets.target.wants", "podman.socket")
 	if err := replaceSymlink(e.p.PodmanSocketUnit, link); err != nil {
 		return err
@@ -582,4 +589,15 @@ func rmIfExists(p string) error {
 		return err
 	}
 	return nil
+}
+
+// podmanServiceDropIn pins podman.service's runtime dir to the runner's.
+func (e *Executor) podmanServiceDropIn() string {
+	return filepath.Join(e.root, ".config", "systemd", "user", "podman.service.d", "50-tentmaker.conf")
+}
+
+func podmanServiceDropInText(runtimeDir string) string {
+	return "# Written by tentmaker setup. podman's service uses the runner's own\n" +
+		"# runtime dir, whatever the manager's environment says.\n" +
+		"[Service]\nEnvironment=XDG_RUNTIME_DIR=" + runtimeDir + "\n"
 }

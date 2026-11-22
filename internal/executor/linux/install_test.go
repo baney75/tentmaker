@@ -135,6 +135,9 @@ func TestInstall(t *testing.T) {
 	if !strings.Contains(read(filepath.Join(root, ".config", "containers", "containers.conf")), `cgroup_manager = "cgroupfs"`) {
 		t.Error("containers.conf does not pick the cgroupfs manager")
 	}
+	if got := read(filepath.Join(root, ".config", "systemd", "user", "podman.service.d", "50-tentmaker.conf")); !strings.Contains(got, "\nEnvironment=XDG_RUNTIME_DIR="+filepath.Join(v.dir, "run-user", "1234")+"\n") {
+		t.Errorf("podman.service drop-in does not pin the runner's runtime dir:\n%s", got)
+	}
 	if l, _ := os.Readlink(filepath.Join(root, ".config", "systemd", "user", "sockets.target.wants", "podman.socket")); l != "/usr/lib/systemd/user/podman.socket" {
 		t.Errorf("podman.socket link %q", l)
 	}

@@ -218,7 +218,9 @@ setup`), idempotent and safe to rerun.
   per job a fresh copy (`externals` a symlink and `bin/` hard links to the template, never
   chowned; top-level files and any file the CI user could write are copied), own HOME, a transient systemd unit in `tentmaker.slice` with `MemoryMax`
   = job memory, `CPUQuota` = job CPUs, Nice 10, idle IO; rootless podman socket for container
-  jobs with `DOCKER_HOST`; the slice's own `MemoryMax`/`CPUQuota` = the pool limit
+  jobs with `DOCKER_HOST` (its `podman.service` gets a root-owned drop-in that sets the runner's
+  own `XDG_RUNTIME_DIR`: the manager also takes `/etc/environment`, which on GitHub's runners
+  names uid 1001's, and podman's service then fails to start); the slice's own `MemoryMax`/`CPUQuota` = the pool limit
   (`SetPoolLimit`); `Reset` restarts the runner user's manager and wipes containers. Platforms:
   `linux/<arch>`.
 - **macos-tart** (port of `TartLauncher`): `tart clone` a digest-pinned image per job, `tart set
