@@ -118,7 +118,9 @@ to its broker at once: its runner registration and credentials are deleted from 
 its relay and Actions cache grant are revoked. The kept sandbox still counts against the budget
 (its slot and memory) until the grace ends, `tentmaker debug JOB-ID --release` ends it, or a
 guard evicts it. While a repo's job is kept on a device, that device takes no other job of the
-repo. `tentmaker status` lists the kept sandboxes.
+repo. `tentmaker status` lists the kept sandboxes. Other repos' jobs on the device run as the
+same user and can read the kept workspace until it is cleaned up, so don't keep a repo whose
+workflow writes secrets to disk on a device that runs other repos' jobs.
 
 ```toml
 [[repos]]

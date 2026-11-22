@@ -1044,7 +1044,9 @@ default, at most 1h. Then `tentmaker debug JOB-ID` opens a shell in it and the M
     runner is deleted at the forge, so the runner credentials and the JIT config can't be
     reused. GitHub ends a job's `GITHUB_TOKEN` when the job completes, so a token the job left
     in `.git/config` is dead. Secrets the workflow itself wrote into the workspace stay there
-    for the grace; only the device owner can read them, and root could read the folder anyway.
+    for the grace, and other repos' jobs on the device run as the same runner uid, so they can
+    read the kept folder until it is cleaned up. Don't set `keep_failed` on a repo whose
+    workflow writes secrets to disk if the device runs other repos' jobs.
   - What leaks to logs. The command text is never logged, not by the control server, the worker
     nor the executor (it travels on stdin). The output is redacted with `runs.Redact`, capped,
     returned to the caller and never logged; the logs say only the job id and the exit code.
