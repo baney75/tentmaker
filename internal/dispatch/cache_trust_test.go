@@ -1,6 +1,7 @@
 package dispatch
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -122,7 +123,8 @@ func TestMixedOffersRunCold(t *testing.T) {
 
 // While a device holds a repo's cache, the broker offers it only that
 // repo's jobs, marked Drain once another repo waits; the other repo gets in
-// as soon as the cached job ends.
+// once the device is empty and reset, since an executor may keep the
+// repo's data reachable until then.
 func TestBrokerKeepsOtherReposOffACachedDevice(t *testing.T) {
 	r := newRig(t, checksRepo(repoSite), checksRepo(repoApp))
 	w := r.addWorker("alpha", 8)
@@ -163,8 +165,87 @@ func TestBrokerKeepsOtherReposOffACachedDevice(t *testing.T) {
 	w.ex.SetResult(first[0], core.CheckResult{State: "success", Description: "ok"})
 	w.ex.Exit(first[0])
 	r.run(8*time.Second, time.Second)
+	if n := len(started(w.ex)); n != 2 {
+		t.Fatalf("starts = %d, want none while site's job runs on a device that held its cache", n)
+	}
+	for _, n := range names[1:] {
+		w.ex.SetResult(n, core.CheckResult{State: "success", Description: "ok"})
+		w.ex.Exit(n)
+	}
+	r.run(70*time.Second, 5*time.Second) // resets are a minute apart
 	if n := len(started(w.ex)); n != 3 {
-		t.Fatalf("starts = %d, want app's job once the cache is free", n)
+		t.Fatalf("starts = %d, want app's job once the device is reset\n%s", n, r.logs.String())
+	}
+}
+
+// After a cached job ends, the device stays held for its repo until a
+// reset: another repo's job, and a drained job of the same repo, are
+// declined, and the reset frees it.
+func TestCacheHoldLastsUntilReset(t *testing.T) {
+	ex := fakeexec.New("fake", 0, linuxX64)
+	ex.SetCachesRepos(true)
+	e := &execInfo{ex: ex, name: "fake"}
+	app := core.CacheRepo{Forge: "github", Repo: repoApp}
+	w := &Worker{}
+	w.st.Held = &app
+	w.ranLocked(trustKey(app))
+	if got := w.cachedRepoLocked(); got == nil || got.Repo != repoApp {
+		t.Fatalf("OnlyRepo %+v with no job running, want %s until the reset", got, repoApp)
+	}
+	for _, tc := range []struct {
+		name      string
+		jobs      []*jobRec
+		off       core.WorkOffer
+		cache, ok bool
+	}{
+		{"another repo", nil, cacheOffer(repoSite, true, false), false, false},
+		{"another repo, untrusted", nil, cacheOffer(repoSite, false, false), false, false},
+		{"its own repo", nil, cacheOffer(repoApp, true, false), true, true},
+		{"its own repo, drained", nil, cacheOffer(repoApp, true, true), false, true},
+		{"its own repo, drained beside its cached job", []*jobRec{heldBy(repoApp)}, cacheOffer(repoApp, true, true), false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w.st.Jobs = tc.jobs
+			c, ok := w.cacheDecisionLocked(e, tc.off)
+			if !c.IsZero() != tc.cache || ok != tc.ok {
+				t.Fatalf("cached %v ok %v, want %v %v", !c.IsZero(), ok, tc.cache, tc.ok)
+			}
+		})
+	}
+}
+
+// Starting a cached job holds the device; a successful reset frees it, a
+// failed one doesn't.
+func TestResetFreesTheCacheHold(t *testing.T) {
+	r := newRig(t, checksRepo(repoApp))
+	w := r.addWorker("alpha", 8)
+	w.ex.SetCachesRepos(true)
+	r.forge.SetFile(repoApp, sha1, ciWorkflow, []byte("test\n"))
+	r.forge.SetCommits(repoApp, []core.Commit{{SHA: sha1, Ref: "main", Author: "baney75"}})
+	r.tick()
+	first := started(w.ex)
+	if len(first) != 1 {
+		t.Fatalf("starts = %v", first)
+	}
+	held := func() *core.CacheRepo {
+		w.w.mu.Lock()
+		defer w.w.mu.Unlock()
+		return w.w.st.Held
+	}
+	if h := held(); h == nil || h.Repo != repoApp {
+		t.Fatalf("held %+v after a cached start", h)
+	}
+	w.ex.SetResetErr(errors.New("boom"))
+	w.ex.SetResult(first[0], core.CheckResult{State: "success", Description: "ok"})
+	w.ex.Exit(first[0])
+	r.run(3*time.Second, time.Second)
+	if h := held(); h == nil {
+		t.Fatal("a failed reset freed the hold")
+	}
+	w.ex.SetResetErr(nil)
+	r.run(2*time.Minute, 10*time.Second)
+	if h := held(); h != nil {
+		t.Fatalf("held %+v after a reset", h)
 	}
 }
 
@@ -219,5 +300,41 @@ func TestRunnerCacheKeepsOtherReposWaiting(t *testing.T) {
 	}
 	if strings.Contains(r.logs.String(), "a job holding another repo") {
 		t.Fatal("the broker offered a conflicting runner instead of holding it back")
+	}
+}
+
+// Once no job holds the cache, a device still held for its repo until a
+// reset takes nothing while another repo waits, not even its own repo's
+// next job, so it empties and resets instead of keeping the other repo out.
+func TestIdleHoldEmptiesTheDeviceForAWaitingRepo(t *testing.T) {
+	r := newRig(t, checksRepo(repoSite), checksRepo(repoApp))
+	w := r.addWorker("alpha", 8)
+	w.ex.SetCachesRepos(true)
+	r.forge.SetFile(repoSite, sha1, ciWorkflow, []byte("test\n"))
+	r.forge.SetCommits(repoSite, []core.Commit{{SHA: sha1, Ref: "main", Author: "baney75"}})
+	r.tick()
+	first := started(w.ex)
+	if len(first) != 1 {
+		t.Fatalf("starts = %v", first)
+	}
+	w.ex.SetResult(first[0], core.CheckResult{State: "success", Description: "ok"})
+	w.ex.Exit(first[0])
+	r.forge.SetFile(repoApp, sha1, ciWorkflow, []byte("test\n"))
+	r.forge.SetCommits(repoApp, []core.Commit{{SHA: sha1, Ref: "main", Author: "baney75"}})
+	r.forge.SetFile(repoSite, sha2, ciWorkflow, []byte("test\n"))
+	r.forge.SetCommits(repoSite, []core.Commit{{SHA: sha2, Ref: "main", Author: "baney75"}, {SHA: sha1, Ref: "main", Author: "baney75"}})
+	r.run(8*time.Second, time.Second)
+	if names := started(w.ex); len(names) != 1 {
+		t.Fatalf("starts = %v, want none before the reset", names)
+	}
+	r.run(70*time.Second, 5*time.Second) // resets are a minute apart
+	app := false
+	for _, n := range started(w.ex) {
+		if spec, _ := w.ex.Spec(n); spec.Grant.Repo == repoApp {
+			app = true
+		}
+	}
+	if !app {
+		t.Fatalf("app's job did not start after the reset: %v", started(w.ex))
 	}
 }

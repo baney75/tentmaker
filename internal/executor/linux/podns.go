@@ -49,8 +49,11 @@ func (e *Executor) managerDropIn(uid int) string {
 
 // startPodman stops the runner's user manager and every podman process,
 // makes podman's network namespace afresh, and starts the user manager and
-// then PodnsUnit in it. Install and Reset run it before any podman command.
-func (e *Executor) startPodman(ctx context.Context, uid, gid int) error {
+// then PodnsUnit in it. Install and Reset run it before any podman command,
+// with store "". A bind (store.go) runs it with store, the host path of a
+// repo's container store, which both mount namespaces then show at
+// storeMount() and podman uses as its graphroot.
+func (e *Executor) startPodman(ctx context.Context, uid, gid int, store string) error {
 	if err := e.netnsTools(); err != nil {
 		return err
 	}
@@ -65,6 +68,10 @@ func (e *Executor) startPodman(ctx context.Context, uid, gid int) error {
 		return err
 	}
 	e.stopPodnet(ctx)
+	// No podman process runs now.
+	if err := e.setStore(uid, store); err != nil {
+		return err
+	}
 	ns, err := e.startNetUnits(ctx, PodnetUnit, PodnetUplinkUnit, uid, gid)
 	if err != nil {
 		e.stopPodnet(context.WithoutCancel(ctx))
@@ -77,6 +84,9 @@ func (e *Executor) startPodman(ctx context.Context, uid, gid int) error {
 	text := "# Written by tentmaker. The CI user's manager, podman.service and its\n" +
 		"# containers run in podman's network namespace, not the host's.\n" +
 		"[Service]\nNetworkNamespacePath=" + ns + "\n"
+	for _, p := range e.storeBind(store) {
+		text += p + "\n"
+	}
 	if err := writeRoot(e.h, drop, []byte(text), 0o644); err != nil {
 		return err
 	}
@@ -86,7 +96,7 @@ func (e *Executor) startPodman(ctx context.Context, uid, gid int) error {
 	if _, err := e.h.Run(ctx, Cmd{Path: "systemctl", Args: []string{"start", "user@" + u + ".service"}, Timeout: 2 * time.Minute}); err != nil {
 		return err
 	}
-	return e.startPodns(ctx, uid, gid, ns)
+	return e.startPodns(ctx, uid, gid, ns, store)
 }
 
 // stopPodnet stops podman's network namespace and its uplink.
@@ -139,13 +149,13 @@ func (e *Executor) jobMounts(uid int, home string) []string {
 // podnsArgs is the systemd-run argv for PodnsUnit, in the network namespace
 // at netns. It has no NoNewPrivileges: podman needs the setuid newuidmap to
 // map the subordinate ids. It runs only podman, never job code.
-func (e *Executor) podnsArgs(uid, gid int, netns string) []string {
+func (e *Executor) podnsArgs(uid, gid int, netns, store string) []string {
 	args := []string{"--quiet", "--no-ask-password",
 		"--unit=" + PodnsUnit, "--slice=" + Slice,
 		"--uid=" + strconv.Itoa(uid), "--gid=" + strconv.Itoa(gid),
 		"-p", "Type=exec",
 		"-p", "NetworkNamespacePath=" + netns}
-	for _, p := range e.jobMounts(uid, e.root) {
+	for _, p := range append(e.jobMounts(uid, e.root), e.storeBind(store)...) {
 		args = append(args, "-p", p)
 	}
 	for _, kv := range []string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin", "LANG=C.UTF-8", "HOME=" + e.root,
@@ -161,9 +171,9 @@ func (e *Executor) stopPodns(ctx context.Context) { e.stopUnits(ctx, PodnsUnit) 
 // startPodns starts PodnsUnit in the network namespace at netns and waits
 // until its pause process has left the host's user namespace. Until then, a
 // podman command would make its own pause process outside the unit.
-func (e *Executor) startPodns(ctx context.Context, uid, gid int, netns string) error {
+func (e *Executor) startPodns(ctx context.Context, uid, gid int, netns, store string) error {
 	e.stopPodns(ctx)
-	if _, err := e.h.Run(ctx, Cmd{Path: "systemd-run", Args: e.podnsArgs(uid, gid, netns), Timeout: time.Minute}); err != nil {
+	if _, err := e.h.Run(ctx, Cmd{Path: "systemd-run", Args: e.podnsArgs(uid, gid, netns, store), Timeout: time.Minute}); err != nil {
 		return fmt.Errorf("start %s: %v", PodnsUnit, err)
 	}
 	host, err := os.Readlink(filepath.Join(e.p.Proc, "self", "ns", "user"))
