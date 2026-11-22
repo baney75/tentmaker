@@ -35,6 +35,7 @@ type nodeSpec struct {
 	broker *fakeBroker
 	user   int64 // 0 = alice (1001)
 	online *bool
+	runs   RunsSource
 }
 
 // member is one device in a test cluster: a Node behind a loopback server
@@ -109,6 +110,7 @@ func newCluster(t *testing.T, specs ...nodeSpec) []*member {
 		if m.spec.broker != nil {
 			opts.Broker = m.spec.broker
 		}
+		opts.Runs = m.spec.runs
 		m.node = New(opts)
 		m.node.now = clk.Now
 		m.node.callTimeout = 2 * time.Second

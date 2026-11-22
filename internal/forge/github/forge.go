@@ -41,6 +41,8 @@ type apiJob struct {
 	CreatedAt  string   `json:"created_at"`
 	RunnerID   int64    `json:"runner_id"`
 	RunnerName string   `json:"runner_name"`
+	HeadSHA    string   `json:"head_sha"`
+	HTMLURL    string   `json:"html_url"`
 }
 
 type apiRepo struct {
@@ -94,7 +96,16 @@ func toJob(repo string, run apiRun, j apiJob) core.Job {
 		CreatedAt:  created,
 		RunnerID:   j.RunnerID,
 		RunnerName: j.RunnerName,
+		HeadSHA:    firstNonEmpty(j.HeadSHA, run.HeadSHA),
+		HTMLURL:    j.HTMLURL,
 	}
+}
+
+func firstNonEmpty(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
 }
 
 // listRuns lists every run of repo with status, all pages, conditionally.
@@ -436,6 +447,18 @@ func (c *Client) DeleteRunner(ctx context.Context, repo string, runnerID int64) 
 	p := fmt.Sprintf("%s/actions/runners/%d", rp, runnerID)
 	_, err = c.send(ctx, http.MethodDelete, p, nil, http.StatusNoContent, http.StatusNotFound)
 	c.forgetExact(p)
+	return err
+}
+
+// RerunFailed reruns the failed and cancelled jobs of a finished run
+// (core.Rerunner). GitHub answers 201; a run still in progress is a 403
+// with its reason.
+func (c *Client) RerunFailed(ctx context.Context, repo string, runID int64) error {
+	rp, err := repoPath(repo)
+	if err != nil {
+		return err
+	}
+	_, err = c.send(ctx, http.MethodPost, fmt.Sprintf("%s/actions/runs/%d/rerun-failed-jobs", rp, runID), nil, http.StatusCreated)
 	return err
 }
 

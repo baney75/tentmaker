@@ -59,10 +59,59 @@ type Executor struct {
 	poolCalls int
 
 	cachesRepos bool
+
+	logs  map[string][]byte
+	usage map[string]core.Usage
 }
 
 var _ core.Executor = (*Executor)(nil)
 var _ core.RepoCacher = (*Executor)(nil)
+var _ core.JobInspector = (*Executor)(nil)
+
+// SetLog sets what JobLog returns for name.
+func (e *Executor) SetLog(name string, log []byte) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.logs == nil {
+		e.logs = map[string][]byte{}
+	}
+	e.logs[name] = append([]byte(nil), log...)
+}
+
+// SetUsage sets what JobUsage returns for name.
+func (e *Executor) SetUsage(name string, u core.Usage) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.usage == nil {
+		e.usage = map[string]core.Usage{}
+	}
+	e.usage[name] = u
+}
+
+// JobLog implements core.JobInspector: the last max bytes SetLog gave, and
+// ErrNotFound for a runner the fake doesn't know.
+func (e *Executor) JobLog(ctx context.Context, name string, max int64) (core.JobLog, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	l, ok := e.logs[name]
+	if !ok {
+		if _, known := e.runs[name]; !known {
+			return core.JobLog{}, core.ErrNotFound
+		}
+	}
+	size := int64(len(l))
+	if size > max {
+		l = l[size-max:]
+	}
+	return core.JobLog{Data: append([]byte(nil), l...), Size: size}, nil
+}
+
+// JobUsage implements core.JobInspector.
+func (e *Executor) JobUsage(ctx context.Context, name string) (core.Usage, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.usage[name], nil
+}
 
 // SetCachesRepos says whether the executor keeps repo caches (default no).
 func (e *Executor) SetCachesRepos(on bool) {

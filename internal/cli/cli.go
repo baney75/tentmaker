@@ -259,7 +259,11 @@ func init() {
 		"pause":     {"tentmaker pause [--for DURATION] [REASON...] [--json]", (*app).cmdPause},
 		"resume":    {"tentmaker resume [--json]", (*app).cmdResume},
 		"doctor":    {"tentmaker doctor [--json]", (*app).cmdDoctor},
-		"logs":      {"tentmaker logs [-f] [-n LINES] [--json]", (*app).cmdLogs},
+		"logs":      {"tentmaker logs [JOB-ID] [-f|--follow] [-n LINES] [--json]\n\nWith no JOB-ID, the service's own log. With one, that CI job's log tail (redacted); --follow streams it until the job ends.", (*app).cmdLogs},
+		"runs":      {usageRuns, (*app).cmdRuns},
+		"rerun":     {usageRerun, (*app).cmdRerun},
+		"stats":     {usageStats, (*app).cmdStats},
+		"alerts":    {usageAlerts, (*app).cmdAlerts},
 		"update":    {"tentmaker update [--channel stable|dev] [--check] [--force] [--json]", (*app).cmdUpdate},
 		"rollback":  {"tentmaker rollback [--json]", (*app).cmdRollback},
 		"uninstall": {"tentmaker uninstall [--purge] [--yes] [--json]", (*app).cmdUninstall},
@@ -287,7 +291,12 @@ Usage:
   tentmaker pause [--for D] [REASON...]
   tentmaker resume
   tentmaker doctor                find problems, each with its fix
-  tentmaker logs [-f] [-n LINES]
+  tentmaker logs [-f] [-n LINES]  the service's log
+  tentmaker runs [--failed]       recent CI jobs across the pool
+  tentmaker logs JOB-ID [-f]      one job's log tail
+  tentmaker rerun JOB-ID|RUN-URL  rerun a run's failed jobs
+  tentmaker stats [--since 7d]    jobs, failure rate, waits, est. savings
+  tentmaker alerts test           send a test alert to every webhook
   tentmaker update [--check]      update to the newest release
   tentmaker rollback              go back to the previous version
   tentmaker uninstall [--purge]

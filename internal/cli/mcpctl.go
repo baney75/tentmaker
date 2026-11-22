@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
+	"time"
 
 	"github.com/baney75/tentmaker/internal/mcp"
 	"github.com/baney75/tentmaker/internal/mesh"
+	"github.com/baney75/tentmaker/internal/runs"
 )
 
 // controller is the MCP Controller. Every tool calls the same functions
@@ -127,6 +130,123 @@ func (c controller) Update(ctx context.Context, channel string) (any, error) {
 				v.Note += "; switched to the " + channel + " channel (" + c.a.reload() + ")"
 			}
 		}
+	}
+	return v, nil
+}
+
+func (c controller) Runs(ctx context.Context, repo, sha string, failed bool, limit int) (any, error) {
+	v, err := c.a.runsData(ctx, runs.Query{Repo: repo, SHA: sha, Failed: failed, Limit: limit})
+	return v, mcpErr(err)
+}
+
+func (c controller) Logs(ctx context.Context, jobID string, lines int) (any, error) {
+	l, err := c.a.runLog(ctx, jobID, runs.LogTailBytes)
+	if err != nil {
+		return nil, mcpErr(err)
+	}
+	return jobLogView{ID: l.ID, Device: l.Device, Running: l.Running, Lines: nonNil(runs.TailLines(string(l.Data), lines))}, nil
+}
+
+func (c controller) Rerun(ctx context.Context, target string) (any, error) {
+	if err := c.mutating(); err != nil {
+		return nil, err
+	}
+	v, err := c.a.rerun(ctx, target)
+	return v, mcpErr(err)
+}
+
+func (c controller) Stats(ctx context.Context, since, repo string) (any, error) {
+	v, err := c.a.statsData(ctx, since, repo)
+	return v, mcpErr(err)
+}
+
+// waitLogLines is how much of a failed job's log wait_for_run returns.
+const waitLogLines = 80
+
+// waitView is the answer of wait_for_run.
+type waitView struct {
+	Done       bool      `json:"done"`
+	TimedOut   bool      `json:"timed_out"`
+	WaitedS    float64   `json:"waited_s"`
+	Conclusion string    `json:"conclusion,omitempty"`
+	Jobs       []waitJob `json:"jobs"`
+	Queued     []string  `json:"queued,omitempty"`
+	Note       string    `json:"note,omitempty"`
+}
+
+type waitJob struct {
+	ID         string   `json:"id"`
+	Repo       string   `json:"repo"`
+	Workflow   string   `json:"workflow,omitempty"`
+	Job        string   `json:"job"`
+	Device     string   `json:"device"`
+	Conclusion string   `json:"conclusion"`
+	FailedStep string   `json:"failed_step,omitempty"`
+	RunURL     string   `json:"run_url,omitempty"`
+	DurationS  float64  `json:"duration_s"`
+	LogTail    []string `json:"log_tail,omitempty"`
+}
+
+// waitPoll is how often wait_for_run looks at the pool.
+var waitPoll = 5 * time.Second
+
+func (c controller) WaitForRun(ctx context.Context, repo, sha, runURL string, timeout time.Duration) (any, error) {
+	q := runs.Query{Repo: repo, SHA: sha, Limit: runs.MaxLimit}
+	if runURL != "" {
+		r, id, ok := runs.ParseRunURL(runURL)
+		if !ok {
+			return nil, fmt.Errorf("%q is not a run URL like https://github.com/owner/repo/actions/runs/123", runURL)
+		}
+		q = runs.Query{Repo: r, RunID: id, Limit: runs.MaxLimit}
+	}
+	a := c.a
+	look := func(ctx context.Context) (runs.Snapshot, error) {
+		v, err := a.runsData(ctx, q)
+		if err != nil {
+			return runs.Snapshot{}, err
+		}
+		return runs.Snapshot{Records: v.Records, Queued: v.Queued}, nil
+	}
+	res, err := runs.Wait(ctx, look, runs.WaitOptions{
+		Timeout: timeout,
+		Poll:    waitPoll,
+		Now:     a.env.Now,
+		Sleep: func(ctx context.Context, d time.Duration) error {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			a.env.Sleep(d)
+			return ctx.Err()
+		},
+	})
+	if err != nil {
+		return nil, mcpErr(err)
+	}
+	now := a.env.Now()
+	v := waitView{Done: res.Done, TimedOut: res.TimedOut, WaitedS: res.Waited, Conclusion: res.Conclusion, Queued: res.Queued, Jobs: []waitJob{}}
+	for _, r := range res.Records {
+		j := waitJob{ID: r.ID, Repo: r.Repo, Workflow: r.Workflow, Job: r.Job, Device: r.Device, Conclusion: r.Conclusion,
+			FailedStep: r.FailedStep, RunURL: r.RunURL, DurationS: float64(r.Duration(now).Round(time.Second)) / float64(time.Second)}
+		if r.Failed() {
+			if l, lerr := a.runLog(ctx, r.ID, runs.LogTailBytes); lerr == nil {
+				j.LogTail = runs.TailLines(string(l.Data), waitLogLines)
+			}
+		}
+		v.Jobs = append(v.Jobs, j)
+	}
+	switch {
+	case len(v.Jobs) == 0 && len(v.Queued) == 0:
+		v.Note = "no Tentmaker job was seen for this commit; the forge may have run it elsewhere, or not queued it yet"
+	case v.TimedOut:
+		v.Note = "still running when the timeout passed; call wait_for_run again to keep waiting"
+	case v.Conclusion == runs.Failure:
+		var names []string
+		for _, j := range v.Jobs {
+			if j.Conclusion == runs.Failure || j.Conclusion == runs.Error {
+				names = append(names, j.ID)
+			}
+		}
+		v.Note = "failed: " + strings.Join(names, ", ") + "; read more with the logs tool, fix, push, and wait again, or rerun"
 	}
 	return v, nil
 }

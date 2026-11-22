@@ -27,6 +27,7 @@ const (
 	MRunningJobs    = "RunningJobs"
 	MDeleteRunner   = "DeleteRunner"
 	MCancelRun      = "CancelRun"
+	MRerunFailed    = "RerunFailed"
 	MPendingCommits = "PendingCommits"
 	MFileAt         = "FileAt"
 	MListDir        = "ListDir"
@@ -75,6 +76,7 @@ type Forge struct {
 	calls      map[string]int
 	repoCalls  map[errKey]int
 	cancelled  map[string][]int64
+	reruns     map[string][]int64
 	deleted    map[string][]int64
 	grants     []core.Grant
 
@@ -111,6 +113,7 @@ func New(name string, now func() time.Time) *Forge {
 		calls:      map[string]int{},
 		repoCalls:  map[errKey]int{},
 		cancelled:  map[string][]int64{},
+		reruns:     map[string][]int64{},
 		deleted:    map[string][]int64{},
 		commits:    map[string][]core.Commit{},
 		branches:   map[string]map[string]string{},
@@ -374,6 +377,24 @@ func (f *Forge) Cancelled(repo string) []int64 {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]int64(nil), f.cancelled[repo]...)
+}
+
+// Reruns lists the run IDs whose failed jobs were rerun in repo.
+func (f *Forge) Reruns(repo string) []int64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]int64(nil), f.reruns[repo]...)
+}
+
+// RerunFailed records a rerun of a run's failed jobs (core.Rerunner).
+func (f *Forge) RerunFailed(ctx context.Context, repo string, runID int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.call(MRerunFailed, repo); err != nil {
+		return err
+	}
+	f.reruns[repo] = append(f.reruns[repo], runID)
+	return nil
 }
 
 // Deleted lists the runner IDs deleted in repo.

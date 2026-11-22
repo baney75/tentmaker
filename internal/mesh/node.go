@@ -47,6 +47,8 @@ type Options struct {
 	// implements core.ArchiveSource, /v1/archive/<ref> streams from it.
 	Broker core.WorkSource
 	Status func() any // this device's status for pool views
+	// Runs is this device's run history; nil serves an empty one.
+	Runs RunsSource
 
 	// Version and Platforms are reported by /v1/hello.
 	Version   string
@@ -345,6 +347,12 @@ func (n *Node) handler() http.Handler {
 			n.route(w, r, http.MethodPost, n.handleClaim)
 		case "/v1/release":
 			n.route(w, r, http.MethodPost, n.handleRelease)
+		case "/v1/runs":
+			n.route(w, r, http.MethodGet, n.handleRuns)
+		case "/v1/runs/log":
+			n.route(w, r, http.MethodGet, n.handleRunLog)
+		case "/v1/rerun":
+			n.route(w, r, http.MethodPost, n.handleRerun)
 		default:
 			if ref, ok := strings.CutPrefix(r.URL.Path, "/v1/archive/"); ok {
 				n.route(w, r, http.MethodGet, func(w http.ResponseWriter, r *http.Request) { n.handleArchive(w, r, ref) })

@@ -8,6 +8,9 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
+
+	"github.com/baney75/tentmaker/internal/runs"
 )
 
 // prop is one tool argument.
@@ -99,6 +102,66 @@ func nonEmpty(v any) error {
 		return fmt.Errorf("must not be empty")
 	}
 	return nil
+}
+
+func jobID(v any) error {
+	if !runs.ValidID(v.(string)) {
+		return fmt.Errorf("%q is not a job id; the runs tool lists them, like tm-laptop-1a2b3c", v)
+	}
+	return nil
+}
+
+func optRepo(v any) error {
+	if v.(string) == "" {
+		return nil
+	}
+	return repoName(v)
+}
+
+var shaRe = regexp.MustCompile(`^[0-9a-fA-F]{7,64}$`)
+
+func commitSHA(v any) error {
+	if s := v.(string); s != "" && !shaRe.MatchString(s) {
+		return fmt.Errorf("%q is not a commit sha; use 7 to 40 hex characters", s)
+	}
+	return nil
+}
+
+func runURL(v any) error {
+	if s := v.(string); s != "" {
+		if _, _, ok := runs.ParseRunURL(s); !ok {
+			return fmt.Errorf("%q is not a run URL like https://github.com/owner/name/actions/runs/123", s)
+		}
+	}
+	return nil
+}
+
+func jobOrRun(v any) error {
+	s := v.(string)
+	if runs.ValidID(s) {
+		return nil
+	}
+	if _, _, ok := runs.ParseRunURL(s); ok {
+		return nil
+	}
+	return fmt.Errorf("%q is neither a job id (like tm-laptop-1a2b3c) nor a run URL", s)
+}
+
+func window(v any) error {
+	if _, ok := runs.ParseSince(v.(string)); !ok {
+		return fmt.Errorf("%q is not a window; use 24h, 7d or 30d", v)
+	}
+	return nil
+}
+
+func between(lo, hi float64) func(any) error {
+	return func(v any) error {
+		f := v.(float64)
+		if f != math.Trunc(f) || f < lo || f > hi {
+			return fmt.Errorf("must be a whole number from %g to %g", lo, hi)
+		}
+		return nil
+	}
 }
 
 var memoryHelp = `Memory as a number with a unit, like "4GiB" or "512MiB".`
@@ -254,6 +317,91 @@ var tools = []tool{
 		Destructive: true, Idempotent: true, OpenWorld: true,
 		run: func(ctx context.Context, c Controller, a args) (any, error) {
 			return c.Update(ctx, a.str("channel"))
+		},
+	},
+	{
+		Name:  "runs",
+		Title: "Recent CI jobs",
+		Description: "List recent Tentmaker CI jobs across the pool, newest first, running jobs on top: conclusion " +
+			"(success, failure, cancelled, error, unknown or running), repo, workflow and job, device, queue wait, " +
+			"duration, peak memory and CPU seconds (Linux), the failed step when known, the run URL and the job id " +
+			"that logs and rerun take. Read-only. Filter by repo, commit or failed only.",
+		Props: []prop{
+			{Name: "repo", Type: "string", Description: "Only this repository, as owner/name.", Check: optRepo},
+			{Name: "sha", Type: "string", Description: "Only this commit: the full sha or its first 7 or more characters.", Check: commitSHA},
+			{Name: "failed", Type: "boolean", Default: false, Description: "Only failed or errored jobs."},
+			{Name: "limit", Type: "number", Default: float64(20), Description: "How many jobs, 1 to 500.", Check: between(1, 500)},
+		},
+		ReadOnly: true, Idempotent: true, OpenWorld: true,
+		run: func(ctx context.Context, c Controller, a args) (any, error) {
+			return c.Runs(ctx, a.str("repo"), a.str("sha"), a.flag("failed"), int(a.num("limit")))
+		},
+	},
+	{
+		Name:  "logs",
+		Title: "A CI job's log",
+		Description: "Return the last lines of one CI job's log, from whichever pool device ran it: the runner's own " +
+			"log for runner-mode jobs, the step output for checks-mode jobs. Tokens are masked. A running job returns " +
+			"what it has written so far, with running true; call again for more. Read-only.",
+		Props: []prop{
+			{Name: "job_id", Type: "string", Required: true, Description: "The job id from runs or wait_for_run.", Check: jobID},
+			{Name: "lines", Type: "number", Default: float64(200), Description: "How many lines from the end, 1 to 5000.", Check: between(1, 5000)},
+		},
+		ReadOnly: true, Idempotent: true, OpenWorld: true,
+		run: func(ctx context.Context, c Controller, a args) (any, error) {
+			return c.Logs(ctx, a.str("job_id"), int(a.num("lines")))
+		},
+	},
+	{
+		Name:  "rerun",
+		Title: "Rerun failed jobs",
+		Description: "Ask the forge to rerun the failed jobs of a GitHub Actions run, by a job id from runs or by the " +
+			"run's URL. The broker that holds the forge token does it; the token never leaves that device. Checks-mode " +
+			"jobs have no forge run and are refused: push again instead. Needs the control token (root).",
+		Props: []prop{
+			{Name: "target", Type: "string", Required: true, Description: "A job id (tm-...) or a run URL (https://github.com/owner/name/actions/runs/N).", Check: jobOrRun},
+		},
+		OpenWorld: true,
+		run: func(ctx context.Context, c Controller, a args) (any, error) {
+			return c.Rerun(ctx, a.str("target"))
+		},
+	},
+	{
+		Name:  "stats",
+		Title: "CI statistics",
+		Description: "Sum the pool's ended jobs over a window, per repo: jobs, failure rate, p50 and p95 queue wait " +
+			"and duration, minutes served, and an estimated dollar saving against GitHub-hosted runners at list price " +
+			"(an estimate, labeled so). Read-only.",
+		Props: []prop{
+			{Name: "since", Type: "string", Default: "7d", Description: "Window back from now, like 24h, 7d or 30d.", Check: window},
+			{Name: "repo", Type: "string", Description: "Only this repository, as owner/name.", Check: optRepo},
+		},
+		ReadOnly: true, Idempotent: true, OpenWorld: true,
+		run: func(ctx context.Context, c Controller, a args) (any, error) {
+			return c.Stats(ctx, a.str("since"), a.str("repo"))
+		},
+	},
+	{
+		Name:  "wait_for_run",
+		Title: "Wait for CI to finish",
+		Description: "Block until every Tentmaker job for a commit (repo and sha) or for one run (run_url) has ended " +
+			"and nothing is queued for it, or until timeout_s passes. Returns done or timed_out, the overall " +
+			"conclusion, every job's conclusion, and for each failed job its failed step and last 80 log lines. Use " +
+			"it after a push instead of polling. Jobs on GitHub-hosted runners are not seen. Read-only.",
+		Props: []prop{
+			{Name: "repo", Type: "string", Description: "Repository as owner/name; needed with sha.", Check: optRepo},
+			{Name: "sha", Type: "string", Description: "The pushed commit: full sha or 7 or more characters.", Check: commitSHA},
+			{Name: "run_url", Type: "string", Description: "Instead of repo and sha: a run URL like https://github.com/owner/name/actions/runs/123.", Check: runURL},
+			{Name: "timeout_s", Type: "number", Default: float64(600), Description: "Seconds to wait at most, 10 to 3600.", Check: between(10, 3600)},
+		},
+		ReadOnly: true, Idempotent: true, OpenWorld: true,
+		run: func(ctx context.Context, c Controller, a args) (any, error) {
+			byCommit := a.str("repo") != "" && a.str("sha") != ""
+			byRun := a.str("run_url") != ""
+			if byCommit == byRun || (byRun && (a.str("repo") != "" || a.str("sha") != "")) {
+				return nil, fmt.Errorf("pass repo and sha, or run_url alone")
+			}
+			return c.WaitForRun(ctx, a.str("repo"), a.str("sha"), a.str("run_url"), time.Duration(a.num("timeout_s"))*time.Second)
 		},
 	},
 }

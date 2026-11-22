@@ -302,6 +302,24 @@ func (s *Store) Usage() int64 {
 	return n
 }
 
+// Size is what the index last measured for repo c's cache, 0 when it
+// doesn't know.
+func (s *Store) Size(c core.CacheRepo) int64 {
+	if !s.Enabled() {
+		return 0
+	}
+	k, err := Key(c)
+	if err != nil {
+		return 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if e := s.load().Repos[k]; e != nil {
+		return e.Bytes
+	}
+	return 0
+}
+
 // load reads the index; a missing or unreadable one starts empty (the
 // folders on disk are measured again at the next eviction).
 func (s *Store) load() *index {

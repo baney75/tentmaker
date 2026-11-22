@@ -247,19 +247,23 @@ type logsView struct {
 func (a *app) cmdLogs(args []string) (any, error) {
 	f := a.flags("logs", commands["logs"].usage)
 	follow := f.Bool("f", false, "follow")
+	f.BoolVar(follow, "follow", false, "follow")
 	n := f.Int("n", 100, "lines")
 	pos, err := a.parse(f, args)
 	if err != nil {
 		return nil, err
 	}
-	if len(pos) > 0 {
-		return nil, usage("usage: "+commands["logs"].usage, "unexpected argument %q", pos[0])
+	if len(pos) > 1 {
+		return nil, usage("usage: "+firstLine(commands["logs"].usage), "unexpected argument %q", pos[1])
 	}
 	if *n <= 0 || *n > 100000 {
 		return nil, usage("use -n from 1 to 100000", "-n %d is out of range", *n)
 	}
 	if *follow && a.json {
 		return nil, usage("drop -f, or drop --json", "-f streams lines, and --json prints one object")
+	}
+	if len(pos) == 1 {
+		return a.cmdJobLog(pos[0], *n, f.set("n"), *follow)
 	}
 	if a.env.Paths.Log == "" {
 		return a.journalLogs(*n, *follow)

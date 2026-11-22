@@ -34,6 +34,8 @@ type WorkerOptions struct {
 	StateDir  string
 	Log       *slog.Logger
 	Now       func() time.Time
+	// Runs keeps run history; nil keeps none.
+	Runs RunRecorder
 }
 
 // Worker is the device side of dispatch: it asks brokers for work and runs
@@ -142,6 +144,18 @@ type jobRec struct {
 	// "" if none; Cached says it got that cache. See cacheDecisionLocked.
 	Trust  string `json:"trust,omitempty"`
 	Cached bool   `json:"cached,omitempty"`
+
+	// For run history (history.go).
+	Workflow string     `json:"workflow,omitempty"`
+	RunID    int64      `json:"run_id,omitempty"`
+	RunURL   string     `json:"run_url,omitempty"`
+	Ref      string     `json:"ref,omitempty"`
+	SHA      string     `json:"sha,omitempty"`
+	Queued   time.Time  `json:"queued,omitzero"`
+	Slot     int        `json:"slot,omitempty"`
+	Usage    core.Usage `json:"usage,omitzero"`
+	// sampled is when Usage was last read; memory only.
+	sampled time.Time
 
 	// starting is set while the executor's Start runs, off the tick, so a
 	// slow boot never stops the worker's heartbeat. The job holds its slot
@@ -423,7 +437,9 @@ func (w *Worker) pollJobs(ctx context.Context, now time.Time) {
 			if maxd > 0 && now.Sub(j.Started) > maxd+overrunGrace {
 				w.log.Warn("job ran past max_duration; stopping it", "runner", j.Name, "repo", j.Repo)
 				w.stopJob(ctx, j, "the job ran past max_duration")
+				continue
 			}
+			w.sampleUsage(ctx, e, j, now)
 			continue
 		}
 		w.log.Info("job ended", "runner", j.Name, "repo", j.Repo, "job", j.Job, "state", string(st),
@@ -451,6 +467,11 @@ func (w *Worker) finish(ctx context.Context, e *execInfo, j *jobRec, why string)
 		r.Runner, r.Repo = j.Name, j.Repo
 		res = &r
 	}
+	// The job's folder goes with Clean: read its log and use first. The
+	// record is kept after the worker's lock is released (defers run last
+	// in, first out).
+	hist := w.collect(ctx, e, j)
+	defer func() { w.recordEnd(j, res, why, hist) }()
 	if e != nil {
 		cctx, cancel := context.WithTimeout(ctx, stopTimeout)
 		err := e.ex.Clean(cctx, j.Name)
@@ -974,7 +995,9 @@ func (w *Worker) start(ctx context.Context, src core.WorkSource, off core.WorkOf
 	spec := core.ExecSpec{Kind: kind, Name: name, Grant: g, Platform: off.Platform, Limits: w.limits,
 		MaxDuration: w.o.Config.Job.MaxDuration.D(), TestWorkers: tw}
 	rec := &jobRec{Name: name, Source: source, Kind: kind, Executor: e.name, Forge: off.Job.Forge, Repo: off.Job.Repo,
-		Job: off.Job.Name, JobID: off.Job.ID, Platform: off.Platform, Started: now, Limits: w.limits, starting: true}
+		Job: off.Job.Name, JobID: off.Job.ID, Platform: off.Platform, Started: now, Limits: w.limits, starting: true,
+		Workflow: off.Job.Workflow, RunID: off.Job.RunID, RunURL: off.Job.HTMLURL, Ref: off.Job.HeadBranch,
+		SHA: off.Job.HeadSHA, Queued: off.Job.CreatedAt}
 	// Admission is checked again under the lock that adds the job record:
 	// a Hold, Pause or Shutdown since exchange counted free slots must
 	// see either this job or no start (review r2 partA sol-F1).
@@ -993,6 +1016,7 @@ func (w *Worker) start(ctx context.Context, src core.WorkSource, off core.WorkOf
 		return false
 	}
 	spec.Cache, rec.Trust, rec.Cached = c, trustKey(offerCache(off)), !c.IsZero()
+	rec.Slot = w.freeSlotLocked()
 	w.st.Jobs = append(w.st.Jobs, rec)
 	w.ranLocked(rec.Trust)
 	w.mu.Unlock()

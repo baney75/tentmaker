@@ -473,6 +473,11 @@ func (n *Node) Pool(ctx context.Context) ([]DeviceStatus, error) {
 // call does one JSON request to a peer. Bodies are capped at 1 MiB both
 // ways. Error messages carry the peer's error text, never a body.
 func (n *Node) call(ctx context.Context, method, url string, in, out any) error {
+	return n.callMax(ctx, method, url, in, out, maxBody)
+}
+
+// callMax is call with a bigger cap on the answer (run history and logs).
+func (n *Node) callMax(ctx context.Context, method, url string, in, out any, maxAnswer int64) error {
 	var body io.Reader
 	if in != nil {
 		b, err := json.Marshal(in)
@@ -498,7 +503,7 @@ func (n *Node) call(ctx context.Context, method, url string, in, out any) error 
 		return err
 	}
 	defer resp.Body.Close()
-	lr := io.LimitReader(resp.Body, maxBody+1)
+	lr := io.LimitReader(resp.Body, maxAnswer+1)
 	if resp.StatusCode != http.StatusOK {
 		var eb errorBody
 		_ = json.NewDecoder(io.LimitReader(lr, 4096)).Decode(&eb)
@@ -515,8 +520,8 @@ func (n *Node) call(ctx context.Context, method, url string, in, out any) error 
 	if err != nil {
 		return err
 	}
-	if len(b) > maxBody {
-		return errors.New("answer is over 1 MiB")
+	if int64(len(b)) > maxAnswer {
+		return fmt.Errorf("answer is over %d KiB", maxAnswer>>10)
 	}
 	if err := json.Unmarshal(b, out); err != nil {
 		return fmt.Errorf("%s: bad JSON answer", pathOf(url))
