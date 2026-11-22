@@ -14,6 +14,8 @@ type ActionsCache interface {
 	Grant(b actionscache.Binding) error
 	Revoke(job string)
 	Limit(job string, a actionscache.Access)
+	// Hold holds a job to read, or lets it write again.
+	Hold(job string, held bool)
 }
 
 // actionsRec is a job's Actions cache binding in state.json, so a daemon
@@ -84,12 +86,42 @@ func (w *Worker) confirmActionsLocked(source string, cs []core.RunnerJob) {
 			}
 			b = b.Confirm(c.Event, c.HeadBranch)
 			j.Actions.Ref, j.Actions.Access, j.Actions.Confirmed = b.Ref, b.Access.String(), true
+			// Held before the confirmed grant lands, never after.
+			w.holdActionsLocked()
 			if err := w.o.ActionsCache.Grant(b); err != nil {
 				// The old grant stays, and it may not write unconfirmed.
 				w.log.Warn("actions cache grant not narrowed", "runner", j.Name, "error", err)
 			}
 			w.log.Info("actions cache grant confirmed", "runner", j.Name, "ref", b.Ref, "access", b.Access.String())
 		}
+	}
+	w.holdActionsLocked()
+}
+
+// holdActionsLocked applies the least-trusted rule within a repo. Jobs on
+// a device share the runner uid, so any job can enter another's network
+// namespace and the service then takes its connections for the other
+// job's: connection identity can't tell them apart. So a job writes only
+// while every other job on the device, runner or check, is a confirmed
+// writer of the same repo and ref; otherwise every job is held to read.
+// The worker calls it on every job start, confirm and end.
+func (w *Worker) holdActionsLocked() {
+	if w.o.ActionsCache == nil {
+		return
+	}
+	for _, j := range w.st.Jobs {
+		if j.Actions == nil {
+			continue
+		}
+		held := false
+		for _, o := range w.st.Jobs {
+			if o != j && !(o.Actions != nil && o.Actions.Confirmed && o.Actions.Access == actionscache.Write.String() &&
+				o.Forge == j.Forge && o.Repo == j.Repo && o.Actions.Ref == j.Actions.Ref) {
+				held = true
+				break
+			}
+		}
+		w.o.ActionsCache.Hold(j.Name, held)
 	}
 }
 
@@ -140,6 +172,7 @@ func (w *Worker) regrantActions(e *execInfo) {
 		return
 	}
 	w.mu.Lock()
+	w.holdActionsLocked() // before any grant comes back
 	var bs []actionscache.Binding
 	for _, j := range w.st.Jobs {
 		if j.Executor != e.name || j.Actions == nil {

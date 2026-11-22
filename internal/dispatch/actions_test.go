@@ -1,6 +1,7 @@
 package dispatch
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"slices"
@@ -21,6 +22,7 @@ type fakeActions struct {
 	grantErr error
 	grants   map[string]actionscache.Binding
 	revoked  []string
+	held     map[string]bool
 }
 
 func newFakeActions() *fakeActions {
@@ -53,6 +55,15 @@ func (f *fakeActions) Limit(job string, a actionscache.Access) {
 		b.Access = a
 		f.grants[job] = b
 	}
+}
+
+func (f *fakeActions) Hold(job string, held bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.held == nil {
+		f.held = map[string]bool{}
+	}
+	f.held[job] = held
 }
 
 func (f *fakeActions) grant(job string) (actionscache.Binding, bool) {
@@ -385,5 +396,79 @@ func TestBrokerMarksGitHubComOffersOnly(t *testing.T) {
 				t.Fatalf("default branch %q", got.DefaultBranch)
 			}
 		})
+	}
+}
+
+// holdRig is a worker with a confirmed main writer of repoApp running.
+func holdRig(t *testing.T) (*Worker, *fakeActions, *jobRec) {
+	t.Helper()
+	ex := fakeexec.New("fake", 0, linuxX64)
+	ex.SetActionsCache(t.TempDir())
+	svc := newFakeActions()
+	w := &Worker{o: WorkerOptions{ActionsCache: svc}, log: slog.New(slog.DiscardHandler), now: time.Now,
+		execs: []*execInfo{{ex: ex, name: "fake"}}}
+	main := runnerRec("tm-main", "refs/heads/main")
+	w.st.Jobs = []*jobRec{main}
+	w.confirmActionsLocked("src", []core.RunnerJob{{Runner: "tm-main", Event: "push", HeadBranch: "main"}})
+	if svc.held["tm-main"] || main.Actions.Access != "write" {
+		t.Fatalf("a lone confirmed writer is held: %v %+v", svc.held, main.Actions)
+	}
+	return w, svc, main
+}
+
+func runnerRec(name, ref string) *jobRec {
+	return &jobRec{Name: name, Source: "src", Kind: core.KindRunner, Executor: "fake", Forge: "github", Repo: repoApp,
+		Actions: &actionsRec{Ref: ref, Default: "refs/heads/main", Access: "write"}}
+}
+
+// Jobs on a device share the runner uid, so a PR job can enter the main
+// writer's network namespace and pass as it. While one runs beside it,
+// the writer is held to read; it writes again once the PR job ends
+// (review second-S1).
+func TestPRJobHoldsTheMainWriter(t *testing.T) {
+	w, svc, _ := holdRig(t)
+	pr := runnerRec("tm-pr", "refs/pull/head/feature")
+	w.st.Jobs = append(w.st.Jobs, pr)
+	w.holdActionsLocked() // the start path
+	if !svc.held["tm-main"] {
+		t.Fatal("the main writer kept write beside an unconfirmed job")
+	}
+	w.confirmActionsLocked("src", []core.RunnerJob{{Runner: "tm-pr", Event: "pull_request", HeadBranch: "feature"}})
+	if pr.Actions.Access != "read" || !svc.held["tm-main"] {
+		t.Fatalf("beside a read PR job: pr %+v, main held %v", pr.Actions, svc.held["tm-main"])
+	}
+	w.finish(context.Background(), nil, pr, "")
+	if svc.held["tm-main"] {
+		t.Fatal("the main writer stayed held after the PR job ended")
+	}
+}
+
+func TestCheckJobHoldsTheWriter(t *testing.T) {
+	w, svc, _ := holdRig(t)
+	w.st.Jobs = append(w.st.Jobs, &jobRec{Name: "tm-check", Source: "src", Kind: core.KindCheck, Forge: "github", Repo: repoApp})
+	w.holdActionsLocked()
+	if !svc.held["tm-main"] {
+		t.Fatal("the writer kept write beside a check job")
+	}
+}
+
+func TestConfirmedWritersOfOneRefKeepWrite(t *testing.T) {
+	w, svc, _ := holdRig(t)
+	other := runnerRec("tm-main-2", "refs/heads/main")
+	w.st.Jobs = append(w.st.Jobs, other)
+	w.holdActionsLocked()
+	if !svc.held["tm-main"] {
+		t.Fatal("the writer kept write beside an unconfirmed job")
+	}
+	w.confirmActionsLocked("src", []core.RunnerJob{{Runner: "tm-main-2", Event: "push", HeadBranch: "main"}})
+	if svc.held["tm-main"] || svc.held["tm-main-2"] {
+		t.Fatalf("two confirmed writers of main were held: %v", svc.held)
+	}
+	// A writer of another branch holds both.
+	dev := runnerRec("tm-dev", "refs/heads/dev")
+	w.st.Jobs = append(w.st.Jobs, dev)
+	w.confirmActionsLocked("src", []core.RunnerJob{{Runner: "tm-dev", Event: "push", HeadBranch: "dev"}})
+	if !svc.held["tm-main"] || !svc.held["tm-main-2"] || !svc.held["tm-dev"] {
+		t.Fatalf("writers of two refs kept write: %v", svc.held)
 	}
 }

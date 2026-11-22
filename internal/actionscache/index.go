@@ -30,6 +30,16 @@ type entry struct {
 	Size    int64     `json:"size"`
 	SHA256  string    `json:"sha256"`
 	Created time.Time `json:"created"`
+	// Used is when a restore last matched the entry; zero means never.
+	Used time.Time `json:"used,omitzero"`
+}
+
+// lastUse is when the entry was last saved or restored.
+func (e *entry) lastUse() time.Time {
+	if e.Used.After(e.Created) {
+		return e.Used
+	}
+	return e.Created
 }
 
 // index is index.json in a repo's actions folder.

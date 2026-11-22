@@ -142,7 +142,7 @@ func (s *Service) create(g *grant, r *http.Request, q createReq) createResp {
 	if g.Access == None {
 		return createResp{Message: denied + "this Tentmaker job has no cache"}
 	}
-	if ok, why := mayWrite(g); !ok {
+	if ok, why := s.mayWrite(g); !ok {
 		return createResp{Message: denied + why}
 	}
 	rk := repoKey(g.Repo)
@@ -165,7 +165,7 @@ func (s *Service) create(g *grant, r *http.Request, q createReq) createResp {
 
 	unlock := s.lockRepo(rk)
 	defer unlock()
-	s.sweep(root)
+	s.sweep(root, rk, budgetOf(g.Store))
 	idx, err := loadIndex(root)
 	if err != nil {
 		s.log.Warn("actions cache index unreadable", "repo", g.Repo.Repo, "error", err)
@@ -204,7 +204,7 @@ func (s *Service) finalize(g *grant, r *http.Request, q finalizeReq) finalizeRes
 		return finalizeResp{Message: "no upload of this key and version is open for this job"}
 	}
 	// The grant may have been lowered since the upload began.
-	if ok, why := mayWrite(g); !ok {
+	if ok, why := s.mayWrite(g); !ok {
 		s.drop(u)
 		return finalizeResp{Message: denied + why}
 	}
@@ -238,6 +238,7 @@ func (s *Service) lookup(g *grant, r *http.Request, q downloadReq) downloadResp 
 	if e == nil {
 		return downloadResp{}
 	}
+	s.touch(repoKey(g.Repo), e.ID)
 	return downloadResp{
 		OK:                true,
 		SignedDownloadURL: "http://" + r.Host + blobPrefix + e.File + "?sig=" + g.capability,

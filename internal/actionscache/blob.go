@@ -139,7 +139,7 @@ func (s *Service) upload(w http.ResponseWriter, r *http.Request, id string) {
 		azureErr(w, http.StatusMethodNotAllowed, "UnsupportedHttpVerb", "Only PUT is supported here.")
 		return
 	}
-	if g.Access < Write {
+	if ok, _ := s.mayWrite(g); !ok {
 		azureErr(w, http.StatusForbidden, "AuthorizationPermissionMismatch", "This job may not write the cache.")
 		return
 	}
@@ -160,10 +160,11 @@ func (s *Service) upload(w http.ResponseWriter, r *http.Request, id string) {
 func (s *Service) reserve(g *grant, u *upload, n int64) bool {
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	if u.busy || u.total+n > s.o.MaxEntry {
+	budget := budgetOf(u.store)
+	if u.busy || u.total+n > min(s.o.MaxEntry, budget) {
 		return false
 	}
-	if g.used.Add(n) > s.o.MaxJob {
+	if g.used.Add(n) > min(s.o.MaxJob, budget) {
 		g.used.Add(-n)
 		return false
 	}
@@ -386,10 +387,17 @@ func (s *Service) commit(u *upload, size int64) (*entry, error) {
 	defer unlock()
 	s.mu.Lock()
 	live := s.uploads[u.id] == u
+	g := s.byJob[u.job]
 	s.mu.Unlock()
-	if !live {
+	if !live || g == nil {
 		_ = root.Remove(file)
 		return nil, errors.New("the job ended")
+	}
+	// Checked again under the repo lock: the job may have been held or
+	// lowered while the entry was assembled.
+	if ok, why := s.mayWrite(g); !ok {
+		_ = root.Remove(file)
+		return nil, errors.New(why)
 	}
 	idx, err := loadIndex(root)
 	if err != nil {
@@ -406,10 +414,12 @@ func (s *Service) commit(u *upload, size int64) (*entry, error) {
 	}
 	idx.Next++
 	idx.Entries = append(idx.Entries, e)
+	gone, _ := s.evictLocked(u.rk, idx, budgetOf(u.store), e.ID)
 	if err := idx.save(root); err != nil {
 		_ = root.Remove(file)
 		return nil, errors.New("the cache index could not be written")
 	}
+	removeFiles(root, gone)
 	return &e, nil
 }
 
@@ -443,18 +453,28 @@ func assemble(root *os.Root, staging string, order []string, file string) ([]byt
 	return h.Sum(nil), out.Close()
 }
 
-// sweep deletes staging folders no live upload owns and entry files the
-// index doesn't name, once they are old (a crash between the two writes
-// of a commit, or a daemon restart mid-upload). The caller holds the repo
-// lock.
-func (s *Service) sweep(root *os.Root) {
+// sweep evicts repo rk's entries past their age or budget
+// (evictLocked), then deletes staging folders no live upload owns and
+// entry files the index doesn't name, once they are old (a crash between
+// the two writes of a commit, or a daemon restart mid-upload). The caller
+// holds the repo lock.
+func (s *Service) sweep(root *os.Root, rk string, budget int64) {
+	idx, err := loadIndex(root)
+	if err != nil {
+		return
+	}
+	if gone, changed := s.evictLocked(rk, idx, budget, 0); changed {
+		if idx.save(root) != nil {
+			return
+		}
+		removeFiles(root, gone)
+	}
 	d, err := root.Open(".")
 	if err != nil {
 		return
 	}
 	names, _ := d.Readdirnames(-1)
 	d.Close()
-	var idx *index
 	cutoff := s.o.Now().Add(-staleStaging)
 	for _, n := range names {
 		switch {
@@ -466,11 +486,6 @@ func (s *Service) sweep(root *os.Root) {
 				continue
 			}
 		case fileRe.MatchString(n):
-			if idx == nil {
-				if idx, err = loadIndex(root); err != nil {
-					return
-				}
-			}
 			if idx.byFile(n) != nil {
 				continue
 			}
@@ -495,6 +510,9 @@ func (s *Service) download(w http.ResponseWriter, r *http.Request, file string) 
 		azureErr(w, http.StatusMethodNotAllowed, "UnsupportedHttpVerb", "Only GET and HEAD are supported here.")
 		return
 	}
+	// Counted before the index is read, so no eviction deletes the file
+	// between that read and the open.
+	defer s.reading(repoKey(g.Repo), file)()
 	root, err := g.Store.ActionsRoot(g.Repo, false)
 	if err != nil {
 		azureErr(w, http.StatusNotFound, "BlobNotFound", "The specified blob does not exist.")

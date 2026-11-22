@@ -10,8 +10,12 @@
 // only way to the host's loopback is its own pasta process (the job's
 // uplink unit), so a connection to 7436 comes from exactly one job's
 // pasta. The service names the job from the connection (JobOf), never from
-// anything the job sends: the toolkit drops the path of ACTIONS_RESULTS_URL
-// when it builds a Twirp URL, so there is no per-job URL to carry a token.
+// anything the job sends. Jobs share the runner uid, so a job can join
+// another's namespaces and pass as it; the worker therefore holds every
+// job to read unless all jobs on the device are confirmed writers of one
+// repo and ref (Hold). Nothing else could carry a token: the toolkit
+// drops the path of ACTIONS_RESULTS_URL when it builds a Twirp URL, so
+// there is no per-job URL.
 // The upload and download URLs it hands out also carry the job's
 // capability, 32 random bytes in the sig parameter (which the toolkit masks
 // in logs); a URL works only for the job it was made for, on that job's own
@@ -58,7 +62,8 @@ import (
 // goes (the artifact service and anything newer).
 const DefaultUpstream = "https://results-receiver.actions.githubusercontent.com"
 
-// Caps on what one job may upload.
+// Caps on what one job may upload. Both are also capped at the repo's
+// Actions budget (budgetOf).
 const (
 	DefaultMaxEntry = 10 << 30 // GitHub's own cap on one cache entry
 	DefaultMaxJob   = 20 << 30
@@ -171,6 +176,9 @@ type Service struct {
 	uploads  map[string]*upload // upload id -> upload
 	reserved map[string]string  // entry identity -> upload id
 	repoMu   map[string]*sync.Mutex
+	held     map[string]bool                // jobs held to read (Hold)
+	used     map[string]map[int64]time.Time // repo key -> entry id -> restored, not yet in the index
+	reads    map[string]int                 // repo key and file -> downloads in flight
 }
 
 // New returns a Service. It serves nothing until Serve.
@@ -208,6 +216,9 @@ func New(o Options) *Service {
 		uploads:  map[string]*upload{},
 		reserved: map[string]string{},
 		repoMu:   map[string]*sync.Mutex{},
+		held:     map[string]bool{},
+		used:     map[string]map[int64]time.Time{},
+		reads:    map[string]int{},
 	}
 	s.addr.Store("")
 	s.proxy = s.newProxy()
@@ -269,6 +280,34 @@ func (s *Service) Limit(job string, a Access) {
 	s.byJob[job], s.byCap[g.capability] = ng, ng
 }
 
+// Hold holds a job to read, or lets it write again (held false), without
+// touching its binding. The worker holds every job while another job on the
+// device is not a confirmed writer of the same repo and ref: jobs share the
+// runner uid, so one can enter another's network namespace and its
+// connections then name the other job (review second-S1).
+func (s *Service) Hold(job string, held bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if held {
+		s.held[job] = true
+	} else {
+		delete(s.held, job)
+	}
+}
+
+// mayWrite is mayWrite with the job's Hold.
+func (s *Service) mayWrite(g *grant) (bool, string) {
+	if ok, why := mayWrite(g); !ok {
+		return false, why
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.held[g.Job] {
+		return false, "another job on this device is not a confirmed writer of this branch"
+	}
+	return true, ""
+}
+
 // Revoke forgets a job: its connections and URLs get 404 from now on, and
 // its unfinished uploads are deleted.
 func (s *Service) Revoke(job string) {
@@ -280,6 +319,7 @@ func (s *Service) Revoke(job string) {
 	}
 	delete(s.byJob, job)
 	delete(s.byCap, g.capability)
+	delete(s.held, job)
 	var drop []*upload
 	for id, u := range s.uploads {
 		if u.job == job {

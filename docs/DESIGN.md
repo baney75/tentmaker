@@ -269,7 +269,16 @@ disk speed with no workflow change. Any step of it that fails leaves the job on 
   be in the job's uplink unit, `tentmaker.slice/tentmaker-uplink-<name>.service` (`cgroup.procs`,
   then `/proc/<pid>/fd`). A job's connections all leave through its own pasta, so its unit is the
   job's identity; a connection no job's uplink holds (the host, the podman namespace, another
-  user) gets 404 on every path, the proxy included. The answer is cached per connection.
+  user) gets 404 on every path, the proxy included. The answer is cached per connection. Jobs
+  share the runner uid, though, so a job can join another's namespaces and pass as it; the
+  answer only says some job of the device is calling.
+- Hold: so write is only as safe as the least trusted job beside it. A job writes only while
+  every other job on the device, runner or check, is a confirmed write job of the same repo and
+  ref; otherwise the worker holds every job to read (`Service.Hold`, `holdActionsLocked`), which
+  it re-applies on each job start (before the new runner exists), each confirm (before the
+  confirmed grant) and each job end, when writers left alone get write back. Create, every
+  upload request and finalize check the hold, and commit checks it again under the repo lock
+  after assembling the entry, so an upload begun while write held cannot commit after it.
 - Capability: `Grant` mints 32 random bytes per job and the service puts them in the `sig` query
   of every upload and download URL it returns. A blob request needs a `sig` that names a live
   grant and that grant's job must be the connection's. `Revoke` at job end (and on a failed boot)
@@ -304,7 +313,15 @@ disk speed with no workflow change. Any step of it that fails leaves the job on 
   shows it as a root-owned folder it cannot open. `index.json` is written with
   `config.WriteAtomic`; a corrupt index reads as empty. Uploads stream to `u-<id>` files, entries
   are `e-<id>`; a sweep under the repo lock removes staging and orphans older than 6 hours. The
-  repo cache's LRU cap covers these files too.
+  repo cache's LRU cap covers these files too, but it evicts a whole repo folder, build caches
+  and all, so the entries have a budget of their own: half of `cache_max`, at most GitHub's
+  10 GiB per repo (`repocache.Store.ActionsBudget`, `actionscache.MaxRepo`). `MaxEntry` and
+  `MaxJob` are capped at it. A restore that matches records the entry's last use in memory; at
+  each create (the sweep) and each commit, under the repo lock, the service writes those uses
+  into `entry.used`, drops entries no restore matched for 7 days, then drops the least recently
+  used until the entries fit the budget, all in the one index write the step already made. An
+  entry with a download in flight, one matched in the last minute, and the entry being
+  committed are never dropped (review first-F1).
 - Speed: uploads stream to disk through a pooled 1 MiB buffer with sha256 computed on the way,
   and downloads are `http.ServeContent` on the open file (sendfile, `Range`). Benchmark
   (`BenchmarkSaveRestore256MiB`, 256 MiB, i9-14900HX, tmpfs, loopback, 3 runs of 5): save
@@ -892,9 +909,14 @@ section is rewritten.
   tentmaker setup` runs again.
 - The Actions cache names its caller by connection (the job's pasta uplink unit) instead of a
   secret in the job's environment. A capability in `.env` would be readable by every step and
-  every action, and would have to be kept out of logs the runner writes; the uplink unit is
-  something a step cannot forge. The `sig` capability in returned URLs still binds a URL to one
-  job's grant, so a URL that leaks to another job or outlives its job is 404.
+  every action, and would have to be kept out of logs the runner writes. The uplink unit tells
+  one job from another only when they run as different users, and every job on a device runs as
+  the runner: a step can `nsenter` into another job's namespaces (the holder's user namespace is
+  the runner's) and its connections then come from that job's pasta. So the connection names a
+  job of the device, not which one, and the worker holds write to the least trusted job running
+  (review second-S1; see Hold under the Actions cache). The `sig` capability in returned URLs
+  still binds a URL to one job's grant, so a URL that leaks to another job or outlives its job
+  is 404.
 - The control API names its caller instead of trusting the network (fence verification, item
   18): Windows Firewall doesn't filter loopback, so a job reached 7434 whatever the rules said.
   Linux and macOS serve it on the Unix socket `control.DefaultAddr`

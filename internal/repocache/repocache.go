@@ -363,6 +363,15 @@ const ActionsDir = ".tentmaker-actions"
 // ActionsRoot was not asked to make one).
 var ErrNoActionsDir = errors.New("the repo has no actions cache yet")
 
+// ActionsBudget is how many bytes one repo's Actions cache entries may
+// hold: half of the cap, so they never push the repo's build caches out.
+func (s *Store) ActionsBudget() int64 {
+	if !s.Enabled() {
+		return 0
+	}
+	return s.o.Max / 2
+}
+
 // ActionsRoot opens repo c's Actions cache folder as an os.Root, making it
 // when create is set and the repo's folder exists (Prepare made it). Every
 // step goes through the root-owned store root, so a symlink a job puts

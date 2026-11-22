@@ -182,6 +182,9 @@ func (e *Executor) ActionsRoot(c core.CacheRepo, create bool) (*os.Root, error) 
 	return e.cache.ActionsRoot(c, create)
 }
 
+// ActionsBudget implements actionscache.Budgeter.
+func (e *Executor) ActionsBudget() int64 { return e.cache.ActionsBudget() }
+
 // cacheURL checks the service URL the worker passes: plain http to a
 // loopback address, nothing that could break out of a .env line.
 func cacheURL(s string) (string, error) {
