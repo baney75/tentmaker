@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"runtime"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -47,7 +48,7 @@ func TestStoreBoundsAndLogs(t *testing.T) {
 	if b, err := s.Log("tm-box-004"); err != nil || string(b) != "log 4\n" {
 		t.Fatalf("log: %q %v", b, err)
 	}
-	if st, err := os.Stat(s.LogPath("tm-box-004")); err != nil || (st.Mode().Perm() != 0o600 && os.Getenv("GOOS") != "windows") {
+	if st, err := os.Stat(s.LogPath("tm-box-004")); err != nil || (st.Mode().Perm() != 0o600 && runtime.GOOS != "windows") {
 		t.Fatalf("log mode: %v %v", st, err)
 	}
 	// A fresh store reads the same history back.
