@@ -14,6 +14,7 @@ import (
 	"sync"
 
 	"github.com/baney75/tentmaker/internal/core"
+	"github.com/baney75/tentmaker/internal/runs"
 )
 
 // ErrResetWhileRunning is what Reset returns when a runner is still running.
@@ -66,6 +67,12 @@ type Executor struct {
 
 	logs  map[string][]byte
 	usage map[string]core.Usage
+
+	tests      map[string]runs.TestResults
+	kept       map[string]bool
+	keepErr    error
+	debugExec  func(name, command string) (core.DebugResult, error)
+	debugCalls []DebugCall
 }
 
 var _ core.Executor = (*Executor)(nil)
@@ -466,6 +473,7 @@ func (e *Executor) Clean(ctx context.Context, name string) error {
 		e.violations = append(e.violations, "clean while running: "+name)
 	}
 	delete(e.runs, name)
+	delete(e.kept, name)
 	return nil
 }
 

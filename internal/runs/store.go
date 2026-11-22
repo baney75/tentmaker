@@ -138,6 +138,7 @@ func (s *Store) Add(rec Record, log []byte) error {
 	}
 	for _, r := range dropped {
 		_ = os.Remove(s.LogPath(r.ID))
+		_ = os.Remove(s.TestsPath(r.ID))
 	}
 	return nil
 }

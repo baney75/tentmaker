@@ -103,6 +103,31 @@ One entry per repository this device serves. A device with repos and a forge tok
 | `authors` | list of strings | `[]` (the repo owner) | Checks mode: whose same-repo pull requests run. |
 | `branches` | list of strings | `[]` | Checks mode: branches whose head commit runs besides the default branch, such as a release branch (`tentmaker repo add --branch NAME`). Only people who can push to the repo move a branch, so no author list applies. A listed branch that doesn't exist is skipped. |
 
+### `[repos.debug]`
+
+Keeps a failed job's sandbox for a while so its owner (or an agent) can look inside with
+`tentmaker debug JOB-ID` or the `debug_exec` MCP tool. Off by default.
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `keep_failed` | duration | `"0s"` (off) | How long a failed job's sandbox stays after the job ends, like `"15m"`. At most `"1h"`. |
+
+Only runner-mode jobs that failed on their own are kept (not cancelled, evicted or timed out
+ones), and only on Linux for now; other executors clean up as usual. The job is reported ended
+to its broker at once: its runner registration and credentials are deleted from the sandbox and
+its relay and Actions cache grant are revoked. The kept sandbox still counts against the budget
+(its slot and memory) until the grace ends, `tentmaker debug JOB-ID --release` ends it, or a
+guard evicts it. While a repo's job is kept on a device, that device takes no other job of the
+repo. `tentmaker status` lists the kept sandboxes.
+
+```toml
+[[repos]]
+name = "baney75/app"
+
+[repos.debug]
+keep_failed = "15m"
+```
+
 ## `[forges.<name>]`
 
 How to reach each forge. A fresh config has one entry, `[forges.github]`.

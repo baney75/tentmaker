@@ -11,7 +11,9 @@
 // daemon call the forges, so it needs the token or an admin caller (root,
 // SYSTEM or an elevated Administrator). POSTs (pause, resume, reload) need
 // the token from <state>/control.token, which only root (or SYSTEM and
-// Administrators on Windows) can read.
+// Administrators on Windows) can read. The debug routes (debug.go), which
+// run commands in a failed job's kept sandbox, take the token or an admin
+// caller.
 //
 // The source archive relay has its own TCP listener, 127.0.0.1:7435, which
 // serves GET /v1/relay/<id> and nothing else: it streams a running check
@@ -200,6 +202,12 @@ func NewServer(h Handler, token string, ident Identify, log *slog.Logger) *Serve
 	}))
 	if rh, ok := h.(RunsHandler); ok {
 		s.addRuns(rh)
+	}
+	if th, ok := h.(TestsHandler); ok {
+		s.addTests(th)
+	}
+	if dh, ok := h.(DebugHandler); ok {
+		s.addDebug(dh)
 	}
 	if po, ok := h.(PROpener); ok {
 		s.mux.HandleFunc("POST /v1/pr", s.auth(func(w http.ResponseWriter, r *http.Request) {
@@ -401,11 +409,11 @@ func (c *Client) addr() string {
 	return c.Addr
 }
 
-func (c *Client) http() *http.Client {
+func (c *Client) http(timeout time.Duration) *http.Client {
 	if c.HTTP != nil {
 		return c.HTTP
 	}
-	hc := &http.Client{Timeout: ClientTimeout}
+	hc := &http.Client{Timeout: timeout}
 	if path, ok := strings.CutPrefix(c.addr(), unixPrefix); ok {
 		hc.Transport = &http.Transport{
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
@@ -442,7 +450,12 @@ func (c *Client) Call(ctx context.Context, path string, body, out any) error {
 }
 
 func (c *Client) do(ctx context.Context, method, path string, body, out any) error {
-	ctx, cancel := context.WithTimeout(ctx, ClientTimeout)
+	return c.doFor(ctx, ClientTimeout, method, path, body, out)
+}
+
+// doFor is do with a time limit other than ClientTimeout.
+func (c *Client) doFor(ctx context.Context, timeout time.Duration, method, path string, body, out any) error {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	var rd io.Reader
 	if body != nil {
@@ -457,15 +470,9 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 		return err
 	}
 	if method == http.MethodPost {
-		tok, err := ReadToken(c.TokenPath)
-		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				return ErrNotRunning
-			}
-			return fmt.Errorf("read the control token (needs root or Administrator): %w", err)
+		if err := c.authorize(req); err != nil {
+			return err
 		}
-		req.Header.Set("Authorization", "Bearer "+tok)
-		req.Header.Set("Content-Type", "application/json")
 	} else if c.TokenPath != "" {
 		// Doctor needs the token unless the caller is an admin; a reader
 		// who can't read the token is served the rest.
@@ -473,7 +480,7 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 			req.Header.Set("Authorization", "Bearer "+tok)
 		}
 	}
-	resp, err := c.http().Do(req)
+	resp, err := c.http(timeout).Do(req)
 	if err != nil {
 		if isRefused(err) {
 			return ErrNotRunning
@@ -486,14 +493,7 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 		return err
 	}
 	if resp.StatusCode != http.StatusOK {
-		var e struct {
-			Error string `json:"error"`
-		}
-		_ = json.Unmarshal(data, &e)
-		if e.Error == "" {
-			e.Error = resp.Status
-		}
-		return &Error{Status: resp.StatusCode, Message: e.Error}
+		return answerErr(resp, data)
 	}
 	if out != nil {
 		return json.Unmarshal(data, out)

@@ -539,7 +539,7 @@ func (b *Broker) pickAllLocked(req core.WorkRequest, now time.Time, skipped *boo
 				continue
 			}
 			p, labels, ok := MatchJob(j.Labels, req.Labels, req.Platforms)
-			if !ok {
+			if !ok || keptRepo(req, r.forge, r.cfg.Name) {
 				continue
 			}
 			// The device holds a repo's cache: only that repo's cache-safe
@@ -587,7 +587,7 @@ func (b *Broker) pickAllLocked(req core.WorkRequest, now time.Time, skipped *boo
 					continue
 				}
 				p, ok := matchCheckPlatform(cj.Platform, req.Platforms)
-				if !ok {
+				if !ok || keptRepo(req, r.forge, r.cfg.Name) {
 					continue
 				}
 				if !onlyRepo(req, r.forge, r.cfg.Name) {
@@ -731,6 +731,17 @@ func (b *Broker) runnerCacheSafeLocked(forge, repo string, j core.Job) bool {
 func onlyRepo(req core.WorkRequest, forge, repo string) bool {
 	o := req.OnlyRepo
 	return o == nil || (o.Forge == forge && strings.EqualFold(o.Repo, repo))
+}
+
+// keptRepo reports whether the device keeps a failed job's sandbox of
+// repo, so it takes none of the repo's jobs (req.Kept).
+func keptRepo(req core.WorkRequest, forge, repo string) bool {
+	for _, k := range req.Kept {
+		if k.Forge == forge && strings.EqualFold(k.Repo, repo) {
+			return true
+		}
+	}
+	return false
 }
 
 func (b *Broker) realizeCheck(ctx context.Context, req core.WorkRequest, rec *grantRec, now time.Time, drop func(string, error)) (core.WorkOffer, bool) {

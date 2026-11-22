@@ -84,6 +84,18 @@ func (f *fakeController) Stats(ctx context.Context, since, repo string) (any, er
 func (f *fakeController) WaitForRun(ctx context.Context, repo, sha, runURL string, timeout time.Duration) (any, error) {
 	return map[string]any{"done": true}, f.rec("wait %s %s %s %s", repo, sha, runURL, timeout)
 }
+func (f *fakeController) Tests(ctx context.Context, id string, failed bool) (any, error) {
+	return map[string]any{"record": map[string]any{"id": id}}, f.rec("tests %s %v", id, failed)
+}
+func (f *fakeController) Flaky(ctx context.Context, repo, since string) (any, error) {
+	return map[string]any{"tests": []any{}}, f.rec("flaky %s %s", repo, since)
+}
+func (f *fakeController) WhyFailed(ctx context.Context, id, repo, sha string, runID int64) (any, error) {
+	return map[string]any{"conclusion": "failure"}, f.rec("why %s %s %s %d", id, repo, sha, runID)
+}
+func (f *fakeController) DebugExec(ctx context.Context, id, command string, timeoutS, maxBytes int64) (any, error) {
+	return map[string]any{"exit_code": 1}, f.rec("debug_exec %s %q %d %d", id, command, timeoutS, maxBytes)
+}
 func (f *fakeController) Update(ctx context.Context, channel string) (any, error) {
 	f.rec("update %s", channel)
 	if f.block != nil {
@@ -245,7 +257,7 @@ func TestFullSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []string{"status", "pool", "doctor", "set_budget", "add_repo", "remove_repo", "pause", "resume", "migrate_workflows",
-		"install_on_device", "update", "runs", "logs", "rerun", "stats", "wait_for_run"}
+		"install_on_device", "update", "runs", "logs", "rerun", "stats", "wait_for_run", "tests", "flaky", "why_failed", "debug_exec"}
 	if len(list.Tools) != len(want) {
 		t.Fatalf("got %d tools, want %d", len(list.Tools), len(want))
 	}
@@ -354,6 +366,35 @@ func TestFullSession(t *testing.T) {
 		}
 	}
 
+	// Test results, flaky tests, why a job failed and debug commands.
+	for _, rt := range []string{"tests", "flaky", "why_failed"} {
+		if list.Tools[byName[rt]].Annotations["readOnlyHint"] != true {
+			t.Errorf("%s should be read-only", rt)
+		}
+	}
+	if a := list.Tools[byName["debug_exec"]].Annotations; a["readOnlyHint"] != false || a["destructiveHint"] != true || a["idempotentHint"] != false {
+		t.Errorf("debug_exec annotations %v", a)
+	}
+	if req := list.Tools[byName["debug_exec"]].InputSchema.Required; len(req) != 2 || req[0] != "id" || req[1] != "command" {
+		t.Errorf("debug_exec required %v", req)
+	}
+	run(40, "tests", map[string]any{"id": "tm-box-1"}, "tests tm-box-1 true")
+	run(41, "tests", map[string]any{"id": "tm-box-1", "failed": false}, "tests tm-box-1 false")
+	run(42, "flaky", nil, "flaky  14d")
+	run(43, "flaky", map[string]any{"repo": "o/r", "since": "30d"}, "flaky o/r 30d")
+	run(44, "why_failed", map[string]any{"id": "tm-box-1"}, "why tm-box-1   0")
+	run(45, "why_failed", map[string]any{"repo": "o/r", "sha": "abcdef1"}, "why  o/r abcdef1 0")
+	run(46, "why_failed", map[string]any{"repo": "o/r", "run_id": 9}, "why  o/r  9")
+	run(47, "debug_exec", map[string]any{"id": "tm-box-1", "command": "go test ./..."}, `debug_exec tm-box-1 "go test ./..." 60 65536`)
+	run(48, "debug_exec", map[string]any{"id": "tm-box-1", "command": "ls", "timeout_s": 600, "max_bytes": 1 << 20}, `debug_exec tm-box-1 "ls" 600 1048576`)
+	for i, bad := range []map[string]any{{}, {"repo": "o/r"}, {"sha": "abcdef1"}, {"repo": "o/r", "sha": "abcdef1", "run_id": 9},
+		{"id": "tm-box-1", "repo": "o/r"}, {"id": "tm-box-1", "run_id": 9}} {
+		r, _ := s.tool(50+i, "why_failed", bad)
+		if !r.IsError || !strings.Contains(r.Content[0].Text, "id alone, or repo with sha or run_id") {
+			t.Errorf("why_failed %v: %+v", bad, r)
+		}
+	}
+
 	s.in.Close()
 	select {
 	case err := <-s.done:
@@ -395,6 +436,13 @@ func TestBadRequests(t *testing.T) {
 		{`{"jsonrpc":"2.0","id":19,"method":"tools/call","params":{"name":"rerun","arguments":{"target":"https://example.com/x"}}}`, codeInvalidParams},
 		{`{"jsonrpc":"2.0","id":20,"method":"tools/call","params":{"name":"stats","arguments":{"since":"forever"}}}`, codeInvalidParams},
 		{`{"jsonrpc":"2.0","id":21,"method":"tools/call","params":{"name":"wait_for_run","arguments":{"run_url":"https://github.com/o/r/pull/1"}}}`, codeInvalidParams},
+		{`{"jsonrpc":"2.0","id":23,"method":"tools/call","params":{"name":"tests","arguments":{}}}`, codeInvalidParams},
+		{`{"jsonrpc":"2.0","id":24,"method":"tools/call","params":{"name":"why_failed","arguments":{"id":"../x"}}}`, codeInvalidParams},
+		{`{"jsonrpc":"2.0","id":25,"method":"tools/call","params":{"name":"debug_exec","arguments":{"id":"tm-a-1"}}}`, codeInvalidParams},
+		{`{"jsonrpc":"2.0","id":26,"method":"tools/call","params":{"name":"debug_exec","arguments":{"id":"tm-a-1","command":"  "}}}`, codeInvalidParams},
+		{`{"jsonrpc":"2.0","id":27,"method":"tools/call","params":{"name":"debug_exec","arguments":{"id":"tm-a-1","command":"ls","timeout_s":601}}}`, codeInvalidParams},
+		{`{"jsonrpc":"2.0","id":28,"method":"tools/call","params":{"name":"debug_exec","arguments":{"id":"tm-a-1","command":"ls","max_bytes":2097152}}}`, codeInvalidParams},
+		{`{"jsonrpc":"2.0","id":29,"method":"tools/call","params":{"name":"flaky","arguments":{"since":"forever"}}}`, codeInvalidParams},
 		{`{"jsonrpc":"2.0","id":22,"method":"tools/call","params":{"name":"wait_for_run","arguments":{"repo":"o/r","sha":"abcdef1","timeout_s":86400}}}`, codeInvalidParams},
 	}
 	for _, tc := range cases {

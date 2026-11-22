@@ -775,6 +775,7 @@ func (e *Executor) Stop(ctx context.Context, name string) error {
 	if st == core.ExecRunning {
 		return fmt.Errorf("unit %s still runs after stop", unitName(name))
 	}
+	e.stopDebug(ctx, name)
 	e.stopNetns(ctx, name)
 	e.log.Info("job stopped", "executor", Name, "name", name)
 	return nil
@@ -795,6 +796,7 @@ func (e *Executor) Clean(ctx context.Context, name string) error {
 	os.Remove(e.secretPath(name))
 	// A failed unit stays loaded (no --collect) until this.
 	e.h.Run(ctx, Cmd{Path: "systemctl", Args: []string{"reset-failed", unitName(name)}, Timeout: 30 * time.Second})
+	e.stopDebug(ctx, name)
 	e.stopNetns(ctx, name)
 	rec, cached, err := e.slotOf(name)
 	if err != nil {

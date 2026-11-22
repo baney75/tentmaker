@@ -204,6 +204,15 @@ func (a *app) printStatus(w io.Writer, st daemon.Status) {
 	} else {
 		row("jobs", "none running")
 	}
+	if st.Worker != nil {
+		for i, k := range st.Worker.Kept {
+			key := "kept"
+			if i > 0 {
+				key = ""
+			}
+			row(key, fmt.Sprintf("%s  %s  until %s  (sudo tentmaker debug %s)", k.Repo, firstNonEmpty(k.Job, k.Name), k.Until.Local().Format("15:04"), k.Name))
+		}
+	}
 	row("brokers", brokerLine(st))
 	if st.Broker != nil {
 		for i, r := range st.Broker.Repos {

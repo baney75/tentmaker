@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -41,6 +42,10 @@ type fakeHost struct {
 	// netnsPID is what systemctl reports as a namespace holder's MainPID;
 	// 0 means the default, testNetnsPID.
 	netnsPID int
+	// stream answers Stream (debug commands and shells); stdins keeps what
+	// each was given.
+	stream func(c Cmd, in []byte, out io.Writer) (int, error)
+	stdins []string
 }
 
 // testNetnsPID is the fake namespace holder; newEnv gives it a network

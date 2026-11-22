@@ -464,6 +464,11 @@ type WorkRequest struct {
 	// ends. A broker offers nothing else (an older one that does gets its
 	// offers declined).
 	OnlyRepo *CacheRepo `json:"only_repo,omitempty"`
+	// Kept names repos (forge and owner/name) with a failed job's sandbox
+	// kept on the device for debugging; it takes no job of them until the
+	// sandbox is cleaned up. A broker offers none (an older one that does
+	// gets its offers declined).
+	Kept []CacheRepo `json:"kept,omitempty"`
 }
 
 // WorkOffer is one job for the worker, with the grant to run it.
@@ -608,4 +613,39 @@ type FirstJob struct {
 // FirstJobReporter is a forge that can report FirstJob (GitHub). Optional.
 type FirstJobReporter interface {
 	FirstJob(ctx context.Context, repo string) (FirstJob, error)
+}
+
+// DebugSpec bounds one debug session in a kept sandbox: the job's own
+// limits, how long a command may run, and how much output it keeps.
+type DebugSpec struct {
+	Limits    Resources
+	Timeout   time.Duration
+	MaxOutput int64
+}
+
+// DebugResult is how one debug command ended. Output is raw (the caller
+// redacts it) and at most DebugSpec.MaxOutput bytes, stdout and stderr
+// together.
+type DebugResult struct {
+	ExitCode  int    `json:"exit_code"`
+	Output    []byte `json:"-"`
+	Truncated bool   `json:"truncated,omitempty"`
+	TimedOut  bool   `json:"timed_out,omitempty"`
+}
+
+// Debugger is an executor that can keep a failed job's sandbox after the
+// job exits and run commands in it, as the runner user, under the job's
+// limits and its network fence. Only Linux implements it; the worker keeps
+// no sandbox on an executor without it.
+//
+// Keep readies an exited job's sandbox to be kept: it deletes the runner's
+// registration and credentials from the job folder and leaves the rest
+// (the workspace, the network namespace) until Clean, which also ends any
+// debug session still open. DebugExec runs command with /bin/sh -c and
+// waits. DebugShell runs an interactive shell on a terminal and copies it
+// to and from the streams until the shell exits or ctx ends.
+type Debugger interface {
+	Keep(ctx context.Context, name string) error
+	DebugExec(ctx context.Context, name, command string, spec DebugSpec) (DebugResult, error)
+	DebugShell(ctx context.Context, name string, spec DebugSpec, stdin io.Reader, stdout io.Writer) error
 }

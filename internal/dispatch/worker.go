@@ -149,6 +149,10 @@ type jobRec struct {
 	Cached bool   `json:"cached,omitempty"`
 	// Actions is the job's Actions cache grant (actions.go), nil for none.
 	Actions *actionsRec `json:"actions,omitempty"`
+	// KeptUntil is set when the job failed and its sandbox is kept for
+	// debugging (debug.go): it has ended and been reported, and it stays
+	// counted until then.
+	KeptUntil time.Time `json:"kept_until,omitzero"`
 
 	// For run history (history.go).
 	Workflow string     `json:"workflow,omitempty"`
@@ -412,14 +416,20 @@ func (w *Worker) pollJobs(ctx context.Context, now time.Time) {
 	w.mu.Unlock()
 	for _, j := range jobs {
 		e := w.execByName(j.Executor)
+		w.mu.Lock()
+		starting, until := j.starting, j.KeptUntil
+		w.mu.Unlock()
+		if !until.IsZero() {
+			if !now.Before(until) || e == nil {
+				w.release(ctx, e, j, "its debug grace ended")
+			}
+			continue
+		}
 		if e == nil {
 			w.log.Warn("job's executor is gone; reporting it ended", "runner", j.Name, "executor", j.Executor)
 			w.finish(ctx, nil, j, "the job's executor is no longer configured")
 			continue
 		}
-		w.mu.Lock()
-		starting := j.starting
-		w.mu.Unlock()
 		if starting {
 			continue // the start finishes off the tick
 		}
@@ -477,7 +487,12 @@ func (w *Worker) finish(ctx context.Context, e *execInfo, j *jobRec, why string)
 	// record is kept after the worker's lock is released (defers run last
 	// in, first out).
 	hist := w.collect(ctx, e, j)
-	defer func() { w.recordEnd(j, res, why, hist) }()
+	rec, log := w.endRecord(j, res, why, hist)
+	if w.keep(ctx, e, j, why, res, &rec) {
+		w.recordEnd(rec, log, hist)
+		return
+	}
+	defer func() { w.recordEnd(rec, log, hist) }()
 	if e != nil {
 		cctx, cancel := context.WithTimeout(ctx, stopTimeout)
 		err := e.ex.Clean(cctx, j.Name)
@@ -492,21 +507,14 @@ func (w *Worker) finish(ctx context.Context, e *execInfo, j *jobRec, why string)
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.dropRelaysLocked(j.Name)
-	w.revokeActions(j.Name)
 	for i, x := range w.st.Jobs {
 		if x == j {
 			w.st.Jobs = append(w.st.Jobs[:i], w.st.Jobs[i+1:]...)
 			break
 		}
 	}
+	w.endedLocked(j, res)
 	w.holdActionsLocked()
-	rep := w.reportLocked(j.Source)
-	rep.Ended = append(rep.Ended, j.Name)
-	if res != nil {
-		rep.Results = append(rep.Results, *res)
-	}
-	w.st.Dirty = true
 }
 
 func (w *Worker) reportLocked(source string) *report {
@@ -543,6 +551,11 @@ func (w *Worker) stopJob(ctx context.Context, j *jobRec, why string) {
 		why = "stopped"
 	}
 	w.mu.Lock()
+	if j.kept() {
+		w.mu.Unlock()
+		w.release(ctx, w.execByName(j.Executor), j, why)
+		return
+	}
 	if j.starting {
 		// Stopped once its Start returns; until then it holds its slot.
 		j.Stopping, j.StopErr = why, "it is still starting"
@@ -796,10 +809,11 @@ func (w *Worker) exchange(ctx context.Context, now time.Time, d core.Decision, a
 		only := w.cachedRepoLocked()
 		var running []string
 		for _, j := range w.st.Jobs {
-			if j.Source == name && !j.starting {
+			if j.Source == name && !j.starting && !j.kept() {
 				running = append(running, j.Name)
 			}
 		}
+		kept := w.keptReposLocked()
 		var sent report
 		if r := w.st.Unacked[name]; r != nil {
 			sent.Results = append([]core.CheckResult(nil), fitResults(r.Results)...)
@@ -822,7 +836,7 @@ func (w *Worker) exchange(ctx context.Context, now time.Time, d core.Decision, a
 		w.mu.Unlock()
 
 		req := core.WorkRequest{Device: w.device, Labels: w.labels, Platforms: platforms, Free: free,
-			Limits: w.limits, Running: running, Ended: sent.Ended, Results: sent.Results, OnlyRepo: only}
+			Limits: w.limits, Running: running, Ended: sent.Ended, Results: sent.Results, OnlyRepo: only, Kept: kept}
 		wctx, cancel := context.WithTimeout(ctx, workTimeout)
 		resp, err := s.Work(wctx, req)
 		cancel()
@@ -968,6 +982,11 @@ func (w *Worker) start(ctx context.Context, src core.WorkSource, off core.WorkOf
 			w.log.Warn("offer for a runner already running ignored", "source", source, "runner", name)
 			return false
 		}
+	}
+	if keptIn(w.keptReposLocked(), off.Job.Forge, off.Job.Repo) {
+		w.mu.Unlock()
+		w.decline(source, off, "a failed job of this repo is kept here for debugging")
+		return false
 	}
 	e := w.pickExecutorLocked(off.Platform, now)
 	w.mu.Unlock()
@@ -1267,16 +1286,19 @@ func (w *Worker) save() error {
 
 // WorkerStatus is the worker's view for the CLI and MCP.
 type WorkerStatus struct {
-	Device         string           `json:"device"`
-	Labels         []string         `json:"labels"`
-	Decision       core.Decision    `json:"decision"`
-	Paused         bool             `json:"paused"`
-	PauseReason    string           `json:"pause_reason,omitempty"`
-	ShuttingDown   bool             `json:"shutting_down"`
-	Dirty          bool             `json:"dirty"`
-	LastReset      time.Time        `json:"last_reset,omitempty"`
-	Slots          SlotStatus       `json:"slots"`
-	Running        []RunningJob     `json:"running"`
+	Device       string        `json:"device"`
+	Labels       []string      `json:"labels"`
+	Decision     core.Decision `json:"decision"`
+	Paused       bool          `json:"paused"`
+	PauseReason  string        `json:"pause_reason,omitempty"`
+	ShuttingDown bool          `json:"shutting_down"`
+	Dirty        bool          `json:"dirty"`
+	LastReset    time.Time     `json:"last_reset,omitempty"`
+	Slots        SlotStatus    `json:"slots"`
+	Running      []RunningJob  `json:"running"`
+	// Kept lists failed jobs' sandboxes kept for debugging; each holds a
+	// slot until its grace ends.
+	Kept           []KeptJob        `json:"kept"`
 	Executors      []ExecutorStatus `json:"executors"`
 	Sources        []SourceStatus   `json:"sources"`
 	PendingReports int              `json:"pending_reports"`
@@ -1343,7 +1365,11 @@ func (w *Worker) Status() WorkerStatus {
 		LastReset: w.lastReset, LastErrors: w.errs.list(), Running: []RunningJob{}, Executors: []ExecutorStatus{},
 		Sources: []SourceStatus{}, LastTick: w.lastTick}
 	s.Slots = SlotStatus{Total: w.decision.Slots, Used: len(w.st.Jobs), Free: w.freeLocked(w.decision, now)}
+	s.Kept = w.keptJobsLocked()
 	for _, j := range w.st.Jobs {
+		if j.kept() {
+			continue
+		}
 		s.Running = append(s.Running, RunningJob{Name: j.Name, Source: j.Source, Kind: j.Kind, Repo: j.Repo, Job: j.Job,
 			JobID: j.JobID, Executor: j.Executor, Platform: j.Platform.String(), Started: j.Started, Starting: j.starting})
 	}

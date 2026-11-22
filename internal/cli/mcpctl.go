@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/baney75/tentmaker/internal/control"
 	"github.com/baney75/tentmaker/internal/forge/github"
 	"github.com/baney75/tentmaker/internal/mcp"
 	"github.com/baney75/tentmaker/internal/mesh"
@@ -159,6 +160,41 @@ func (c controller) Rerun(ctx context.Context, target string) (any, error) {
 func (c controller) Stats(ctx context.Context, since, repo string) (any, error) {
 	v, err := c.a.statsData(ctx, since, repo)
 	return v, mcpErr(err)
+}
+
+func (c controller) Tests(ctx context.Context, jobID string, failedOnly bool) (any, error) {
+	v, err := c.a.testsData(ctx, jobID, failedOnly)
+	if err != nil {
+		return nil, mcpErr(err)
+	}
+	return v, nil
+}
+
+func (c controller) Flaky(ctx context.Context, repo, since string) (any, error) {
+	v, err := c.a.flakyData(ctx, repo, since)
+	if err != nil {
+		return nil, mcpErr(err)
+	}
+	return v, nil
+}
+
+func (c controller) WhyFailed(ctx context.Context, jobID, repo, sha string, runID int64) (any, error) {
+	v, err := c.a.whyData(ctx, control.WhyRequest{ID: jobID, Repo: repo, SHA: sha, RunID: runID})
+	if err != nil {
+		return nil, mcpErr(err)
+	}
+	return v, nil
+}
+
+func (c controller) DebugExec(ctx context.Context, jobID, command string, timeoutS, maxBytes int64) (any, error) {
+	if err := c.mutating(); err != nil {
+		return nil, err
+	}
+	v, err := c.a.debugExec(ctx, control.DebugExecRequest{ID: jobID, Command: command, TimeoutS: timeoutS, MaxBytes: maxBytes})
+	if err != nil {
+		return nil, mcpErr(err)
+	}
+	return v, nil
 }
 
 // waitLogLines is how much of a failed job's log wait_for_run returns.

@@ -351,6 +351,8 @@ func (n *Node) handler() http.Handler {
 			n.route(w, r, http.MethodGet, n.handleRuns)
 		case "/v1/runs/log":
 			n.route(w, r, http.MethodGet, n.handleRunLog)
+		case "/v1/runs/tests":
+			n.route(w, r, http.MethodGet, n.handleRunTests)
 		case "/v1/rerun":
 			n.route(w, r, http.MethodPost, n.handleRerun)
 		default:

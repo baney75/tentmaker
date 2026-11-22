@@ -118,6 +118,43 @@ func (OSHost) Run(ctx context.Context, c Cmd) (Result, error) {
 	return res, nil
 }
 
+// Stream implements Streamer.
+func (OSHost) Stream(ctx context.Context, c Cmd, stdin io.Reader, stdout io.Writer) (int, error) {
+	path, err := lookPath(c.Path)
+	if err != nil {
+		return -1, err
+	}
+	t := c.Timeout
+	if t <= 0 {
+		t = DefaultTimeout
+	}
+	ctx, cancel := context.WithTimeout(ctx, t)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, path, c.Args...)
+	cmd.Env = c.Env
+	if cmd.Env == nil {
+		cmd.Env = baseEnv
+	}
+	cmd.Dir = "/"
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdin, stdout, stdout
+	cmd.WaitDelay = 5 * time.Second
+	err = cmd.Run()
+	code := -1
+	if cmd.ProcessState != nil {
+		code = cmd.ProcessState.ExitCode()
+	}
+	if ctx.Err() == context.DeadlineExceeded {
+		return code, fmt.Errorf("%s: timed out after %s", filepath.Base(path), t)
+	}
+	var exit *exec.ExitError
+	if err != nil && !errors.As(err, &exit) {
+		return code, fmt.Errorf("%s: %w", filepath.Base(path), err)
+	}
+	return code, nil
+}
+
+var _ Streamer = OSHost{}
+
 // LookupUser implements Host.
 func (OSHost) LookupUser(name string) (int, int, error) {
 	u, err := user.Lookup(name)
