@@ -145,8 +145,11 @@ try {
                 $rules = @((Get-Acl -LiteralPath $p).GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))
                 $loose = @($rules | Where-Object { $_.AccessControlType -eq 'Allow' -and @('S-1-5-18', 'S-1-5-32-544') -notcontains $_.IdentityReference.Value -and ($_.FileSystemRights -band $write) })
                 if ($loose.Count -eq 0) { Pass "system install: only SYSTEM and Administrators can change $p" } else { Bad "system install: $p lets $($loose[0].IdentityReference.Value) change it ($($loose[0].FileSystemRights))" }
-                if (@($rules | Where-Object { $_.IdentityReference.Value -eq 'S-1-3-4' }).Count -gt 0) { Pass "system install: OWNER RIGHTS limits the owner of $p" } else { Bad "system install: $p has no OWNER RIGHTS entry" }
             }
+            # install.ps1 checks that the staged file inherited this before it
+            # changes the owner; Windows drops it from the file after that.
+            $limit = @((Get-Acl -LiteralPath $sys).GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]) | Where-Object { $_.IdentityReference.Value -eq 'S-1-3-4' -and ($_.InheritanceFlags -band [Security.AccessControl.InheritanceFlags]::ObjectInherit) })
+            if ($limit.Count -gt 0) { Pass 'system install: new files in the folder inherit OWNER RIGHTS' } else { Bad 'system install: the folder passes no OWNER RIGHTS entry to new files' }
             $got = (& (Join-Path $sys 'tentmaker.exe') version 2>&1 | Out-String).Trim()
             if ($got -eq $Expect) { Pass 'system install replaced a planted tentmaker.new.exe' } else { Bad "system install: tentmaker.exe says '$got'" }
             # A system install outside a Tentmaker folder would put the DACL

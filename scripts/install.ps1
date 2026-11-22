@@ -250,7 +250,14 @@ function Install-Tentmaker {
         } finally {
             $zip.Dispose()
         }
-        if ($lock) { Icacls $staged '/setowner' '*S-1-5-32-544' }
+        if ($lock) {
+            # Until the owner changes, only the inherited OWNER RIGHTS entry
+            # keeps the user from rewriting this file's DACL. Check it is
+            # there; Windows drops it once Administrators own the file.
+            $limits = @((Get-Acl -LiteralPath $staged).GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]) | Where-Object { $_.IdentityReference.Value -eq 'S-1-3-4' })
+            if ($limits.Count -eq 0) { Fail "$staged did not inherit the OWNER RIGHTS entry from $InstallDir; refusing to install" "report it at $repoUrl/issues" }
+            Icacls $staged '/setowner' '*S-1-5-32-544'
+        }
         # PowerShell 5.1 turns native stderr into errors under 'Stop'.
         $ErrorActionPreference = 'Continue'
         $out = & $staged version 2>&1
