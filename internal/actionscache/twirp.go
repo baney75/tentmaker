@@ -171,8 +171,10 @@ func (s *Service) create(g *grant, r *http.Request, q createReq) createResp {
 		s.log.Warn("actions cache index unreadable", "repo", g.Repo.Repo, "error", err)
 		return createResp{Message: denied + "the cache index is unreadable"}
 	}
-	if idx.bytes() >= budgetOf(g.Store) {
-		return createResp{Message: errFull.Error()}
+	// Only a check: commit evicts once the entry's size is known, so a
+	// save that never finishes costs no entry.
+	if _, err := s.evictable(rk, idx, budgetOf(g.Store), 1); err != nil {
+		return createResp{Message: err.Error()}
 	}
 	if idx.find(g.Ref, q.Key, q.Version) != nil {
 		// The toolkit says another job may be creating it, and moves on.
@@ -233,6 +235,11 @@ func (s *Service) lookup(g *grant, r *http.Request, q downloadReq) downloadResp 
 		return downloadResp{}
 	}
 	defer root.Close()
+	// Under the repo lock, so the entry matched is the one touch keeps
+	// from eviction until its download begins.
+	rk := repoKey(g.Repo)
+	unlock := s.lockRepo(rk)
+	defer unlock()
 	idx, err := loadIndex(root)
 	if err != nil {
 		return downloadResp{}
@@ -241,6 +248,7 @@ func (s *Service) lookup(g *grant, r *http.Request, q downloadReq) downloadResp 
 	if e == nil {
 		return downloadResp{}
 	}
+	s.touch(rk, e.ID)
 	return downloadResp{
 		OK:                true,
 		SignedDownloadURL: "http://" + r.Host + blobPrefix + e.File + "?sig=" + g.capability,

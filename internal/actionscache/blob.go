@@ -159,7 +159,8 @@ func (s *Service) upload(w http.ResponseWriter, r *http.Request, id string) {
 
 // MaxRepo is GitHub's cap on one repo's Actions cache. Budgeter is a Store
 // with a lower cap (half of cache_max), so a repo's entries never fill its
-// folder until the repo LRU drops the build caches beside them.
+// folder until the repo LRU drops the build caches beside them. A commit
+// past the budget evicts the repo's least recently used entries (evict.go).
 const MaxRepo = 10 << 30
 
 type Budgeter interface{ ActionsBudget() int64 }
@@ -173,7 +174,8 @@ func budgetOf(st Store) int64 {
 	return max(min(n, MaxRepo), 0)
 }
 
-// errFull refuses a write past the budget, until eviction lands.
+// errFull refuses a write that does not fit in the budget even after
+// eviction: the entries downloads or fresh restores pin fill it.
 var errFull = errors.New(denied + "the repo's Actions cache is at its budget")
 
 func (x *index) bytes() (n int64) {
@@ -433,10 +435,12 @@ func (s *Service) commit(u *upload, size int64) (*entry, error) {
 		_ = root.Remove(file)
 		return nil, errors.New("an entry with this key and version already exists")
 	}
-	if idx.bytes()+total > budgetOf(u.store) {
+	evict, err := s.evictable(u.rk, idx, budgetOf(u.store), total)
+	if err != nil {
 		_ = root.Remove(file)
-		return nil, errFull
+		return nil, err
 	}
+	gone := s.dropEntries(u.rk, idx, evict)
 	e := entry{
 		ID: idx.Next, Scope: u.scope, Key: u.key, Version: u.version, File: file,
 		Size: total, SHA256: hex.EncodeToString(sum), Created: s.o.Now().UTC(),
@@ -447,6 +451,7 @@ func (s *Service) commit(u *upload, size int64) (*entry, error) {
 		_ = root.Remove(file)
 		return nil, errors.New("the cache index could not be written")
 	}
+	removeFiles(root, gone)
 	return &e, nil
 }
 
@@ -538,19 +543,8 @@ func (s *Service) download(w http.ResponseWriter, r *http.Request, file string) 
 		return
 	}
 	defer root.Close()
-	idx, err := loadIndex(root)
-	var e *entry
-	if err == nil {
-		e = idx.byFile(file)
-	}
-	// The URL came from a lookup that checked the token; the plain GET
-	// carries none, so the binding's two scopes are what count here.
-	if e == nil || e.Scope == "" || (e.Scope != g.Ref && e.Scope != g.Default) {
-		azureErr(w, http.StatusNotFound, "BlobNotFound", "The specified blob does not exist.")
-		return
-	}
-	f, err := root.Open(file)
-	if err != nil {
+	e, f := s.openEntry(g, root, file)
+	if f == nil {
 		azureErr(w, http.StatusNotFound, "BlobNotFound", "The specified blob does not exist.")
 		return
 	}
@@ -571,5 +565,41 @@ func (s *Service) download(w http.ResponseWriter, r *http.Request, file string) 
 	h.Set("ETag", `"`+e.SHA256+`"`)
 	// ServeContent copies the *os.File with io.CopyN, which the net/http
 	// connection turns into sendfile(2).
-	http.ServeContent(w, r, "", e.Created, f)
+	http.ServeContent(w, r, "", e.Created, f.File)
+}
+
+// openEntry opens file for a download by g and counts the download in
+// flight until f is closed, so eviction keeps the entry. Under the repo
+// lock, so no eviction runs between the index read and the count.
+func (s *Service) openEntry(g *grant, root *os.Root, file string) (*entry, *countedFile) {
+	rk := repoKey(g.Repo)
+	unlock := s.lockRepo(rk)
+	defer unlock()
+	idx, err := loadIndex(root)
+	if err != nil {
+		return nil, nil
+	}
+	e := idx.byFile(file)
+	// The URL came from a lookup that checked the token; the plain GET
+	// carries none, so the binding's two scopes are what count here.
+	if e == nil || e.Scope == "" || (e.Scope != g.Ref && e.Scope != g.Default) {
+		return nil, nil
+	}
+	f, err := root.Open(file)
+	if err != nil {
+		return nil, nil
+	}
+	return e, &countedFile{File: f, done: s.reading(rk, file)}
+}
+
+// countedFile is an open entry file whose Close ends the download's count.
+type countedFile struct {
+	*os.File
+	done func()
+}
+
+func (f *countedFile) Close() error {
+	err := f.File.Close()
+	f.done()
+	return err
 }
