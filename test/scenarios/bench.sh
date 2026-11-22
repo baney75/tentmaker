@@ -58,9 +58,11 @@ BRS=()
 for rep in $(seq 1 "$REPS"); do BRS+=("$(branch "r$rep")"); done
 tm_repo_add "${BRS[@]}"
 
+soft_note() { echo "::warning title=bench $WL::$*"; }
+
 # sample ROUND REP COMMIT BRANCH: push, wait for the final status, keep the record.
 sample() {
-	local round=$1 rep=$2 c=$3 br=$4 d tp st
+	local round=$1 rep=$2 c=$3 br=$4 d tp st p
 	d=$OUT/$rep-$round
 	mkdir -p "$d"
 	git_push "$c:refs/heads/$br"
@@ -75,6 +77,12 @@ sample() {
 	jqr -n --arg w "$WL" --argjson rep "$rep" --arg round "$round" --arg sha "$c" --arg ctx "$CTX" --argjson tp "$tp" \
 		'{workload: $w, rep: $rep, round: $round, sha: $sha, context: $ctx, push_epoch: $tp}' >"$d/meta.json"
 	measure_s "status_${round}_$rep" "${st:-none}"
+	# A slow pickup is a finding: keep the daemon's log for it.
+	p=$(first_epoch "$c" "$CTX" pending)
+	if [ -z "$p" ] || [ "$((p - tp))" -gt 10 ]; then
+		soft_note "$CTX ($round, rep $rep) was picked up $((${p:-$tp} - tp)) s after the push; daemon log kept"
+		tm_logs 3000 >"$d/daemon.log"
+	fi
 }
 
 # reset_caches: the next cold run starts with no repo cache, and no job
