@@ -364,6 +364,20 @@ func Markdown(rep Report) string {
 		p("\n")
 	}
 
+	p("## Known limits of this bench\n\n")
+	p("- CPUs: a Tentmaker job is capped at 2 CPUs (the default `job.cpus`); the hosted job has the\n")
+	p("  VM's 4. That is most of why Tentmaker's cold runs are slower: they compile from nothing on\n")
+	p("  half the CPUs.\n")
+	p("- Toolchains: GitHub-hosted jobs download the exact Go in `go.mod` (inside their setup time).\n")
+	p("  Under Tentmaker, checks mode uses the first Go on the device that satisfies `go.mod`; on these\n")
+	p("  VMs that is the image's own, a newer minor version. Node is 22 on both.\n")
+	p("- Pickup outliers: the five bench devices share one workflow `GITHUB_TOKEN`. When its hourly\n")
+	p("  budget runs low, Tentmaker stops polling until the reset, as designed, so a few runs wait\n")
+	p("  minutes (the Max column above). A device with its own token doesn't share that budget. The\n")
+	p("  gate uses the median.\n")
+	p("- Pulls: base images come from the ECR Public mirror, which can answer 429 to a busy shared IP;\n")
+	p("  a run that fails that way counts as failed, not slow.\n\n")
+
 	p("## Blacksmith's published claims\n\n")
 	p("We can't run Blacksmith, so these are **their claims, not our measurements**, quoted from their\n")
 	p("docs as of 2026-11-22. Compare them with the tables above knowing they come from different\n")
