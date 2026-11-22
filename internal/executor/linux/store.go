@@ -219,12 +219,23 @@ func (e *Executor) checkStore(ctx context.Context, uid int) string {
 	if p := e.podnsProblem(ctx, uid); p != "" {
 		return p
 	}
-	res, err := e.h.Run(ctx, e.asRunner(uid, time.Minute, "podman", "info", "--format", "{{.Store.GraphRoot}}"))
-	if err != nil {
-		return "podman info: " + err.Error()
-	}
-	if got := strings.TrimSpace(res.Stdout); got != e.storeMount() {
-		return fmt.Sprintf("podman's graphroot is %q, not %s", trunc(got, 120), e.storeMount())
+	// Both ways a job reaches podman: its own CLI, and the service behind
+	// DOCKER_HOST, which the socket starts on demand and which must find
+	// the same store.
+	sock := "unix://" + filepath.Join(e.runtimeDir(uid), "podman", "podman.sock")
+	for _, via := range [][]string{nil, {"--remote", "--url", sock}} {
+		args := append(append([]string{"podman"}, via...), "info", "--format", "{{.Store.GraphRoot}}")
+		res, err := e.h.Run(ctx, e.asRunner(uid, time.Minute, args...))
+		what := "podman"
+		if via != nil {
+			what = "podman's service"
+		}
+		if err != nil {
+			return fmt.Sprintf("%s info: %v: %s", what, err, trunc(strings.TrimSpace(res.Stderr), 300))
+		}
+		if got := strings.TrimSpace(res.Stdout); got != e.storeMount() {
+			return fmt.Sprintf("%s's graphroot is %q, not %s", what, trunc(got, 120), e.storeMount())
+		}
 	}
 	for _, args := range [][]string{
 		{"podman", "pod", "rm", "-af"},

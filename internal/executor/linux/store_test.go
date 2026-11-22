@@ -25,6 +25,8 @@ type storeHost struct {
 	graphroot string
 	podnsFail int // fail the PodnsUnit start once this many have run; 0 never
 	podns     int
+	// remoteFail makes podman's service (podman --remote) fail.
+	remoteFail bool
 	// atPodns records, at each PodnsUnit start, which of podman's
 	// libpod/tmp files are present (stale is set by the test).
 	stale   []string
@@ -62,7 +64,9 @@ func storeTestEnv(t *testing.T) (*env, *storeHost) {
 			return Result{Stdout: out}, nil
 		case strings.Contains(a, "systemctl --user list-units"):
 			return Result{Stdout: "podman.socket loaded active listening y\n"}, nil
-		case strings.Contains(a, "podman info --format"):
+		case sh.remoteFail && strings.Contains(a, "podman --remote"):
+			return Result{Code: 125, Stderr: "Cannot connect to Podman"}, errors.New("exit status 125")
+		case strings.Contains(a, "info --format"):
 			return Result{Stdout: sh.graphroot + "\n"}, nil
 		}
 		return Result{}, nil
@@ -365,5 +369,35 @@ func TestDebugUnitSeesTheBoundStore(t *testing.T) {
 	}
 	if got := unitEnv(c)["CONTAINERS_STORAGE_CONF"]; got != v.e.storageConf() {
 		t.Fatalf("debug CONTAINERS_STORAGE_CONF=%q", got)
+	}
+}
+
+// A store podman's own CLI sees but the service behind DOCKER_HOST can't
+// serve is not bound: podman starts unbound again and the job runs
+// without it, and the log says why.
+func TestContainerStoreChecksTheService(t *testing.T) {
+	v, sh := storeTestEnv(t)
+	sh.remoteFail = true
+	ctx := context.Background()
+	must(t, v.e.Start(ctx, cachedSpec("chk-app", core.KindCheck, "acme/app")))
+	starts := podnsStarts(v.f)
+	if len(starts) != 2 || !strings.Contains(strings.Join(starts[0], " "), "BindPaths=") ||
+		strings.Contains(strings.Join(starts[1], " "), "BindPaths=") {
+		t.Fatalf("podns starts %q, want a bind then an unbound start", starts)
+	}
+	remote := false
+	for _, c := range v.f.commands() {
+		if strings.Contains(c, "podman --remote --url unix://"+filepath.Join(v.e.runtimeDir(testUID), "podman", "podman.sock")+" info") {
+			remote = true
+		}
+	}
+	if !remote {
+		t.Fatal("the service behind DOCKER_HOST was not asked")
+	}
+	if _, err := os.Stat(v.e.storageConf()); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("storage.conf survived the failed bind")
+	}
+	if !strings.Contains(v.logs.String(), "Cannot connect to Podman") {
+		t.Fatalf("the log lacks podman's reason:\n%s", v.logs.String())
 	}
 }
