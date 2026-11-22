@@ -132,6 +132,17 @@ func TestEntriesFitTheirBudget(t *testing.T) {
 	if code := big.put(cr.SignedUploadURL, randBytes(3001)); code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("an upload over the budget got %d", code)
 	}
+	// Nor two entries that each fit but together don't.
+	twice := j.next()
+	if ok, msg := twice.save("half", ver, randBytes(2000), 4096); !ok {
+		t.Fatal(msg)
+	}
+	if twice.twirp("CreateCacheEntry", createReq{Key: "half2", Version: ver}, &cr); !cr.OK {
+		t.Fatal(cr.Message)
+	}
+	if code := twice.put(cr.SignedUploadURL, randBytes(2000)); code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("a job's uploads over the budget got %d", code)
+	}
 }
 
 // A restore counts as use: an old entry just restored outlives a newer one

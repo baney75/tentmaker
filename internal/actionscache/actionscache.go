@@ -62,7 +62,7 @@ import (
 // goes (the artifact service and anything newer).
 const DefaultUpstream = "https://results-receiver.actions.githubusercontent.com"
 
-// Caps on what one job may upload. Both are also capped at the repo's
+// Caps on what one job may upload. MaxJob is also capped at the repo's
 // Actions budget (budgetOf).
 const (
 	DefaultMaxEntry = 10 << 30 // GitHub's own cap on one cache entry

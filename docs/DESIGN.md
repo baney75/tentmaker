@@ -315,8 +315,8 @@ disk speed with no workflow change. Any step of it that fails leaves the job on 
   are `e-<id>`; a sweep under the repo lock removes staging and orphans older than 6 hours. The
   repo cache's LRU cap covers these files too, but it evicts a whole repo folder, build caches
   and all, so the entries have a budget of their own: half of `cache_max`, at most GitHub's
-  10 GiB per repo (`repocache.Store.ActionsBudget`, `actionscache.MaxRepo`). `MaxEntry` and
-  `MaxJob` are capped at it. A restore that matches records the entry's last use in memory; at
+  10 GiB per repo (`repocache.Store.ActionsBudget`, `actionscache.MaxRepo`). `MaxJob`, and so
+  every entry, is capped at it. A restore that matches records the entry's last use in memory; at
   each create (the sweep) and each commit, under the repo lock, the service writes those uses
   into `entry.used`, drops entries no restore matched for 7 days, then drops the least recently
   used until the entries fit the budget, all in the one index write the step already made. An

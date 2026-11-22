@@ -161,7 +161,7 @@ func (s *Service) reserve(g *grant, u *upload, n int64) bool {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	budget := budgetOf(u.store)
-	if u.busy || u.total+n > min(s.o.MaxEntry, budget) {
+	if u.busy || u.total+n > s.o.MaxEntry {
 		return false
 	}
 	if g.used.Add(n) > min(s.o.MaxJob, budget) {
