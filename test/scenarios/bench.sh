@@ -17,15 +17,15 @@
 # own toolchains, as on a device where they are installed.
 # shellcheck source=test/scenarios/lib.sh
 . "$(dirname "$0")/lib.sh"
-W=${BENCH_WORKLOAD:?BENCH_WORKLOAD is required}
+WL=${BENCH_WORKLOAD:?BENCH_WORKLOAD is required}
 REPS=${BENCH_REPS:-3}
-scn_begin "bench-$W"
+scn_begin "bench-$WL"
 [ "$OS" = linux ] || die "bench runs on Linux only"
 git_init
-WF=$SCN_ROOT/.github/workflows/bench-$W.yml
+WF=$SCN_ROOT/.github/workflows/bench-$WL.yml
 [ -f "$WF" ] || die "no workload file $WF"
-CTX="tentmaker/$W"
-OUT=$SCN_ROOT/bench-raw/tm/$W
+CTX="tentmaker/$WL"
+OUT=$SCN_ROOT/bench-raw/tm/$WL
 mkdir -p "$OUT"
 
 # The dogfood scenario's device: 8 GiB and 4 CPUs, the default job size.
@@ -40,13 +40,13 @@ stage_tool() {
 	measure_s "${1}_version" "$3"
 }
 stage_tool go "$(go env GOROOT)" "$(go env GOVERSION | sed 's/^go//')"
-if [ "$W" = node ]; then
+if [ "$WL" = node ]; then
 	nd=$(find /opt/hostedtoolcache/node -mindepth 2 -maxdepth 2 -name x64 -path '*/22.*' | sort -V | tail -1)
 	[ -n "$nd" ] || die "no Node 22 in this VM's tool cache"
 	stage_tool node "$nd" "$(basename "$(dirname "$nd")")"
 fi
 
-jqr -n --arg w "$W" --arg os "${ImageOS:-}" --arg iv "${ImageVersion:-}" \
+jqr -n --arg w "$WL" --arg os "${ImageOS:-}" --arg iv "${ImageVersion:-}" \
 	--argjson cpus "$(nproc)" --arg model "$(lscpu | sed -n 's/^Model name: *//p' | head -1)" \
 	--argjson mem "$(awk '/^MemTotal:/ { printf "%.1f", $2 / 1048576 }' /proc/meminfo)" \
 	--arg v "$(timeout 30 tentmaker version --json | jqr -r .version)" \
@@ -71,8 +71,8 @@ sample() {
 		soft_fail "$CTX: no final status within 40 minutes ($round, rep $rep, $c)"
 	fi
 	statuses "$c" >"$d/statuses.json" 2>/dev/null || echo '[]' >"$d/statuses.json"
-	kept_log "$c" "$W" >"$d/log.txt" || true
-	jqr -n --arg w "$W" --argjson rep "$rep" --arg round "$round" --arg sha "$c" --arg ctx "$CTX" --argjson tp "$tp" \
+	kept_log "$c" "$WL" >"$d/log.txt" || true
+	jqr -n --arg w "$WL" --argjson rep "$rep" --arg round "$round" --arg sha "$c" --arg ctx "$CTX" --argjson tp "$tp" \
 		'{workload: $w, rep: $rep, round: $round, sha: $sha, context: $ctx, push_epoch: $tp}' >"$d/meta.json"
 	measure_s "status_${round}_$rep" "${st:-none}"
 }
