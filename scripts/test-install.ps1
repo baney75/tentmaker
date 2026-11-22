@@ -106,11 +106,17 @@ try {
         try {
             New-Item -ItemType Directory -Path $sys -Force | Out-Null
             Set-Content -LiteralPath (Join-Path $sys 'tentmaker.exe.prev') -Value 'planted'
+            # Whether an elevated process's new files belong to the user or
+            # to Administrators differs between hosts and PowerShell
+            # editions, so make both the user's, as an earlier install left
+            # them on the scenario runner.
+            $me = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
             foreach ($p in @($sys, (Join-Path $sys 'tentmaker.exe.prev'))) {
+                $out = & icacls.exe $p /setowner "*$me" /Q 2>&1
+                if ($LASTEXITCODE -ne 0) { throw "icacls $p /setowner: $out" }
                 Write-Host "     before: $p is owned by $((Get-Acl -LiteralPath $p).GetOwner([Security.Principal.SecurityIdentifier]).Value)"
             }
             & $installer -InstallDir $sys -NoSetup
-            $me = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
             foreach ($p in @($sys, (Join-Path $sys 'tentmaker.exe'))) {
                 $acl = Get-Acl -LiteralPath $p
                 $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
@@ -119,6 +125,14 @@ try {
                 if ($mine.Count -eq 0) { Pass "system install: no entry for this user on $p" } else { Bad "system install: $p has an entry for $me" }
             }
             if (Test-Path -LiteralPath (Join-Path $sys 'tentmaker.exe.prev')) { Bad 'system install kept a planted tentmaker.exe.prev' } else { Pass 'system install removed a planted tentmaker.exe.prev' }
+            # A rollback copy only Administrators could change survives a
+            # reinstall.
+            $prev = Join-Path $sys 'tentmaker.exe.prev'
+            Set-Content -LiteralPath $prev -Value 'kept'
+            $out = & icacls.exe $prev /setowner '*S-1-5-32-544' /Q 2>&1
+            if ($LASTEXITCODE -ne 0) { throw "icacls $prev /setowner: $out" }
+            & $installer -InstallDir $sys -NoSetup
+            if (Test-Path -LiteralPath $prev) { Pass 'system reinstall kept an Administrators-owned tentmaker.exe.prev' } else { Bad 'system reinstall removed an Administrators-owned tentmaker.exe.prev' }
         } catch { Bad "system install threw: $_" } finally {
             Remove-Item -LiteralPath $sysParent -Recurse -Force -ErrorAction SilentlyContinue
             [Environment]::SetEnvironmentVariable('Path', $machinePath, 'Machine')
