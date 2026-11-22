@@ -528,3 +528,43 @@ func itoa(n int64) string {
 	}
 	return string(b[i:])
 }
+
+// PullRequest is a pull request a forge should open, or update when one
+// from Head into Base is already open. Head is a branch of Repo itself.
+type PullRequest struct {
+	Repo  string `json:"repo"` // "owner/name"
+	Head  string `json:"head"` // branch name, like tentmaker/migrate
+	Base  string `json:"base"` // "" = the repo's default branch
+	Title string `json:"title"`
+	Body  string `json:"body"`
+}
+
+// PullRequestResult says which pull request a PullRequester opened or updated.
+type PullRequestResult struct {
+	Number  int    `json:"number"`
+	URL     string `json:"url"`
+	Created bool   `json:"created"` // false: an open one was updated
+}
+
+// PullRequester is a forge that can open pull requests (GitHub). It is
+// optional: forges that lack it can't take `tentmaker migrate --pr`.
+type PullRequester interface {
+	OpenOrUpdatePR(ctx context.Context, pr PullRequest) (PullRequestResult, error)
+}
+
+// FirstJob is what the forge says about Tentmaker runners for one repo:
+// whether one is online now, the last job that ran on one, and jobs for the
+// pool that wait. Doctor's first-job check reads it.
+type FirstJob struct {
+	Online       []string  `json:"online"`        // names of online runners labeled tentmaker
+	RanJob       string    `json:"ran_job"`       // the newest job that ran on such a runner
+	RanOn        string    `json:"ran_on"`        // its runner's name
+	RanAt        time.Time `json:"ran_at"`        // when it was created
+	Queued       int       `json:"queued"`        // jobs labeled tentmaker waiting for a runner
+	OldestQueued time.Time `json:"oldest_queued"` // when the oldest of those was created
+}
+
+// FirstJobReporter is a forge that can report FirstJob (GitHub). Optional.
+type FirstJobReporter interface {
+	FirstJob(ctx context.Context, repo string) (FirstJob, error)
+}

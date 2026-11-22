@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/baney75/tentmaker/internal/forge/github"
 	"github.com/baney75/tentmaker/internal/mcp"
 	"github.com/baney75/tentmaker/internal/mesh"
 	"github.com/baney75/tentmaker/internal/runs"
@@ -100,7 +101,7 @@ func (c controller) Resume(ctx context.Context) error {
 }
 
 func (c controller) MigrateWorkflows(ctx context.Context, path, platform string, write bool) (any, error) {
-	v, err := c.a.migrate(path, platform, write)
+	v, err := c.a.migrate(path, platform, write, github.MigrateOptions{})
 	return v, mcpErr(err)
 }
 

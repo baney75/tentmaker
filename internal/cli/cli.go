@@ -115,6 +115,13 @@ type Env struct {
 	// setup creates next (Windows; elsewhere root already owns them). nil
 	// does nothing. Default binsafe.OwnNewFiles.
 	OwnNewFiles func() error
+	// Git runs git in dir, as the person who ran sudo when run under sudo,
+	// with stdin, and returns its stdout. Default: the git on PATH, with a
+	// timeout and no credential prompts.
+	Git func(ctx context.Context, dir string, stdin io.Reader, args ...string) (string, error)
+	// OpenPR opens or updates a GitHub pull request with token. Default:
+	// the GitHub client.
+	OpenPR func(ctx context.Context, token string, pr core.PullRequest) (core.PullRequestResult, error)
 	// Command runs a host tool (journalctl, git) with output to out.
 	Command   func(ctx context.Context, out io.Writer, name string, args ...string) error
 	RunBundle func(ctx context.Context, b core.CheckBundle, outDir string, log io.Writer) core.CheckResult
@@ -175,7 +182,15 @@ func DefaultEnv() *Env {
 		ServiceBinDirs: binsafe.ServiceDirs(runtime.GOOS, os.Getenv),
 		OwnNewFiles:    binsafe.OwnNewFiles,
 		Command:        runCommand,
-		RunBundle:      checks.RunBundle,
+		Git: func(ctx context.Context, dir string, stdin io.Reader, args ...string) (string, error) {
+			user := ""
+			if runtime.GOOS != "windows" && isRoot() {
+				user = os.Getenv("SUDO_USER")
+			}
+			return runGit(ctx, user, dir, stdin, args...)
+		},
+		OpenPR:    openPRWithToken,
+		RunBundle: checks.RunBundle,
 		RunDaemon: func(ctx context.Context, o daemon.Options) error {
 			return daemon.New(o).Run(ctx)
 		},
@@ -255,7 +270,7 @@ func init() {
 		"repo":      {usageRepo, (*app).cmdRepo},
 		"connect":   {"tentmaker connect github|forgejo|gitlab [--url URL] [--token-stdin] [--json]", (*app).cmdConnect},
 		"devices":   {"tentmaker devices add HOST [--channel stable|dev] [--memory S] [--boost-memory S] [--repo R]... [--json]", (*app).cmdDevices},
-		"migrate":   {"tentmaker migrate [PATH] [--platform linux|macos|windows] [--write] [--json]", (*app).cmdMigrate},
+		"migrate":   {usageMigrate, (*app).cmdMigrate},
 		"pause":     {"tentmaker pause [--for DURATION] [REASON...] [--json]", (*app).cmdPause},
 		"resume":    {"tentmaker resume [--json]", (*app).cmdResume},
 		"doctor":    {"tentmaker doctor [--json]", (*app).cmdDoctor},
