@@ -1,0 +1,54 @@
+# Bench workload: a real Node project: tj/commander.js v15.1.0 (MIT) at a pinned commit, npm ci and npm test.
+# bench.yml runs it on GitHub's hosted runners (workflow_call, cold then warm
+# with the same cache key) and test/scenarios/bench.sh runs the same file under
+# Tentmaker as .tm-scn/wf.yml. Every timed step goes through
+# scripts/bench/phase.sh so both sides are measured the same way.
+name: bench-node
+
+on:
+  # Checks mode plans only push and pull_request workflows. The bench pushes
+  # its tm-scn/ branches with GITHUB_TOKEN, which never starts a GitHub run,
+  # so this trigger is for Tentmaker alone.
+  push:
+    branches: ['tm-scn/**']
+  workflow_call:
+    inputs:
+      key:
+        description: cache key suffix, one per cold and warm pair
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  node:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+      # The project is fetched after setup, so setup-node's npm cache has no
+      # lock file to key on; this caches npm's download cache the usual way.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.npm
+          key: bench-node-${{ inputs.key }}
+      - name: fetch tj/commander.js
+        run: |
+          scripts/bench/phase.sh begin fetch
+          mkdir work
+          curl -fsSL --retry 3 --max-time 120 https://codeload.github.com/tj/commander.js/tar.gz/a5a7dc084d4d2b7932e85ca049c5204e50a2c721 |
+            tar -xz -C work --strip-components 1
+          scripts/bench/phase.sh end fetch
+      - run: ../scripts/bench/phase.sh run deps npm ci --no-audit --no-fund
+        working-directory: work
+      - run: ../scripts/bench/phase.sh run test npm test
+        working-directory: work
+      # After the work, so only a passing run marks the cache (hit.sh).
+      - run: scripts/bench/hit.sh "$(npm config get cache)"
+      - run: scripts/bench/phase.sh report

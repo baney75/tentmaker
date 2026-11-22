@@ -1,0 +1,61 @@
+# Bench workload: this repo's cross build, as ci.yml's cross-build job runs it (six GOOS/GOARCH targets).
+# bench.yml runs it on GitHub's hosted runners (workflow_call, cold then warm
+# with the same cache key) and test/scenarios/bench.sh runs the same file under
+# Tentmaker as .tm-scn/wf.yml. Every timed step goes through
+# scripts/bench/phase.sh so both sides are measured the same way.
+name: bench-cross-build
+
+on:
+  # Checks mode plans only push and pull_request workflows. The bench pushes
+  # its tm-scn/ branches with GITHUB_TOKEN, which never starts a GitHub run,
+  # so this trigger is for Tentmaker alone.
+  push:
+    branches: ['tm-scn/**']
+  workflow_call:
+    inputs:
+      key:
+        description: cache key suffix, one per cold and warm pair
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  cross-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Go is pinned to go.mod's go line here, not read from go.mod: checks
+      # mode treats a version read from go.mod as a minimum and took the
+      # device's newer Go, so the two sides compiled with different Go.
+      # scripts/bench tests that this matches go.mod, and the gate checks
+      # the Go each run recorded.
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version: "1.25.0"
+          cache: false
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: bench-cross-build-${{ inputs.key }}
+      - run: scripts/bench/phase.sh run deps go mod download
+      - name: build every target
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          scripts/bench/phase.sh begin build
+          for os in linux darwin windows; do
+            for arch in amd64 arm64; do
+              GOOS=$os GOARCH=$arch go build ./... || exit 1
+            done
+          done
+          scripts/bench/phase.sh end build
+      # After the work, so only a passing run marks the cache (hit.sh).
+      - run: scripts/bench/hit.sh "$(go env GOCACHE)" && scripts/bench/phase.sh meta go "$(go env GOVERSION)"
+      - run: scripts/bench/phase.sh report
