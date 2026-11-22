@@ -237,10 +237,77 @@ one runs cold at `jobs/<name>` as before.
   --dir` is the next step. Windows jobs get none: every job runs as the same user with no mount
   namespace, so one repo's cache folder can't be kept from another repo's job.
 
+**Actions cache (Linux, `internal/actionscache`, `internal/executor/linux/patch.go`).** A runner
+job from github.com that may use its repo cache (Dispatch) also gets a GitHub Actions cache on the
+device, so `actions/cache@v4` and the setup-* actions' `cache:` option save and restore at local
+disk speed with no workflow change. Any step of it that fails leaves the job on GitHub's cache.
+
+- Protocol: the toolkit's cache v2, JSON Twirp at
+  `/twirp/github.actions.results.api.v1.CacheService/` (`CreateCacheEntry`,
+  `FinalizeCacheEntryUpload`, `GetCacheEntryDownloadURL`), plus the subset of Azure Blob the
+  toolkit's SDK uses: a whole `PUT`, or `comp=block` blocks then `comp=blocklist`, and a plain
+  `GET` or `HEAD` with `Range` or `x-ms-range` for the download. Every other `/twirp/` path (the
+  artifact and results services that read `ACTIONS_RESULTS_URL` too) is reverse proxied to
+  `results-receiver.actions.githubusercontent.com` with the job's own headers, under a timeout.
+- Listener: `daemon.Options.CacheAddr`, default 127.0.0.1:7436 (`control.DefaultCacheAddr`, `-`
+  serves none). It answers only a loopback `Host`, and has its own listener, apart from the
+  control API and the relay. Linux only: the other executors cannot name a job by its connection.
+- Pointing the runner at it: the worker sets `ExecSpec.ActionsCache` to the service URL, and the
+  executor puts `ACTIONS_RESULTS_URL`, `ACTIONS_CACHE_URL` (both that URL, checked to be plain
+  http to a loopback address) and `ACTIONS_CACHE_SERVICE_V2=True` in the job's `.env`. The
+  runner's worker would overwrite the first two from the job message, so the job runs a patched
+  `Runner.Worker.dll` that sets `ACTIONS_RESULTS_ORL` and `ACTIONS_CACHE_ORL` instead: two
+  same-length renames in the UTF-16 string heap, each name present exactly once and its new name
+  absent. The executor patches only a dll whose sha256 is the pinned original for the pinned
+  runner and arch, checks the result against the pinned patched sha256, and keeps the copy at
+  `<lib>/runner-cache/<version>-<arch>/`; the template stays as shipped. A new runner without new
+  pins, a different dll or a failed patch logs once and every job keeps GitHub's cache. The docker
+  shim gives containers the real URLs back (`-e ACTIONS_RESULTS_URL` from `ACTIONS_RESULTS_ORL`,
+  and the same for the cache), so container actions keep working.
+- Who is calling: no secret goes in `.env`. The service names the job behind each connection: it
+  finds the client socket's inode in `/proc/net/tcp` (and tcp6), and the process holding it must
+  be in the job's uplink unit, `tentmaker.slice/tentmaker-uplink-<name>.service` (`cgroup.procs`,
+  then `/proc/<pid>/fd`). A job's connections all leave through its own pasta, so its unit is the
+  job's identity; a connection no job's uplink holds (the host, the podman namespace, another
+  user) gets 404 on every path, the proxy included. The answer is cached per connection.
+- Capability: `Grant` mints 32 random bytes per job and the service puts them in the `sig` query
+  of every upload and download URL it returns. A blob request needs a `sig` that names a live
+  grant and that grant's job must be the connection's. `Revoke` at job end (and on a failed boot)
+  drops it, so a URL from an ended job is 404. Neither the capability nor a URL holding it is ever
+  logged or put in an error.
+- Scopes: entries carry the ref they were saved from, `refs/heads/<branch>` for a push and
+  `refs/pull/head/<branch>` for a pull_request event. Restore looks in the job's own ref, then the
+  repo's default branch (`WorkOffer.Actions.DefaultBranch`), each by exact key then by each restore
+  key as a prefix, newest first, and only for the version asked for. A save goes only to the job's
+  own ref, so a PR reads main and never writes it. The runtime token's `ac` claim can only narrow
+  this: a write needs write on the job's ref in the claim, and reading the job's own ref needs read
+  on it (any `refs/pull/` scope counts for a PR). A token with no readable claim keeps the
+  binding's access, with one warning per job.
+- Entries are immutable: a key and version that exist, or are reserved by an upload in flight,
+  are refused with `ok:false` and a "cache write denied" message, which the toolkit logs as a
+  warning without failing the step. An entry is committed only at `FinalizeCacheEntryUpload`,
+  after its size (and, for blocks, the assembled stream's sha256) checks out and the write right
+  is checked again. Uploads are capped per entry (`MaxEntry`) and per job (`MaxJob`).
+- Storage: under the repo cache, `<cache_dir>/repos/<key>/.tentmaker-actions/` (root, 0700,
+  owner and mode checked on every open through `os.Root`). The job's own bind of the repo folder
+  shows it as a root-owned folder it cannot open. `index.json` is written with
+  `config.WriteAtomic`; a corrupt index reads as empty. Uploads stream to `u-<id>` files, entries
+  are `e-<id>`; a sweep under the repo lock removes staging and orphans older than 6 hours. The
+  repo cache's LRU cap covers these files too.
+- Speed: uploads stream to disk through a pooled 1 MiB buffer with sha256 computed on the way,
+  and downloads are `http.ServeContent` on the open file (sendfile, `Range`). Benchmark
+  (`BenchmarkSaveRestore256MiB`, 256 MiB, i9-14900HX, tmpfs, loopback, 3 runs of 5): save
+  1.15 to 1.18 GB/s, restore 4.9 to 5.5 GB/s.
+- Not yet: macOS (tart) and Windows jobs keep GitHub's cache (future work: the tart guest needs a
+  forwarded port and a per-VM identity, and Windows jobs share one user and the host's network
+  stack, so a connection names no job). Container steps keep GitHub's cache too: their
+  connections come through the podman uplink, which names no job.
+
 **Network isolation.** Install fences the runner user off and every `Start` checks the fence
 first; no rules means no job (fail closed). A Linux job also gets a network namespace of its own
 (below); a Windows job shares the host's network stack. Jobs may reach the internet, the DNS
-servers the host is configured with, and the source archive relay on 127.0.0.1:7435. Always blocked: the tailnet (100.64.0.0/10, fd7a:115c:a1e0::/48), link-local
+servers the host is configured with, the source archive relay on 127.0.0.1:7435 and, on Linux,
+the Actions cache on 127.0.0.1:7436. Always blocked: the tailnet (100.64.0.0/10, fd7a:115c:a1e0::/48), link-local
 (169.254/16, fe80::/10), unique local (fc00::/7), loopback and this host's own addresses, and port
 7433 on any address. RFC 1918 (10/8, 172.16/12, 192.168/16) and, on Linux, the host's on-link
 global IPv6 prefixes are the LAN, blocked unless `[guards] allow_lan`; `allow_lan` means the
@@ -256,7 +323,8 @@ physical LAN only, never what the tailnet routes.
   namespaces by pid). pasta must run as the runner: it opens every outside socket, and the per-uid
   rules below match them; pasta started as root and dropping privileges cannot join a namespace
   owned by the initial user namespace, hence the runner-owned holder. pasta forwards only the
-  relay (`-T 7435`: the job's own 127.0.0.1:7435 reaches the host's), maps no other host loopback
+  relay and the Actions cache (`-T 7435,7436`: the job's own 127.0.0.1:7435 and :7436 reach the
+  host's), maps no other host loopback
   (`--no-map-gw`) and publishes no job port (`-t none -u none`). pasta copies the host's addresses
   and routes, so a host with no IPv6 default route gives its jobs no IPv6 at all. `Start` waits until the holder's
   process has left the host's namespace (`/proc/<pid>/ns/net` differs from the daemon's), starts
@@ -274,7 +342,8 @@ physical LAN only, never what the tailnet routes.
   `DOCKER_HOST`) runs in podman.service's, which it gets from the runner's user manager. So podman
   gets a network namespace of its own, made the way a job's is: `tentmaker-podnet.service` (the
   holder) and `tentmaker-podnet-uplink.service` (pasta, the same argv as a job's, so the per-uid
-  rules match all it sends and only the relay is forwarded to the host). `Install` and `Reset`
+  rules match all it sends and only the relay and the Actions cache port are forwarded to the
+  host; the cache answers a container's connection 404, since it comes from no job's uplink). `Install` and `Reset`
   stop the user manager and its runtime dir, start those two, write the runtime drop-in
   `/run/systemd/system/user@<uid>.service.d/60-tentmaker-netns.conf` with
   `NetworkNamespacePath=/proc/<holder>/ns/net` (under `/run`, so no pid outlives a reboot), run
@@ -300,8 +369,9 @@ physical LAN only, never what the tailnet routes.
   `~/.config/containers/containers.conf` (root-owned) with `cgroup_manager = "cgroupfs"`, and jobs
   load it through `CONTAINERS_CONF_OVERRIDE`. A job's containers then stay in the job's cgroup.
 - Linux (`netrules.go`): nftables table `inet tentmaker`, an output hook that sends every packet
-  with `meta skuid { <runner uid>, <its subuid ranges> }` to a `runner` chain (accept relay and DNS,
-  then reject). The subordinate uids are a second wall: a rootless container on the host network
+  with `meta skuid { <runner uid>, <its subuid ranges> }` to a `runner` chain (accept the relay,
+  the Actions cache on 127.0.0.1:7436 and DNS, then reject; rules without the cache port are stale
+  and reload). The subordinate uids are a second wall: a rootless container on the host network
   that runs as a non-root user opens its sockets as one of them, and none should share the host's
   namespace (the podman namespace above). The ranges are the runner's `/etc/subuid` entries keyed
   by its name or its numeric uid (newuidmap takes either). With none, or a file that can't be
@@ -448,6 +518,17 @@ is private and its fork PR workflows are off (`RepoInfo.ForkPolicy == "off"`, re
 ago): a JIT runner takes whichever queued job matches its labels, so the granted job's own
 `FromFork` proves nothing about the job it runs. The worker sets `ExecSpec.Cache` (forge and repo)
 only from an offer with the flag and a job that isn't from a fork; an older broker never sets it.
+
+`WorkOffer.Actions` marks a runner offer from github.com (the forge kind is `github` and its API is
+api.github.com) and carries the repo's default branch. The worker grants such a job the Actions
+cache (`WorkerOptions.ActionsCache`, an `ActionsCache` interface) only when the service is
+listening and the executor is a `core.ActionsCacher` whose `ActionsCacheReady()` is true:
+write when the job got its repo cache, read only when a drain alone kept it from the cache, and no
+grant otherwise, so the job keeps GitHub's cache. When a job of another trust starts beside one
+with a grant, the grant is lowered to none (`Limit`): the cache is as private as the least trusted
+job on the device, the same rule as the repo cache. The binding (refs and access, no secret) is
+kept in `state.json` as `jobRec.Actions`, and a restart grants the recorded jobs again with new
+capabilities. A grant that fails leaves `ExecSpec.ActionsCache` empty.
 
 A cache is only as private as the least trusted job beside it (one user, `/proc`), so the worker
 decides under its admission lock, from the jobs on the device (`jobRec.Trust`, the repo the job
@@ -796,6 +877,11 @@ section is rewritten.
   and loop `/v1/doctor`, which calls the forge with its token for every repo and drains the rate
   limit (review r1 first-F1). A host whose rules predate this keeps the old fence until `sudo
   tentmaker setup` runs again.
+- The Actions cache names its caller by connection (the job's pasta uplink unit) instead of a
+  secret in the job's environment. A capability in `.env` would be readable by every step and
+  every action, and would have to be kept out of logs the runner writes; the uplink unit is
+  something a step cannot forge. The `sig` capability in returned URLs still binds a URL to one
+  job's grant, so a URL that leaks to another job or outlives its job is 404.
 - The control API names its caller instead of trusting the network (fence verification, item
   18): Windows Firewall doesn't filter loopback, so a job reached 7434 whatever the rules said.
   Linux and macOS serve it on the Unix socket `control.DefaultAddr`

@@ -32,7 +32,14 @@ exec ./run.sh
 // dockerShim is first on every job's PATH as docker. Podman's Docker API
 // takes the PidsLimit 0 the Docker CLI sends on every create as a limit of
 // one process, so a job container couldn't fork. Give create and run a real
-// limit unless the caller set one; pass everything else through.
+// limit unless the caller set one.
+//
+// It also undoes the Actions cache rename for containers (patch.go): the
+// runner passes -e ACTIONS_RESULTS_ORL and -e ACTIONS_CACHE_ORL, holding
+// GitHub's service, to container steps and job containers, which can't
+// reach the device's cache. The shim exports their values under the usual
+// names and passes those by name too, so no value lands in argv.
+// Everything else goes through unchanged.
 const dockerShimTemplate = `#!/bin/bash
 # Tentmaker docker shim. Installed by tentmaker setup; root-owned, do not edit.
 real=@DOCKER@
@@ -40,11 +47,25 @@ args=("$@")
 i=0
 [[ ${args[0]:-} == container ]] && i=1
 case ${args[i]:-} in
-  create|run)
-    for a in "${args[@]:i+1}"; do
-      [[ $a == --pids-limit || $a == --pids-limit=* ]] && exec "$real" "$@"
+  create|run|exec)
+    extra=()
+    for v in ACTIONS_RESULTS ACTIONS_CACHE; do
+      orl=${v}_ORL
+      [[ -n ${!orl+set} ]] || continue
+      for a in "${args[@]:i+1}"; do
+        if [[ $a == "$orl" || $a == "--env=$orl" ]]; then
+          export "${v}_URL=${!orl}"
+          extra+=(-e "${v}_URL")
+          break
+        fi
+      done
     done
-    exec "$real" "${args[@]:0:i+1}" --pids-limit 4096 "${args[@]:i+1}"
+    pids=(--pids-limit 4096)
+    [[ ${args[i]} == exec ]] && pids=()
+    for a in "${args[@]:i+1}"; do
+      [[ $a == --pids-limit || $a == --pids-limit=* ]] && pids=()
+    done
+    exec "$real" "${args[@]:0:i+1}" "${pids[@]}" "${extra[@]}" "${args[@]:i+1}"
     ;;
 esac
 exec "$real" "$@"

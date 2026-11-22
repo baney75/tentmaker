@@ -31,6 +31,7 @@ table inet tentmaker {
 	}
 	chain runner {
 		ip daddr 127.0.0.1 tcp dport 7435 accept comment "source archive relay"
+		ip daddr 127.0.0.1 tcp dport 7436 accept comment "actions cache"
 		ip daddr { 127.0.0.53, 192.168.1.1 } udp dport 53 accept comment "DNS"
 		ip daddr { 127.0.0.53, 192.168.1.1 } tcp dport 53 accept comment "DNS"
 		ip6 daddr { 2001:db8::53 } udp dport 53 accept comment "DNS"
@@ -93,6 +94,7 @@ for t in '/usr/sbin/iptables' '/usr/sbin/ip6tables'; do
 	"$t" -w 5 -F TENTMAKER
 done
 '/usr/sbin/iptables' -w 5 -A TENTMAKER -d 127.0.0.1/32 -p tcp --dport 7435 -j ACCEPT
+'/usr/sbin/iptables' -w 5 -A TENTMAKER -d 127.0.0.1/32 -p tcp --dport 7436 -j ACCEPT
 '/usr/sbin/iptables' -w 5 -A TENTMAKER -d 127.0.0.53 -p udp --dport 53 -j ACCEPT
 '/usr/sbin/iptables' -w 5 -A TENTMAKER -d 127.0.0.53 -p tcp --dport 53 -j ACCEPT
 '/usr/sbin/iptables' -w 5 -A TENTMAKER -d 192.168.1.1 -p udp --dport 53 -j ACCEPT
@@ -245,6 +247,7 @@ const testNftListing = `table inet tentmaker {
 
 	chain runner {
 		ip daddr 127.0.0.1 tcp dport 7435 accept comment "source archive relay"
+		ip daddr 127.0.0.1 tcp dport 7436 accept comment "actions cache"
 		ip daddr { 127.0.0.53, 192.168.1.1 } udp dport 53 accept comment "DNS"
 		ip daddr { 127.0.0.53, 192.168.1.1 } tcp dport 53 accept comment "DNS"
 		ip6 daddr 2001:db8::53 udp dport 53 accept comment "DNS"
@@ -295,6 +298,9 @@ func TestCheckNft(t *testing.T) {
 	// Rules from before the relay moved off the control API's port 7434.
 	oldRelay := strings.Replace(testNftListing, "tcp dport 7435 accept", "tcp dport 7434 accept", 1)
 	stale("old relay port", testPolicy, oldRelay, "7435 in the \"source archive relay\" rule")
+	// Rules from before the Actions cache.
+	noCache := strings.Replace(testNftListing, "\t\tip daddr 127.0.0.1 tcp dport 7436 accept comment \"actions cache\"\n", "", 1)
+	stale("no actions cache rule", testPolicy, noCache, "7436 in the \"actions cache\" rule")
 	lan := testPolicy
 	lan.AllowLAN = true
 	stale("allow_lan rules on a strict host", testPolicy, NftRules(lan), "10.0.0.0/8")

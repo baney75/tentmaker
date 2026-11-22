@@ -54,6 +54,11 @@ const unixPrefix = "unix:"
 // RelayPort in internal/executor/linux and internal/executor/windows.
 const DefaultRelayAddr = "127.0.0.1:7435"
 
+// DefaultCacheAddr is where the daemon serves the GitHub Actions cache
+// service (internal/actionscache) to Linux runner jobs. The job fence allows
+// it like the relay; keep it in step with CachePort in internal/executor/linux.
+const DefaultCacheAddr = "127.0.0.1:7436"
+
 // TokenFile is the token's name in the state directory.
 const TokenFile = "control.token"
 

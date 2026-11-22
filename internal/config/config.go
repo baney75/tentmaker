@@ -5,6 +5,8 @@ package config
 
 import (
 	"bytes"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"math"
 	"os"
@@ -429,6 +431,38 @@ func WriteAtomic(path string, data []byte, mode os.FileMode) error {
 		return err
 	}
 	return os.Rename(tmp, path)
+}
+
+// WriteAtomicIn is WriteAtomic for a file inside root: the temp file and the
+// rename stay in root, so a symlink swapped into the path can't redirect
+// the write. name must be a plain file name in root's top folder.
+func WriteAtomicIn(root *os.Root, name string, data []byte, mode os.FileMode) error {
+	var rnd [8]byte
+	if _, err := rand.Read(rnd[:]); err != nil {
+		return err
+	}
+	tmp := ".tmp-" + name + "-" + hex.EncodeToString(rnd[:])
+	f, err := root.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
+	if err != nil {
+		return err
+	}
+	defer root.Remove(tmp)
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Chmod(mode); err != nil && runtime.GOOS != "windows" {
+		f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return root.Rename(tmp, name)
 }
 
 func clampSize(v, lo, hi Size) Size {

@@ -35,9 +35,12 @@ const NetUnit = "tentmaker-net.service"
 const NetChain = "TENTMAKER"
 
 // RelayPort is the source archive relay's loopback port, where check jobs
-// fetch their source archive. MeshPort is the peer API's port on every device.
+// fetch their source archive. CachePort is the GitHub Actions cache
+// service's (internal/actionscache), where runner jobs save and restore.
+// MeshPort is the peer API's port on every device.
 const (
 	RelayPort = 7435
+	CachePort = 7436
 	MeshPort  = 7433
 )
 
@@ -380,6 +383,7 @@ func NftRules(p NetPolicy) string {
 	w("\t}")
 	w("\tchain runner {")
 	w("\t\tip daddr 127.0.0.1 tcp dport " + strconv.Itoa(RelayPort) + ` accept comment "source archive relay"`)
+	w("\t\tip daddr 127.0.0.1 tcp dport " + strconv.Itoa(CachePort) + ` accept comment "actions cache"`)
 	for _, v6 := range []bool{false, true} {
 		rs := p.resolvers(v6)
 		if len(rs) == 0 {
@@ -444,6 +448,7 @@ func IptablesRules(p NetPolicy, iptables, ip6tables string) string {
 	w("done")
 	rule := func(t string, args ...string) { w(t + " -w 5 -A " + NetChain + " " + strings.Join(args, " ")) }
 	rule(v4, "-d", "127.0.0.1/32", "-p", "tcp", "--dport", strconv.Itoa(RelayPort), "-j", "ACCEPT")
+	rule(v4, "-d", "127.0.0.1/32", "-p", "tcp", "--dport", strconv.Itoa(CachePort), "-j", "ACCEPT")
 	for _, fam := range []struct {
 		t  string
 		v6 bool
@@ -765,6 +770,7 @@ func checkNft(out string, p NetPolicy) error {
 		}
 	}
 	want("source archive relay", strconv.Itoa(RelayPort), "accept")
+	want("actions cache", strconv.Itoa(CachePort), "accept")
 	want("mesh port", strconv.Itoa(MeshPort), "tcp", "udp", "reject")
 	want("this host", `"lo"`, "reject")
 	want("tailnet", TailnetV4, TailnetV6, "reject")
@@ -847,6 +853,8 @@ func parseIpt(out string) []iptRule {
 // iptWants are the rules the TENTMAKER chains must hold for p.
 func iptWants(p NetPolicy) (v4, v6 []iptRule) {
 	mesh := strconv.Itoa(MeshPort)
+	// Older rules lack the cache port; a stale chain is reloaded.
+	v4 = append(v4, iptRule{d: normElem("127.0.0.1/32"), dport: strconv.Itoa(CachePort), j: "ACCEPT"})
 	for _, set := range []*[]iptRule{&v4, &v6} {
 		*set = append(*set, iptRule{dport: mesh, j: "REJECT"}, iptRule{o: "lo", j: "REJECT"})
 	}

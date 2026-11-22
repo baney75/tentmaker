@@ -192,6 +192,7 @@ func (r *rig) launch() {
 		ControlAddr: "127.0.0.1:0",
 		Identify:    func(net.Conn) (control.Caller, error) { return control.Caller{Who: "uid 1000"}, nil },
 		RelayAddr:   "127.0.0.1:0",
+		CacheAddr:   "127.0.0.1:0",
 		Updater:     r.up,
 		Hostname:    func() (string, error) { return "box", nil },
 		Executable:  func() (string, error) { return "/usr/local/bin/tentmaker", nil },
@@ -757,4 +758,37 @@ func TestOpenFDsCountsANewFile(t *testing.T) {
 		}
 	}
 	t.Errorf("open fds %d then %d after opening a file", before, after)
+}
+
+// The Actions cache serves on its own loopback listener, and a caller that
+// is no job's gets 404 rather than an entry; the control API serves none of
+// it.
+func TestDaemonServesActionsCache(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the Actions cache runs on Linux only")
+	}
+	r := newRig(t, func(c *config.Config) { c.Mesh.Enabled = false })
+	r.start()
+	defer r.stop()
+	r.eventually("the cache to listen", func() bool { return r.d.actions.URL() != "" })
+	base := r.d.actions.URL()
+	if strings.Contains(base, r.d.ControlAddress()) || strings.Contains(base, r.d.RelayAddress()) {
+		t.Fatalf("the cache %s shares a listener with the control API or relay", base)
+	}
+	resp, err := http.Get(base + "devstoreaccount1/blob/e-0123456789abcdef0123456789abcdef?sig=x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("a caller that is no job's got %d, want 404", resp.StatusCode)
+	}
+	resp, err = http.Get("http://" + r.d.ControlAddress() + "/devstoreaccount1/blob/e-0123456789abcdef0123456789abcdef")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("the control API answered a cache path with %d", resp.StatusCode)
+	}
 }

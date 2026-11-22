@@ -103,6 +103,8 @@ type infoCache struct {
 	// noForks: a private repo whose fork PR workflows are off, so no fork
 	// job can reach a runner registered to it (see cacheSafe).
 	noForks bool
+	// defaultBranch is the repo's, for the Actions cache (actionsOffer).
+	defaultBranch string
 }
 
 // grantRec is one runner the broker granted. It holds no secret.
@@ -652,7 +654,36 @@ func (b *Broker) realize(ctx context.Context, req core.WorkRequest, rec *grantRe
 	b.log.Info("runner granted", "runner", rec.Name, "runner_id", g.RunnerID, "device", req.Device,
 		"repo", rec.Repo, "job_id", rec.Job.ID, "job", rec.Job.Name, "platform", rec.Platform.String(),
 		"labels", strings.Join(rec.Labels, ","))
-	return core.WorkOffer{Job: rec.Job, Grant: g, Secret: g.Secret, Platform: rec.Platform, Cache: b.cacheSafe(rec), Drain: rec.drain}, true
+	return core.WorkOffer{Job: rec.Job, Grant: g, Secret: g.Secret, Platform: rec.Platform, Cache: b.cacheSafe(rec), Drain: rec.drain,
+		Actions: b.actionsOffer(rec)}, true
+}
+
+// actionsOffer marks a runner offer for a github.com repo: only there does
+// the toolkit use the cache service v2 the device's Actions cache speaks
+// (GHES keeps the older protocol). The worker decides whether the job
+// actually uses it, with the same trust rules as the repo cache.
+func (b *Broker) actionsOffer(rec *grantRec) *core.ActionsOffer {
+	name := rec.Forge
+	if name == "" {
+		name = "github"
+	}
+	fc, ok := b.o.Config.Forges[name]
+	if !ok {
+		fc.Kind = name
+	}
+	if fc.Kind == "" {
+		fc.Kind = name
+	}
+	if fc.Kind != "github" || (fc.URL != "" && strings.TrimRight(fc.URL, "/") != "https://api.github.com") {
+		return nil
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	off := &core.ActionsOffer{}
+	if c := b.infos[rec.Forge+":"+rec.Repo]; c != nil && c.err == "" {
+		off.DefaultBranch = c.defaultBranch
+	}
+	return off
 }
 
 // cacheSafe says whether a runner job may use its repo's persistent cache.
@@ -1006,6 +1037,7 @@ func (b *Broker) pollRunner(ctx context.Context, r *repoState, now time.Time) {
 		} else {
 			nc.why = repoRefusal(r, info)
 			nc.noForks = !info.Public && info.ForkPolicy == "off"
+			nc.defaultBranch = info.DefaultBranch
 		}
 		b.mu.Lock()
 		old := b.infos[r.key()]

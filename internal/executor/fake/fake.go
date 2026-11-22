@@ -7,7 +7,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/baney75/tentmaker/internal/core"
@@ -59,10 +62,44 @@ type Executor struct {
 	poolCalls int
 
 	cachesRepos bool
+	actionsDir  string // "" means no Actions cache
 }
 
 var _ core.Executor = (*Executor)(nil)
 var _ core.RepoCacher = (*Executor)(nil)
+var _ core.ActionsCacher = (*Executor)(nil)
+
+// SetActionsCache makes the executor's runner jobs able to use the Actions
+// cache, with repo entry folders under dir ("" turns it off, the default).
+func (e *Executor) SetActionsCache(dir string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.actionsDir = dir
+}
+
+// ActionsCacheReady implements core.ActionsCacher.
+func (e *Executor) ActionsCacheReady() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.actionsDir != ""
+}
+
+// ActionsRoot implements core.ActionsCacher.
+func (e *Executor) ActionsRoot(c core.CacheRepo, create bool) (*os.Root, error) {
+	e.mu.Lock()
+	dir := e.actionsDir
+	e.mu.Unlock()
+	if dir == "" || c.IsZero() {
+		return nil, errors.New("no actions cache")
+	}
+	p := filepath.Join(dir, c.Forge, strings.ReplaceAll(strings.ToLower(c.Repo), "/", "_"))
+	if create {
+		if err := os.MkdirAll(p, 0o700); err != nil {
+			return nil, err
+		}
+	}
+	return os.OpenRoot(p)
+}
 
 // SetCachesRepos says whether the executor keeps repo caches (default no).
 func (e *Executor) SetCachesRepos(on bool) {
