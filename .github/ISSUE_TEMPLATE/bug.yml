@@ -1,0 +1,31 @@
+name: Bug report
+description: Something Tentmaker did that it shouldn't have, or didn't do that it should.
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you ran, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: version
+    attributes:
+      label: Version
+      description: Paste the output of `tentmaker version --json`.
+      render: json
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Doctor output
+      description: Paste `tentmaker doctor`. Check it first for anything you'd rather not post, such as host names.
+      render: text
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: The lines around the problem from `tentmaker logs -n 200`. Tentmaker never logs tokens, but read them before you post.
+      render: text
