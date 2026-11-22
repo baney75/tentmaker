@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/baney75/tentmaker/internal/core"
+	"github.com/baney75/tentmaker/internal/repocache"
 )
 
 // The subset of Azure Blob Storage the toolkit's upload (the Azure SDK's
@@ -139,7 +140,7 @@ func (s *Service) upload(w http.ResponseWriter, r *http.Request, id string) {
 		azureErr(w, http.StatusMethodNotAllowed, "UnsupportedHttpVerb", "Only PUT is supported here.")
 		return
 	}
-	if g.Access < Write {
+	if ok, _ := s.mayWrite(g); !ok {
 		azureErr(w, http.StatusForbidden, "AuthorizationPermissionMismatch", "This job may not write the cache.")
 		return
 	}
@@ -156,6 +157,33 @@ func (s *Service) upload(w http.ResponseWriter, r *http.Request, id string) {
 	}
 }
 
+// MaxRepo is GitHub's cap on one repo's Actions cache. Budgeter is a Store
+// with a lower cap (half of cache_max), so a repo's entries never fill its
+// folder until the repo LRU drops the build caches beside them.
+const MaxRepo = 10 << 30
+
+type Budgeter interface{ ActionsBudget() int64 }
+
+// budgetOf is st's budget, at most MaxRepo (default: DefaultMax/2).
+func budgetOf(st Store) int64 {
+	n := int64(repocache.DefaultMax / 2)
+	if b, ok := st.(Budgeter); ok {
+		n = b.ActionsBudget()
+	}
+	return max(min(n, MaxRepo), 0)
+}
+
+// errFull refuses a write past the budget, until eviction lands.
+var errFull = errors.New(denied + "the repo's Actions cache is at its budget")
+
+// bytes is the size of the index's entries.
+func (x *index) bytes() (n int64) {
+	for _, e := range x.Entries {
+		n += e.Size
+	}
+	return n
+}
+
 // reserve counts n more bytes against the entry and job caps.
 func (s *Service) reserve(g *grant, u *upload, n int64) bool {
 	u.mu.Lock()
@@ -163,7 +191,7 @@ func (s *Service) reserve(g *grant, u *upload, n int64) bool {
 	if u.busy || u.total+n > s.o.MaxEntry {
 		return false
 	}
-	if g.used.Add(n) > s.o.MaxJob {
+	if g.used.Add(n) > min(s.o.MaxJob, budgetOf(u.store)) {
 		g.used.Add(-n)
 		return false
 	}
@@ -386,10 +414,16 @@ func (s *Service) commit(u *upload, size int64) (*entry, error) {
 	defer unlock()
 	s.mu.Lock()
 	live := s.uploads[u.id] == u
+	g := s.byJob[u.job]
 	s.mu.Unlock()
-	if !live {
+	if !live || g == nil {
 		_ = root.Remove(file)
 		return nil, errors.New("the job ended")
+	}
+	// Again under the repo lock: the job may have been held meanwhile.
+	if ok, why := s.mayWrite(g); !ok {
+		_ = root.Remove(file)
+		return nil, errors.New(why)
 	}
 	idx, err := loadIndex(root)
 	if err != nil {
@@ -399,6 +433,10 @@ func (s *Service) commit(u *upload, size int64) (*entry, error) {
 	if idx.find(u.scope, u.key, u.version) != nil {
 		_ = root.Remove(file)
 		return nil, errors.New("an entry with this key and version already exists")
+	}
+	if idx.bytes()+total > budgetOf(u.store) {
+		_ = root.Remove(file)
+		return nil, errFull
 	}
 	e := entry{
 		ID: idx.Next, Scope: u.scope, Key: u.key, Version: u.version, File: file,

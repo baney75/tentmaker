@@ -270,6 +270,9 @@ disk speed with no workflow change. Any step of it that fails leaves the job on 
   then `/proc/<pid>/fd`). A job's connections all leave through its own pasta, so its unit is the
   job's identity; a connection no job's uplink holds (the host, the podman namespace, another
   user) gets 404 on every path, the proxy included. The answer is cached per connection.
+- Hold: jobs share the runner uid, so one can pass as another. A job writes only while every
+  other job on the device is a confirmed writer of its repo and ref (`Service.Hold`, re-applied
+  at job start, confirm, end, failed boot and restart; checked through commit).
 - Capability: `Grant` mints 32 random bytes per job and the service puts them in the `sig` query
   of every upload and download URL it returns. A blob request needs a `sig` that names a live
   grant and that grant's job must be the connection's. `Revoke` at job end (and on a failed boot)
@@ -304,7 +307,9 @@ disk speed with no workflow change. Any step of it that fails leaves the job on 
   shows it as a root-owned folder it cannot open. `index.json` is written with
   `config.WriteAtomic`; a corrupt index reads as empty. Uploads stream to `u-<id>` files, entries
   are `e-<id>`; a sweep under the repo lock removes staging and orphans older than 6 hours. The
-  repo cache's LRU cap covers these files too.
+  repo cache's LRU cap covers these files too, but it drops a whole repo folder, so the entries
+  have a budget, min(`cache_max`/2, 10 GiB), that caps `MaxJob` too. Create and commit refuse a
+  write past it (cache write denied); until eviction lands, writes stop there (review first-F1).
 - Speed: uploads stream to disk through a pooled 1 MiB buffer with sha256 computed on the way,
   and downloads are `http.ServeContent` on the open file (sendfile, `Range`). Benchmark
   (`BenchmarkSaveRestore256MiB`, 256 MiB, i9-14900HX, tmpfs, loopback, 3 runs of 5): save
@@ -893,8 +898,9 @@ section is rewritten.
 - The Actions cache names its caller by connection (the job's pasta uplink unit) instead of a
   secret in the job's environment. A capability in `.env` would be readable by every step and
   every action, and would have to be kept out of logs the runner writes; the uplink unit is
-  something a step cannot forge. The `sig` capability in returned URLs still binds a URL to one
+  something another user cannot forge. The `sig` capability in returned URLs still binds a URL to one
   job's grant, so a URL that leaks to another job or outlives its job is 404.
+  The uplink unit names a job of the device, not which one: jobs share the runner uid (see Hold).
 - The control API names its caller instead of trusting the network (fence verification, item
   18): Windows Firewall doesn't filter loopback, so a job reached 7434 whatever the rules said.
   Linux and macOS serve it on the Unix socket `control.DefaultAddr`

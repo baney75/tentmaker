@@ -901,3 +901,51 @@ func BenchmarkSaveRestore256MiB(b *testing.B) {
 		}
 	})
 }
+
+type budgetStore struct{ fakeStore }
+
+func (budgetStore) ActionsBudget() int64 { return 2500 }
+
+// An upload begun before the job was held cannot finalize (review second-S1).
+func TestHeldJobCannotFinalize(t *testing.T) {
+	h := newHarness(t, Options{})
+	j := h.job("tm-a", BranchScope("main"), BranchScope("main"), Write, "")
+	var cr createResp
+	if j.twirp("CreateCacheEntry", createReq{Key: "k", Version: ver}, &cr); !cr.OK {
+		t.Fatal(cr.Message)
+	}
+	j.upload(cr.SignedUploadURL, []byte("data"), 4096)
+	h.svc.Hold("tm-a", true)
+	var f finalizeResp
+	if j.twirp("FinalizeCacheEntryUpload", map[string]any{"key": "k", "version": ver, "size_bytes": "4"}, &f); f.OK {
+		t.Fatal("a held job finalized its upload")
+	}
+}
+
+// Once the budget is reached writes are refused and the repo's build
+// caches stay (review first-F1).
+func TestWritesStopAtTheBudget(t *testing.T) {
+	h := newHarness(t, Options{})
+	main := BranchScope("main")
+	save := func(key string, n int) (bool, string) { // a job per save: each may upload the budget
+		if err := h.svc.Grant(Binding{Job: "tm-" + key, Repo: repo, Ref: main, Default: main, Access: Write, Store: budgetStore{h.store}, Confirmed: true}); err != nil {
+			t.Fatal(err)
+		}
+		return h.client("tm-"+key, "").save(key, ver, randBytes(n), 4096)
+	}
+	k, _ := repocache.Key(repo)
+	build := filepath.Join(h.store.dir, k, "go-build")
+	if err := os.MkdirAll(build, 0o700); err != nil || os.WriteFile(build+"/obj", []byte("o"), 0o600) != nil {
+		t.Fatal(err)
+	}
+	// Of 2500 bytes: the second passes create and fails commit, the last
+	// fails create.
+	for i, n := range []int{1000, 2000, 1500, 1} {
+		if ok, msg := save(fmt.Sprint("k", i), n); ok != (i%2 == 0) || !ok && !strings.Contains(msg, denied) {
+			t.Fatalf("save %d of %d bytes: %v %q", i, n, ok, msg)
+		}
+	}
+	if _, err := os.Stat(build + "/obj"); err != nil {
+		t.Fatal(err)
+	}
+}

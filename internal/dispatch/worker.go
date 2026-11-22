@@ -479,6 +479,7 @@ func (w *Worker) finish(ctx context.Context, e *execInfo, j *jobRec, why string)
 			break
 		}
 	}
+	w.holdActionsLocked()
 	rep := w.reportLocked(j.Source)
 	rep.Ended = append(rep.Ended, j.Name)
 	if res != nil {
@@ -1013,6 +1014,7 @@ func (w *Worker) start(ctx context.Context, src core.WorkSource, off core.WorkOf
 		}
 	}
 	w.st.Jobs = append(w.st.Jobs, rec)
+	w.holdActionsLocked()
 	w.ranLocked(rec.Trust)
 	w.mu.Unlock()
 	if err := w.save(); err != nil {
@@ -1045,6 +1047,7 @@ func (w *Worker) boot(ctx context.Context, e *execInfo, rec *jobRec, spec core.E
 		}
 		w.dropRelaysLocked(name)
 		w.revokeActions(name)
+		w.holdActionsLocked()
 		w.mu.Unlock()
 		w.stopAndClean(ctx, e, name)
 		w.mu.Lock()

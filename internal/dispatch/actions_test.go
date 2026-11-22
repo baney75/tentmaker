@@ -21,10 +21,11 @@ type fakeActions struct {
 	grantErr error
 	grants   map[string]actionscache.Binding
 	revoked  []string
+	held     map[string]bool
 }
 
 func newFakeActions() *fakeActions {
-	return &fakeActions{url: "http://127.0.0.1:7436/", grants: map[string]actionscache.Binding{}}
+	return &fakeActions{url: "http://127.0.0.1:7436/", grants: map[string]actionscache.Binding{}, held: map[string]bool{}}
 }
 
 func (f *fakeActions) URL() string { f.mu.Lock(); defer f.mu.Unlock(); return f.url }
@@ -54,6 +55,8 @@ func (f *fakeActions) Limit(job string, a actionscache.Access) {
 		f.grants[job] = b
 	}
 }
+
+func (f *fakeActions) Hold(job string, held bool) { f.mu.Lock(); f.held[job] = held; f.mu.Unlock() }
 
 func (f *fakeActions) grant(job string) (actionscache.Binding, bool) {
 	f.mu.Lock()
@@ -385,5 +388,31 @@ func TestBrokerMarksGitHubComOffersOnly(t *testing.T) {
 				t.Fatalf("default branch %q", got.DefaultBranch)
 			}
 		})
+	}
+}
+
+func runnerRec(name, ref string) *jobRec {
+	return &jobRec{Name: name, Source: "src", Kind: core.KindRunner, Executor: "fake", Forge: "github", Repo: repoApp,
+		Actions: &actionsRec{Ref: ref, Default: "refs/heads/main", Access: "write"}}
+}
+
+// Jobs share the runner uid, so a PR job can pass as the main writer
+// beside it: the writer is held to read until it ends (review second-S1).
+func TestPRJobHoldsTheMainWriter(t *testing.T) {
+	ex, svc := fakeexec.New("fake", 0, linuxX64), newFakeActions()
+	ex.SetActionsCache(t.TempDir())
+	w := &Worker{o: WorkerOptions{ActionsCache: svc}, log: slog.New(slog.DiscardHandler), now: time.Now,
+		execs: []*execInfo{{ex: ex, name: "fake"}}}
+	main, pr := runnerRec("tm-main", "refs/heads/main"), runnerRec("tm-pr", "refs/pull/head/feature")
+	w.st.Jobs = []*jobRec{main}
+	w.confirmActionsLocked("src", []core.RunnerJob{{Runner: "tm-main", Event: "push", HeadBranch: "main"}})
+	w.st.Jobs = append(w.st.Jobs, pr)
+	w.confirmActionsLocked("src", []core.RunnerJob{{Runner: "tm-pr", Event: "pull_request", HeadBranch: "feature"}})
+	if pr.Actions.Access != "read" || !svc.held["tm-main"] {
+		t.Fatalf("beside a read PR job: pr %+v, main held %v", pr.Actions, svc.held["tm-main"])
+	}
+	w.finish(t.Context(), nil, pr, "")
+	if svc.held["tm-main"] {
+		t.Fatal("the main writer stayed held after the PR job ended")
 	}
 }

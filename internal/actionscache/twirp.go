@@ -142,7 +142,7 @@ func (s *Service) create(g *grant, r *http.Request, q createReq) createResp {
 	if g.Access == None {
 		return createResp{Message: denied + "this Tentmaker job has no cache"}
 	}
-	if ok, why := mayWrite(g); !ok {
+	if ok, why := s.mayWrite(g); !ok {
 		return createResp{Message: denied + why}
 	}
 	rk := repoKey(g.Repo)
@@ -170,6 +170,9 @@ func (s *Service) create(g *grant, r *http.Request, q createReq) createResp {
 	if err != nil {
 		s.log.Warn("actions cache index unreadable", "repo", g.Repo.Repo, "error", err)
 		return createResp{Message: denied + "the cache index is unreadable"}
+	}
+	if idx.bytes() >= budgetOf(g.Store) {
+		return createResp{Message: errFull.Error()}
 	}
 	if idx.find(g.Ref, q.Key, q.Version) != nil {
 		// The toolkit says another job may be creating it, and moves on.
@@ -204,7 +207,7 @@ func (s *Service) finalize(g *grant, r *http.Request, q finalizeReq) finalizeRes
 		return finalizeResp{Message: "no upload of this key and version is open for this job"}
 	}
 	// The grant may have been lowered since the upload began.
-	if ok, why := mayWrite(g); !ok {
+	if ok, why := s.mayWrite(g); !ok {
 		s.drop(u)
 		return finalizeResp{Message: denied + why}
 	}

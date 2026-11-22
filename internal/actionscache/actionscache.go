@@ -12,6 +12,7 @@
 // pasta. The service names the job from the connection (JobOf), never from
 // anything the job sends: the toolkit drops the path of ACTIONS_RESULTS_URL
 // when it builds a Twirp URL, so there is no per-job URL to carry a token.
+// Jobs share the runner uid, though, so one can pass as another (Hold).
 // The upload and download URLs it hands out also carry the job's
 // capability, 32 random bytes in the sig parameter (which the toolkit masks
 // in logs); a URL works only for the job it was made for, on that job's own
@@ -171,6 +172,7 @@ type Service struct {
 	uploads  map[string]*upload // upload id -> upload
 	reserved map[string]string  // entry identity -> upload id
 	repoMu   map[string]*sync.Mutex
+	held     map[string]bool // jobs held to read (Hold)
 }
 
 // New returns a Service. It serves nothing until Serve.
@@ -208,6 +210,7 @@ func New(o Options) *Service {
 		uploads:  map[string]*upload{},
 		reserved: map[string]string{},
 		repoMu:   map[string]*sync.Mutex{},
+		held:     map[string]bool{},
 	}
 	s.addr.Store("")
 	s.proxy = s.newProxy()
@@ -269,6 +272,20 @@ func (s *Service) Limit(job string, a Access) {
 	s.byJob[job], s.byCap[g.capability] = ng, ng
 }
 
+// Hold holds a job to read, or lets it write again. Jobs share the runner
+// uid, so one can pass as another (review second-S1).
+func (s *Service) Hold(job string, held bool) { s.mu.Lock(); s.held[job] = held; s.mu.Unlock() }
+
+// mayWrite is mayWrite with the job's Hold.
+func (s *Service) mayWrite(g *grant) (bool, string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.held[g.Job] {
+		return false, "another job on this device is not a confirmed writer of this branch"
+	}
+	return mayWrite(g)
+}
+
 // Revoke forgets a job: its connections and URLs get 404 from now on, and
 // its unfinished uploads are deleted.
 func (s *Service) Revoke(job string) {
@@ -280,6 +297,7 @@ func (s *Service) Revoke(job string) {
 	}
 	delete(s.byJob, job)
 	delete(s.byCap, g.capability)
+	delete(s.held, job)
 	var drop []*upload
 	for id, u := range s.uploads {
 		if u.job == job {
