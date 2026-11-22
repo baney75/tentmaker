@@ -255,6 +255,11 @@ func (a *app) setupPR(v *setupView, dv doctorView) {
 		a.step(v, "pr", daemon.Fail, "doctor found %d problem(s), so no pull request was opened; fix them (tentmaker doctor), then run: tentmaker migrate --pr", dv.Problems)
 		return
 	}
+	if why := macGuestsOff(a.env.GOOS, dv.Report); why != "" {
+		// migrate --pr would move macOS jobs onto a pool this Mac can't run.
+		a.step(v, "pr", daemon.Warn, "no pull request: %s; when it is on, run: tentmaker migrate --pr", why)
+		return
+	}
 	pv, err := a.migratePR(a.ctx, "", "", github.MigrateOptions{})
 	if err != nil {
 		var ce *cliError
@@ -271,6 +276,21 @@ func (a *app) setupPR(v *setupView, dv doctorView) {
 		return
 	}
 	a.step(v, "pr", daemon.OK, "%d workflow file(s) on %s; %s", pv.Changed, pv.Branch, pv.Note)
+}
+
+// macGuestsOff says why a Mac can't take the macOS jobs migrate would move
+// to it: doctor's "macos guests" check warned or failed (no image, so the
+// Mac offers only Linux jobs). Empty means go ahead.
+func macGuestsOff(goos string, r daemon.Report) string {
+	if goos != "darwin" {
+		return ""
+	}
+	for _, c := range r.Checks {
+		if c.Check == "macos guests" && c.Status != daemon.OK {
+			return c.What
+		}
+	}
+	return ""
 }
 
 func setupNext(v setupView, cfg config.Config) string {

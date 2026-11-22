@@ -13,6 +13,7 @@ import (
 
 	"github.com/baney75/tentmaker/internal/config"
 	"github.com/baney75/tentmaker/internal/core"
+	"github.com/baney75/tentmaker/internal/daemon"
 )
 
 const ciWorkflow = `name: CI
@@ -443,5 +444,24 @@ func TestPushFixNamesSSHTrouble(t *testing.T) {
 	fix := pushFix("o/n", errors.New("git push: git@github.com: Permission denied (publickey)."))
 	if !strings.Contains(fix, "ssh-agent") {
 		t.Fatalf("pushFix = %q", fix)
+	}
+}
+
+// A Mac whose macOS image was skipped for disk offers only Linux jobs, so
+// setup --pr must not open a PR that moves its macOS jobs onto the pool.
+func TestSetupPRSkipsAMacWithoutMacOSGuests(t *testing.T) {
+	off := daemon.Report{OK: true, Checks: []daemon.Finding{
+		{Check: "executor", Status: daemon.OK, What: "tart is ready for linux/arm64"},
+		{Check: "macos guests", Status: daemon.Warn, What: "macOS guests are off: the macOS image needs 80 GiB, 20 GiB free"},
+	}}
+	if why := macGuestsOff("darwin", off); !strings.Contains(why, "macOS guests are off") {
+		t.Fatalf("macGuestsOff(darwin, guests off) = %q", why)
+	}
+	if why := macGuestsOff("linux", off); why != "" {
+		t.Fatalf("a Linux device was held back: %q", why)
+	}
+	on := daemon.Report{OK: true, Checks: []daemon.Finding{{Check: "executor", Status: daemon.OK, What: "tart is ready for macos/arm64, linux/arm64"}}}
+	if why := macGuestsOff("darwin", on); why != "" {
+		t.Fatalf("a Mac with guests was held back: %q", why)
 	}
 }
