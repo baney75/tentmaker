@@ -225,7 +225,7 @@ func TestFlakyCommand(t *testing.T) {
 	now := time.Now()
 	h.mu.Lock()
 	for i, failed := range []bool{true, false} {
-		s := &runs.TestSummary{Total: 1, Passed: 1}
+		s := &runs.TestSummary{Total: 1, Passed: 1, Suites: []string{"pkg"}}
 		concl := runs.Success
 		if failed {
 			s = &runs.TestSummary{Total: 1, Failed: 1, Failures: []string{"pkg.TestFlaky"}}

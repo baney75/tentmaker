@@ -902,7 +902,7 @@ func Stats(recs []Record, since, now time.Time) Report
 func Wait(ctx context.Context, look func(context.Context) (Snapshot, error), o WaitOptions) (WaitResult, error)
 type TestCase struct { Suite, Name, Status string; Seconds float64; Message, Detail, File, Source string }
 type TestResults struct { ID, Device string; Cases []TestCase; Files, Problems []string; Dropped int }
-type TestSummary struct { Total, Passed, Failed, Skipped int; Failures []string; Truncated bool; Sources []string }
+type TestSummary struct { Total, Passed, Failed, Skipped int; Failures []string; Truncated bool; Sources, Suites []string }
 func (s *Store) PutTests(id string, t TestResults) error   // and Tests(id)
 func Flaky(recs []Record) []FlakyTest
 func Why(rec Record, tests *TestResults, log []byte, history []Record) WhyAnswer
@@ -976,8 +976,10 @@ func New(o Options) *Notifier                 // Run, JobEnded, Test, Counts, En
 - Flaky tests (`runs.Flaky`), from the summaries of one job (repo, workflow, job): a test is
   flaky when it failed and a later run on the same commit reported tests without it failing
   (`same-commit`), or when it changed between failing and passing at least twice in the last 10
-  runs on the same ref (`flips`). A summary cut short (`Truncated`) says nothing about a test it
-  does not list, so it counts for neither rule. A test that broke once and stayed broken is not
+  runs on the same ref (`flips`). A run counts as a pass only when its summary is whole and names
+  the test's suite in `Suites` (a go test package seen from `start` to its end; a package cut from
+  the log tail is `Partial`), so a test missing from a cut log or a run that stopped early is not
+  called flaky. A test that broke once and stayed broken is not
   flaky.
 - `why_failed` (`runs.Why`, `GET /v1/runs/why`, `tentmaker why`): the run's commit, ref, run,
   conclusion and failed step; its first 5 failing tests with a 300 byte message and the first 8

@@ -10,14 +10,14 @@ import (
 // Flaky tests (docs/DESIGN.md, "Test results"). A test is flaky when it
 //
 //   - failed in one run and a later run of the same job on the same commit
-//     reported tests without it failing ("same-commit"), or
+//     reported its suite whole without it failing ("same-commit"), or
 //   - changed between failing and passing at least FlakyFlips times in the
 //     last FlakyWindow runs of the same job on the same ref ("flips").
 //
 // Both read the summaries on the records alone, so the pool view answers
 // without fetching any device's test files. A run whose summary was cut
-// (Truncated) says nothing about the tests it did not list, so it counts
-// for neither rule.
+// (Truncated), or one that did not report a test's suite whole, says
+// nothing about that test, so it counts for neither rule.
 
 // Flaky rule limits.
 const (
@@ -97,7 +97,7 @@ func sameCommit(g []Record) []FlakyTest {
 				continue
 			}
 			for _, b := range g[i+1:] {
-				if SameSHA(a.SHA, b.SHA) && !b.Tests.Truncated && b.Tests.Total > 0 && !b.Tests.hasFailure(t) {
+				if SameSHA(a.SHA, b.SHA) && b.Tests.passed(t) {
 					seen[t] = true
 					out = append(out, FlakyTest{Repo: a.Repo, Workflow: a.Workflow, Job: a.Job, Test: t,
 						Reason: FlakySameCommit, SHA: a.SHA, Ref: b.Ref, Runs: []string{a.ID, b.ID}, LastSeen: b.at(),
@@ -148,10 +148,10 @@ func flipped(g []Record) []FlakyTest {
 				switch {
 				case r.Tests.hasFailure(t):
 					state = -1
-				case !r.Tests.Truncated:
+				case r.Tests.passed(t):
 					state = 1
 				default:
-					continue // a cut summary says nothing about t
+					continue // a cut summary, or one without t's suite, says nothing about t
 				}
 				if last != 0 && state != last {
 					flips++

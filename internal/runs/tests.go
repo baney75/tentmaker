@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/baney75/tentmaker/internal/config"
 )
@@ -35,6 +36,8 @@ const (
 	MaxFailedCases = 500
 	// MaxSummaryFailures is how many failing test ids a record carries.
 	MaxSummaryFailures = 50
+	// MaxSummarySuites is how many whole suites a record names.
+	MaxSummarySuites = 100
 	// MaxMessage and MaxDetail cap a failure's message and its text (the
 	// stack or output), in bytes.
 	MaxMessage = 1 << 10
@@ -58,6 +61,9 @@ type TestCase struct {
 	// workspace, or "log" for go test -json output in the job's log.
 	File   string `json:"file,omitempty"`
 	Source string `json:"source,omitempty"` // SourceJUnit or SourceGoTestJSON
+	// Partial says the case's suite was not seen whole (a go test package
+	// cut from the log tail), so its absent tests say nothing.
+	Partial bool `json:"partial,omitempty"`
 }
 
 // ID names a test across runs: "suite.name", or the name alone.
@@ -79,6 +85,9 @@ type TestSummary struct {
 	Failures  []string `json:"failures,omitempty"`
 	Truncated bool     `json:"truncated,omitempty"`
 	Sources   []string `json:"sources,omitempty"`
+	// Suites are the suites reported whole, at most MaxSummarySuites. Only
+	// for a test in one of them does its absence from Failures mean passed.
+	Suites []string `json:"suites,omitempty"`
 }
 
 // TestResults is every test a run reported, as the device keeps it.
@@ -101,8 +110,11 @@ func (r TestResults) Summary() *TestSummary {
 		return nil
 	}
 	s := &TestSummary{}
-	src := map[string]bool{}
+	src, suites := map[string]bool{}, map[string]bool{}
 	for _, c := range r.Cases {
+		if c.Suite != "" {
+			suites[c.Suite] = suites[c.Suite] || c.Partial
+		}
 		s.Total++
 		switch c.Status {
 		case TestFailed:
@@ -128,6 +140,13 @@ func (r TestResults) Summary() *TestSummary {
 		s.Sources = append(s.Sources, k)
 	}
 	sort.Strings(s.Sources)
+	for k, partial := range suites {
+		if !partial {
+			s.Suites = append(s.Suites, k)
+		}
+	}
+	sort.Strings(s.Suites)
+	s.Suites = s.Suites[:min(len(s.Suites), MaxSummarySuites)]
 	return s
 }
 
@@ -288,6 +307,20 @@ type TestsAnswer struct {
 }
 
 // hasFailure reports whether the summary names test id as failed.
+// passed says s positively reports test id as passed: it is not among the
+// failures of a whole summary that covers its suite.
+func (s *TestSummary) passed(id string) bool {
+	if s == nil || s.Truncated || s.hasFailure(id) {
+		return false
+	}
+	for _, su := range s.Suites {
+		if strings.HasPrefix(id, su+".") {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *TestSummary) hasFailure(id string) bool {
 	if s == nil {
 		return false

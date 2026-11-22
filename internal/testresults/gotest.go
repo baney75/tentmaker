@@ -35,7 +35,9 @@ const logFile = "log"
 // pass/fail/skip action; a failed test's Detail is its own output lines
 // (Action "output"), capped. Message is the first output line that looks like
 // an error (contains "_test.go:" or "Error" or "panic:"), else empty. Package-level
-// events (no Test) are ignored. Subtests ("TestX/sub") are their own cases.
+// events (no Test) only say whether a package was seen whole, from its
+// "start" to its pass or fail; a case of any other package is Partial.
+// Subtests ("TestX/sub") are their own cases.
 func ParseGoTestJSON(log []byte) []runs.TestCase {
 	type key struct{ pkg, test string }
 	type state struct {
@@ -45,6 +47,7 @@ func ParseGoTestJSON(log []byte) []runs.TestCase {
 	}
 	var order []key
 	tests := map[key]*state{}
+	started, whole := map[string]bool{}, map[string]bool{}
 	for len(log) > 0 {
 		line := log
 		if i := bytes.IndexByte(log, '\n'); i >= 0 {
@@ -53,6 +56,10 @@ func ParseGoTestJSON(log []byte) []runs.TestCase {
 			log = nil
 		}
 		ev, ok := parseEvent(line)
+		if ok && ev.Test == "" {
+			started[ev.Package] = started[ev.Package] || ev.Action == "start"
+			whole[ev.Package] = whole[ev.Package] || started[ev.Package] && (ev.Action == "pass" || ev.Action == "fail")
+		}
 		if !ok || ev.Test == "" {
 			continue
 		}
@@ -96,6 +103,7 @@ func ParseGoTestJSON(log []byte) []runs.TestCase {
 			Seconds: st.seconds,
 			File:    logFile,
 			Source:  runs.SourceGoTestJSON,
+			Partial: !whole[k.pkg],
 		}
 		if st.status == runs.TestFailed {
 			lines := ownLines(st.out.String())

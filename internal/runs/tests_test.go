@@ -10,7 +10,7 @@ import (
 func tested(id, sha, ref, concl string, at int, total int, failures ...string) Record {
 	r := Record{ID: id, Kind: "runner", Repo: "o/r", Workflow: "ci", Job: "test", Device: "box", SHA: sha, Ref: ref,
 		Conclusion: concl, EndedAt: t0.Add(time.Duration(at) * time.Minute)}
-	r.Tests = &TestSummary{Total: total, Failed: len(failures), Passed: total - len(failures), Failures: failures}
+	r.Tests = &TestSummary{Total: total, Failed: len(failures), Passed: total - len(failures), Failures: failures, Suites: []string{"pkg"}}
 	return r
 }
 
@@ -84,6 +84,14 @@ func TestFlakySameCommit(t *testing.T) {
 	recs[1].Tests.Truncated = true
 	if got := Flaky(recs[:2]); len(got) != 0 {
 		t.Fatalf("flaky from a cut summary = %+v", got)
+	}
+	// Nor does a rerun that did not report the test's package whole: here
+	// TestNet's events fell out of the log tail.
+	rerun := TestResults{Cases: []TestCase{{Suite: "pkg", Name: "TestOther", Status: TestPassed, Partial: true},
+		{Suite: "other", Name: "TestY", Status: TestPassed}}}
+	recs[1].Tests = rerun.Summary()
+	if got := Flaky(recs[:2]); len(got) != 0 || recs[1].Tests.Truncated {
+		t.Fatalf("flaky from a rerun without pkg = %+v", got)
 	}
 }
 

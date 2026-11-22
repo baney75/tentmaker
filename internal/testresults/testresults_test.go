@@ -185,7 +185,7 @@ func checkGoCases(t *testing.T, cases []runs.TestCase) {
 		t.Fatalf("got %d cases, want 5: %+v", len(cases), cases)
 	}
 	for _, c := range cases {
-		if c.Suite != "example.com/m/a" || c.Source != runs.SourceGoTestJSON || c.File != "log" {
+		if c.Suite != "example.com/m/a" || c.Source != runs.SourceGoTestJSON || c.File != "log" || c.Partial {
 			t.Errorf("case %+v: wrong suite, source or file", c)
 		}
 	}
@@ -221,6 +221,13 @@ func checkGoCases(t *testing.T, cases []runs.TestCase) {
 
 func TestParseGoTestJSONRaw(t *testing.T) {
 	checkGoCases(t, ParseGoTestJSON([]byte(goTestLog)))
+	// A log tail that lost the package's start says its cases are partial.
+	_, tail, _ := strings.Cut(goTestLog, "\n")
+	for _, c := range ParseGoTestJSON([]byte(tail)) {
+		if !c.Partial {
+			t.Errorf("case %s from a cut log is not partial", c.Name)
+		}
+	}
 }
 
 func TestParseGoTestJSONTimestamped(t *testing.T) {
