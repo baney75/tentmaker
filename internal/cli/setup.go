@@ -18,6 +18,7 @@ import (
 	"github.com/baney75/tentmaker/internal/binsafe"
 	"github.com/baney75/tentmaker/internal/config"
 	"github.com/baney75/tentmaker/internal/daemon"
+	"github.com/baney75/tentmaker/internal/forge/github"
 	"github.com/baney75/tentmaker/internal/secrets"
 	"github.com/baney75/tentmaker/internal/service"
 )
@@ -34,6 +35,10 @@ missing value takes its default.
   --cpus N --boost-cpus N
   --on-battery everyday|off
   --repo OWNER/NAME      repeatable
+  --repo-here            serve the repo whose git origin this folder is
+  --pr                   after doctor passes, run tentmaker migrate --pr
+                         here: commit the workflow edits on a branch, push
+                         it and open a pull request
   --forge github|forgejo|gitlab   default github
   --forge-url URL        for forgejo or a self-hosted gitlab
   --mode runner|checks   default runner (checks for gitlab)
@@ -64,6 +69,7 @@ type setupOpts struct {
 	noMesh              bool
 	channel             string
 	noService           bool
+	repoHere, pr        bool
 }
 
 type setupStep struct {
@@ -84,6 +90,7 @@ type setupView struct {
 	Binary  string         `json:"binary,omitempty"` // the binary the service runs
 	Steps   []setupStep    `json:"steps"`
 	Doctor  *daemon.Report `json:"doctor,omitempty"`
+	PR      *migratePRView `json:"pr,omitempty"` // with --pr
 	Next    string         `json:"next"`
 }
 
@@ -124,6 +131,8 @@ func (a *app) cmdSetup(args []string) (any, error) {
 	f.StringVar(&o.channel, "channel", "", "stable or dev")
 	f.BoolVar(&o.noService, "no-service", false, "don't install the service")
 	f.BoolVar(&o.macOSGuests, "macos-guests", false, "pull the macOS VM image even without the usual disk margin")
+	f.BoolVar(&o.repoHere, "repo-here", false, "serve the repo whose git origin this folder is")
+	f.BoolVar(&o.pr, "pr", false, "after doctor passes, run migrate --pr in this folder")
 	pos, err := a.parse(f, args)
 	if err != nil {
 		return nil, err
@@ -161,6 +170,15 @@ func (a *app) cmdSetup(args []string) (any, error) {
 		map[bool]string{true: "found, keeping its values", false: "is new"}[exists])
 	if !exists {
 		cfg.Update.Channel = daemon.Channel(a.env.Version)
+	}
+
+	if o.repoHere {
+		r := a.originRepo(o.forge, &cfg)
+		if r == "" {
+			return nil, usage("run it inside a checkout of the repo, or pass --repo OWNER/NAME",
+				"--repo-here: this folder has no git origin on %s", forgeHost(o.forge, cfg))
+		}
+		o.repos = append(o.repos, r)
 	}
 
 	// Step 2: flags over the existing values, then the wizard.
@@ -221,15 +239,46 @@ func (a *app) cmdSetup(args []string) (any, error) {
 	default:
 		a.step(v, "doctor", daemon.OK, "all good")
 	}
+
+	// Step 7, with --pr: move this checkout's workflows onto the pool.
+	if o.pr {
+		a.setupPR(v, dv)
+	}
 	v.Next = setupNext(*v, cfg)
 	a.out("\nnext: %s\n", v.Next)
 	return *v, nil
+}
+
+// setupPR runs migrate --pr in the current folder once doctor passes.
+func (a *app) setupPR(v *setupView, dv doctorView) {
+	if !v.OK || !dv.OK {
+		a.step(v, "pr", daemon.Fail, "doctor found %d problem(s), so no pull request was opened; fix them (tentmaker doctor), then run: tentmaker migrate --pr", dv.Problems)
+		return
+	}
+	pv, err := a.migratePR(a.ctx, "", "", github.MigrateOptions{})
+	if err != nil {
+		var ce *cliError
+		if errors.As(err, &ce) && ce.fix != "" {
+			a.step(v, "pr", daemon.Fail, "%s; fix: %s", ce.msg, ce.fix)
+		} else {
+			a.step(v, "pr", daemon.Fail, "%v", err)
+		}
+		return
+	}
+	v.PR = &pv
+	if pv.PR == nil {
+		a.step(v, "pr", daemon.OK, "%s", pv.Note)
+		return
+	}
+	a.step(v, "pr", daemon.OK, "%d workflow file(s) on %s; %s", pv.Changed, pv.Branch, pv.Note)
 }
 
 func setupNext(v setupView, cfg config.Config) string {
 	switch {
 	case !v.OK:
 		return "fix the failed step above and run `sudo tentmaker setup` again"
+	case v.PR != nil && v.PR.PR != nil:
+		return "review and merge the pull request: " + v.PR.PR.URL + "; then `tentmaker doctor` checks that the first job reached your runner"
 	case len(cfg.Repos) == 0:
 		return "add a repo: sudo tentmaker repo add OWNER/NAME --enable"
 	case v.Secret == "":
@@ -291,6 +340,9 @@ func (a *app) checkSetupFlags(f *flags, o *setupOpts) error {
 	}
 	if o.device != "" && daemon.SanitizeDevice(o.device) != o.device {
 		return usage("use lowercase letters, digits and dashes, like "+daemon.SanitizeDevice(o.device), "--device %q is not a device name", o.device)
+	}
+	if o.pr && o.forge != "github" {
+		return usage("drop --pr; for "+o.forge+" run tentmaker migrate --write and commit it", "--pr opens a GitHub pull request, and --forge is %s", o.forge)
 	}
 	if o.tokenStdin && !o.yes {
 		return usage("add --yes: the token takes stdin, so setup can't ask", "--token-stdin needs --yes")
@@ -505,8 +557,7 @@ func (a *app) originRepo(forge string, cfg *config.Config) string {
 		return ""
 	}
 	for i := 0; i < 40; i++ {
-		b, err := os.ReadFile(filepath.Join(dir, ".git", "config"))
-		if err == nil {
+		if b, ok := readGitConfig(dir); ok {
 			return repoFromOrigin(gitOrigin(string(b)), forgeHost(forge, *cfg))
 		}
 		parent := filepath.Dir(dir)
@@ -516,6 +567,41 @@ func (a *app) originRepo(forge string, cfg *config.Config) string {
 		dir = parent
 	}
 	return ""
+}
+
+// readGitConfig reads the git config of the checkout at dir: .git/config,
+// or for a linked worktree (.git is a file naming its gitdir) the config
+// of the repo that owns it.
+func readGitConfig(dir string) ([]byte, bool) {
+	dotgit := filepath.Join(dir, ".git")
+	st, err := os.Stat(dotgit)
+	if err != nil {
+		return nil, false
+	}
+	gitdir := dotgit
+	if !st.IsDir() {
+		b, err := os.ReadFile(dotgit)
+		if err != nil {
+			return nil, false
+		}
+		p, ok := strings.CutPrefix(strings.TrimSpace(string(b)), "gitdir:")
+		if !ok {
+			return nil, false
+		}
+		gitdir = strings.TrimSpace(p)
+		if !filepath.IsAbs(gitdir) {
+			gitdir = filepath.Join(dir, gitdir)
+		}
+		if c, err := os.ReadFile(filepath.Join(gitdir, "commondir")); err == nil {
+			common := strings.TrimSpace(string(c))
+			if !filepath.IsAbs(common) {
+				common = filepath.Join(gitdir, common)
+			}
+			gitdir = common
+		}
+	}
+	b, err := os.ReadFile(filepath.Join(gitdir, "config"))
+	return b, err == nil
 }
 
 func forgeHost(forge string, cfg config.Config) string {

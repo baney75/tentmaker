@@ -67,7 +67,13 @@ type DoctorInput struct {
 	// can). Either empty skips the check.
 	Binary        string
 	BinaryProblem func(path string) (string, error)
+	// Now is the clock for the first-job check (default time.Now).
+	Now func() time.Time
 }
+
+// FirstJobGrace is how long a job for the pool may wait for a runner before
+// the first-job check fails.
+const FirstJobGrace = 3 * time.Minute
 
 // CheckTimeout bounds each doctor check.
 const CheckTimeout = 15 * time.Second
@@ -83,6 +89,7 @@ func Doctor(ctx context.Context, in DoctorInput) Report {
 		{"service", func(ctx context.Context) []Finding { return checkService(ctx, in) }},
 		{"executor", func(ctx context.Context) []Finding { return checkExecutors(ctx, in) }},
 		{"forge", func(ctx context.Context) []Finding { return checkForges(ctx, in) }},
+		{"first-job", func(ctx context.Context) []Finding { return checkFirstJob(ctx, in) }},
 		{"tailscale", func(ctx context.Context) []Finding { return checkTailscale(ctx, in) }},
 		{"disk", func(ctx context.Context) []Finding { return checkDisk(ctx, in) }},
 		{"version", func(ctx context.Context) []Finding { return checkVersion(ctx, in) }},
@@ -278,6 +285,56 @@ func checkForges(ctx context.Context, in DoctorInput) []Finding {
 		}
 		if !bad {
 			out = append(out, Finding{Check: "forge", Status: OK, What: r.Name + ": token and repo settings are fine"})
+		}
+	}
+	return out
+}
+
+// checkFirstJob asks GitHub, for each runner-mode repo this device holds a
+// token for, whether a Tentmaker runner has come online for it: one online
+// now, or a recent job that ran on one. Before any job targets the pool it
+// warns with the next step; a job for the pool that waits longer than
+// FirstJobGrace with no runner is a failure.
+func checkFirstJob(ctx context.Context, in DoctorInput) []Finding {
+	if in.SkipForges != "" {
+		return nil
+	}
+	now := time.Now
+	if in.Now != nil {
+		now = in.Now
+	}
+	var out []Finding
+	for _, r := range in.Config.Repos {
+		if RepoForge(r) != "github" || (r.Mode != "" && r.Mode != "runner") {
+			continue
+		}
+		fr, ok := in.Forges.Forges["github"].(core.FirstJobReporter)
+		if !ok {
+			continue
+		}
+		fj, err := fr.FirstJob(ctx, r.Name)
+		if err != nil {
+			out = append(out, Finding{Check: "first-job", Status: Warn, What: fmt.Sprintf("%s: can't list its runners and recent jobs: %v", r.Name, err),
+				Fix: "give the token Administration: read and Actions: read on " + r.Name + ", then sudo tentmaker connect github"})
+			continue
+		}
+		switch {
+		case len(fj.Online) > 0:
+			out = append(out, Finding{Check: "first-job", Status: OK, What: fmt.Sprintf("%s: Tentmaker runner %s is online", r.Name, strings.Join(fj.Online, ", "))})
+		case fj.RanOn != "":
+			out = append(out, Finding{Check: "first-job", Status: OK, What: fmt.Sprintf("%s: job '%s' ran on Tentmaker runner %s (%s)", r.Name, fj.RanJob, fj.RanOn, fj.RanAt.UTC().Format(time.RFC3339))})
+		case fj.Queued > 0 && now().Sub(fj.OldestQueued) > FirstJobGrace:
+			out = append(out, Finding{Check: "first-job", Status: Fail,
+				What: fmt.Sprintf("%s: %d job(s) for the Tentmaker pool have waited since %s and no Tentmaker runner came online", r.Name, fj.Queued, fj.OldestQueued.UTC().Format(time.RFC3339)),
+				Fix:  "make sure the service runs and is not paused (tentmaker status), that this device has room for a job (tentmaker budget), and that the token is a repo admin (runners need Administration: write); then read the broker's error with tentmaker logs"})
+		case fj.Queued > 0:
+			out = append(out, Finding{Check: "first-job", Status: Warn,
+				What: fmt.Sprintf("%s: %d job(s) for the Tentmaker pool are queued; a runner should come online within a minute", r.Name, fj.Queued),
+				Fix:  "run tentmaker doctor again in a minute"})
+		default:
+			out = append(out, Finding{Check: "first-job", Status: Warn,
+				What: r.Name + ": no job has run on a Tentmaker runner yet",
+				Fix:  "point a workflow at the pool from a checkout of " + r.Name + ": tentmaker migrate --pr; merge it or push to it, then run tentmaker doctor again"})
 		}
 	}
 	return out

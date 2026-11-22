@@ -76,6 +76,14 @@ type Handler interface {
 	Reload(ctx context.Context) error
 }
 
+// PROpener is a Handler that can open a pull request with the forge token
+// the daemon holds (POST /v1/pr, token only). It is optional: a Handler
+// without it serves no /v1/pr. The token never leaves the daemon; the
+// caller gets the pull request's number and URL.
+type PROpener interface {
+	OpenPR(ctx context.Context, pr core.PullRequest) (core.PullRequestResult, error)
+}
+
 // Relayer streams check jobs' source archives. An unknown or expired id is
 // core.ErrNotFound.
 type Relayer interface {
@@ -185,6 +193,17 @@ func NewServer(h Handler, token string, ident Identify, log *slog.Logger) *Serve
 	s.mux.HandleFunc("POST /v1/reload", s.auth(func(w http.ResponseWriter, r *http.Request) {
 		s.reply(w, nil, h.Reload(r.Context()))
 	}))
+	if po, ok := h.(PROpener); ok {
+		s.mux.HandleFunc("POST /v1/pr", s.auth(func(w http.ResponseWriter, r *http.Request) {
+			var req core.PullRequest
+			if err := json.NewDecoder(io.LimitReader(r.Body, maxBody)).Decode(&req); err != nil || req.Repo == "" || req.Head == "" {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "body must be {\"repo\": \"owner/name\", \"head\": \"branch\", \"title\": ..., \"body\": ...}"})
+				return
+			}
+			res, err := po.OpenPR(r.Context(), req)
+			s.reply(w, res, err)
+		}))
+	}
 	return s
 }
 
@@ -407,6 +426,11 @@ func (c *Client) Get(ctx context.Context, path string, out any) error {
 // Post sends body (may be nil) to path with the token.
 func (c *Client) Post(ctx context.Context, path string, body any) error {
 	return c.do(ctx, http.MethodPost, path, body, nil)
+}
+
+// Call is Post that reads the answer into out.
+func (c *Client) Call(ctx context.Context, path string, body, out any) error {
+	return c.do(ctx, http.MethodPost, path, body, out)
 }
 
 func (c *Client) do(ctx context.Context, method, path string, body, out any) error {

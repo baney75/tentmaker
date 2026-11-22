@@ -4,6 +4,7 @@
 #   curl -fsSL https://raw.githubusercontent.com/baney75/tentmaker/main/scripts/install.sh | sh
 #   curl -fsSL .../install.sh | sh -s -- --channel dev
 #   curl -fsSL .../install.sh | sh -s -- --yes -- --memory 4GiB --boost-memory 12GiB --repo owner/name
+#   curl -fsSL .../install.sh | sh -s -- --yes -- --repo-here --pr   (from a checkout)
 #
 # Options:
 #   --channel stable|dev   release channel (default stable; env TENTMAKER_CHANNEL)
@@ -18,7 +19,9 @@
 # The installer never prompts. It downloads the release archive and
 # SHA256SUMS, refuses to install unless the sha256 matches, checks that the
 # binary runs, then moves it into place atomically. When stdin is not a
-# terminal, sudo runs with -n so it fails instead of waiting for a password.
+# terminal (curl | sh), sudo runs with -n so it fails instead of waiting for
+# a password; when there is a terminal on /dev/tty, sudo first asks for the
+# password there (sudo -v), so a person can run the piped one-liner.
 #
 # Testing hooks: TENTMAKER_DOWNLOAD_BASE replaces
 # https://github.com/baney75/tentmaker/releases (a URL or a local directory
@@ -56,6 +59,11 @@ usage: install.sh [--channel stable|dev] [--version X.Y.Z] [--prefix DIR]
   --no-setup             only install the binary
   --yes                  run 'sudo tentmaker setup --yes' with SETUP ARGS
   -h, --help             show this help
+
+From a checkout of your repo, set up this machine and open a pull request
+that moves CI onto it:
+  curl -fsSL https://raw.githubusercontent.com/baney75/tentmaker/main/scripts/install.sh |
+    sh -s -- --yes -- --repo-here --pr
 
 Example for agents:
   curl -fsSL https://raw.githubusercontent.com/baney75/tentmaker/main/scripts/install.sh |
@@ -279,7 +287,13 @@ main() {
 			if [ -t 0 ]; then
 				"$sudo_cmd" "$bin" setup --yes "$@" || die "setup failed (exit $?)" "fix the error above, then run: $setup_cmd --yes$(quote_args "$@")"
 			else
-				# No terminal: never wait on a password prompt.
+				# No terminal on stdin (curl | sh). A person at a terminal
+				# types the sudo password on /dev/tty; an agent with no
+				# terminal skips this and sudo -n never waits.
+				if [ -z "${TENTMAKER_SUDO:-}" ] && { : </dev/tty; } 2>/dev/null; then
+					"$sudo_cmd" -v </dev/tty ||
+						die "sudo did not accept the password" "run it yourself: $setup_cmd --yes$(quote_args "$@")"
+				fi
 				"$sudo_cmd" -n "$bin" setup --yes "$@" ||
 					die "setup did not run: sudo needs a password or setup failed (exit $?)" \
 						"run it yourself: $setup_cmd --yes$(quote_args "$@")"

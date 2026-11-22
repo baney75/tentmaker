@@ -445,10 +445,11 @@ type repoAddOpts struct {
 }
 
 type migrateFile struct {
-	File    string   `json:"file"`
-	Changed bool     `json:"changed"`
-	Report  []string `json:"report"`
-	Error   string   `json:"error,omitempty"`
+	File    string        `json:"file"`
+	Changed bool          `json:"changed"`
+	Report  []string      `json:"report"`
+	Moves   []github.Move `json:"moves,omitempty"`
+	Error   string        `json:"error,omitempty"`
 }
 
 type repoAddView struct {
