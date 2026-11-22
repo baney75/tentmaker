@@ -182,3 +182,20 @@ func TestBrokerSkipsKeptRepo(t *testing.T) {
 		t.Fatal("keptRepo")
 	}
 }
+
+// A kept job that had its repo's cache pins no cache, so the device still
+// takes other repos' jobs (it would otherwise take none for the grace).
+func TestKeptCachedJobLetsOtherReposIn(t *testing.T) {
+	ex := fakeexec.New("fake", 0, linuxX64)
+	ex.SetCachesRepos(true)
+	j := heldBy(repoApp)
+	j.KeptUntil = time.Now().Add(time.Hour)
+	w := &Worker{}
+	w.st.Jobs = []*jobRec{j}
+	if held := w.cachedRepoLocked(); held != nil {
+		t.Fatalf("kept job holds %v", held)
+	}
+	if _, ok := w.cacheDecisionLocked(&execInfo{ex: ex, name: "fake"}, cacheOffer(repoSite, true, false)); !ok {
+		t.Fatal("another repo's job declined beside a kept cached job")
+	}
+}

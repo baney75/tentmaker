@@ -1006,8 +1006,8 @@ default, at most 1h. Then `tentmaker debug JOB-ID` opens a shell in it and the M
   shutdown) in such a repo, on an executor that is a `core.Debugger`, the worker calls `Keep`
   instead of `Clean`. The job is reported ended to its broker at once, so its runner is deleted
   at the forge and its relays and Actions cache grant are revoked; the record gets `KeptUntil`.
-  The job stays in `state.json` with `KeptUntil` set, so it still holds its slot, its memory
-  and its repo cache, it blocks the node reset that would wipe it, and it counts against the
+  The job stays in `state.json` with `KeptUntil` set, so it still holds its slot and its memory
+  (not its repo cache: other repos' jobs may then start), it blocks the node reset that would wipe it, and it counts against the
   budget. The worker sends `WorkRequest.Kept` and the broker offers that device no job of the
   repo (the worker declines one too), so a new run can't land on a half-debugged device. When
   the grace ends, when the owner releases it (`tentmaker debug JOB-ID --release`), when a hard
@@ -1017,7 +1017,7 @@ default, at most 1h. Then `tentmaker debug JOB-ID` opens a shell in it and the M
   the runner's `.runner`, `.credentials` and `.credentials_rsaparams` through an `os.Root`. A
   debug command is a transient unit `tentmaker-debug-<job>-<random>` built like the job's: the
   runner's uid and gid, the job's `MemoryMax` and `CPUQuota`, `NoNewPrivileges`, `PrivateTmp`,
-  the job's mounts and repo cache, its environment (no secrets), `RuntimeMaxSec` of the timeout,
+  the job's mounts (not its repo cache), its environment (no secrets), `RuntimeMaxSec` of the timeout,
   and `NetworkNamespacePath` of the job's own namespace holder. If the holder is gone it refuses:
   no debug command runs outside the job's namespace. `debug_exec` runs `systemd-run --wait
   --pipe ... /bin/sh -s` with the command on stdin, so the command is in no argv on the host;

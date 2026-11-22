@@ -25,7 +25,7 @@ import (
 // namespace holder and uplink are left in place. A debug command runs as a
 // transient unit of its own, tentmaker-debug-<job>-<random>, built like the
 // job's: the runner's uid and gid, the job's memory and CPU limits, its
-// mounts and repo cache, NoNewPrivileges, and the job's own network
+// mounts (not its repo cache), NoNewPrivileges, and the job's own network
 // namespace, so the network fence (which matches the runner's uid) and the
 // namespace both still apply. Clean and Stop stop every debug unit of the
 // job before they take its namespace and folder away.
@@ -137,9 +137,6 @@ func (e *Executor) debugArgs(name, unit string, spec core.DebugSpec, tty bool, u
 	}
 	for _, p := range e.jobMounts(uid, dir) {
 		args = append(args, "-p", p)
-	}
-	if src := e.cacheSource(name); src != "" {
-		args = append(args, "-p", "BindPaths="+src+":"+e.cacheMount())
 	}
 	env := e.jobEnv(core.ExecSpec{Name: name, Kind: e.kindOf(name)}, uid)
 	if tty {

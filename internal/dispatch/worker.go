@@ -1425,10 +1425,11 @@ func trustKey(c core.CacheRepo) string {
 }
 
 // cachedRepoLocked is the repo whose cache a job on the device holds, or
-// nil. cacheDecisionLocked keeps it to one repo at a time.
+// nil. cacheDecisionLocked keeps it to one repo at a time. A kept sandbox
+// holds none: no debug command mounts the cache.
 func (w *Worker) cachedRepoLocked() *core.CacheRepo {
 	for _, j := range w.st.Jobs {
-		if j.Cached {
+		if j.Cached && !j.kept() {
 			return &core.CacheRepo{Forge: j.Forge, Repo: j.Repo}
 		}
 	}
