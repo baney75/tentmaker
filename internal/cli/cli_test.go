@@ -388,7 +388,7 @@ func TestJSONForEveryCommand(t *testing.T) {
 		{"connect", "github", "--token-stdin", "--json"},
 		{"pause", "--for", "30m", "--json", "a", "call"},
 		{"resume", "--json"},
-		{"devices", "add", "gigapc", "--repo", "a/b", "--json"},
+		{"devices", "add", "desktop", "--repo", "a/b", "--json"},
 		{"migrate", f.root, "--json"},
 		{"logs", "--json"},
 		{"update", "--check", "--json"},
@@ -763,7 +763,7 @@ func TestCheckRun(t *testing.T) {
 func TestDevicesAdd(t *testing.T) {
 	f := newFixture(t)
 	f.setUp("--pool", "home")
-	if code := f.run("", "devices", "add", "gigapc", "--memory", "4GiB", "--repo", "a/b"); code != ExitOK {
+	if code := f.run("", "devices", "add", "desktop", "--memory", "4GiB", "--repo", "a/b"); code != ExitOK {
 		t.Fatalf("exit %d %s", code, f.stderr)
 	}
 	if len(f.remote) != 1 || f.remote[0].Pool != "home" || f.remote[0].Memory != "4GiB" || f.remote[0].Channel != "stable" {
