@@ -11,7 +11,9 @@
 # (when the job was granted and when it ended), the check log Tentmaker kept
 # (the job's phase marks), and meta.json (the push time). scripts/bench turns
 # those into the tables; this script only records. A job that doesn't pass
-# is recorded and reported as a failure.
+# is recorded and reported as a failure, except on the workloads the gate
+# leaves out (UNGATED, which scripts/bench tests against its own list): there
+# it is recorded with a warning, so only the gate decides the bench run.
 #
 # Go and Node come from the documented tools folder, copied from this VM's
 # own toolchains, as on a device where they are installed.
@@ -25,6 +27,7 @@ git_init
 WF=$SCN_ROOT/.github/workflows/bench-$WL.yml
 [ -f "$WF" ] || die "no workload file $WF"
 CTX="tentmaker/$WL"
+UNGATED="docker"
 OUT=$SCN_ROOT/bench-raw/tm/$WL
 mkdir -p "$OUT"
 
@@ -59,6 +62,7 @@ for rep in $(seq 1 "$REPS"); do BRS+=("$(branch "r$rep")"); done
 tm_repo_add "${BRS[@]}"
 
 soft_note() { echo "::warning title=bench $WL::$*"; }
+ungated() { case " $UNGATED " in *" $WL "*) return 0 ;; *) return 1 ;; esac; }
 
 # sample ROUND REP COMMIT BRANCH: push, wait for the final status, keep the record.
 sample() {
@@ -68,7 +72,15 @@ sample() {
 	git_push "$c:refs/heads/$br"
 	tp=$(now_s)
 	if st=$(wait_state "$c" "$CTX" "success|failure|error" 2400 3); then
-		check "$CTX passes ($round, rep $rep: $st)" is_success "$st"
+		if is_success "$st"; then
+			log "ok: $CTX passes ($round, rep $rep: $st)"
+		elif ungated; then
+			soft_note "$CTX did not pass ($round, rep $rep: $st); recorded, and the gate leaves $WL out"
+		else
+			soft_fail "$CTX passes ($round, rep $rep: $st)"
+		fi
+	elif ungated; then
+		soft_note "$CTX: no final status within 40 minutes ($round, rep $rep, $c); recorded, and the gate leaves $WL out"
 	else
 		soft_fail "$CTX: no final status within 40 minutes ($round, rep $rep, $c)"
 	fi

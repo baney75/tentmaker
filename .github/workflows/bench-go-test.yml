@@ -31,9 +31,14 @@ jobs:
           persist-credentials: false
       # setup-go's own cache is keyed by go.sum alone and would be warm from
       # main on the first run; the cache step below keys it per pair instead.
+      # Go is pinned to go.mod's go line here, not read from go.mod: checks
+      # mode treats a version read from go.mod as a minimum and took the
+      # device's newer Go, so the two sides compiled with different Go.
+      # scripts/bench tests that this matches go.mod, and the gate checks
+      # the Go each run recorded.
       - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
-          go-version-file: go.mod
+          go-version: "1.25.0"
           cache: false
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -43,4 +48,6 @@ jobs:
           key: bench-go-test-${{ inputs.key }}
       - run: scripts/bench/phase.sh run deps go mod download
       - run: scripts/bench/phase.sh run test bash -c 'test -z "$(gofmt -l .)" && go vet ./... && go test -race ./...'
+      # After the work, so only a passing run marks the cache (hit.sh).
+      - run: scripts/bench/hit.sh "$(go env GOCACHE)" && scripts/bench/phase.sh meta go "$(go env GOVERSION)"
       - run: scripts/bench/phase.sh report

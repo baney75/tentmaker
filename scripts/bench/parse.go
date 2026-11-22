@@ -25,7 +25,11 @@ type Sample struct {
 	JobS       float64            `json:"job_s"`   // running to done
 	Phases     map[string]float64 `json:"phases"`  // seconds; "setup" is job start to the first mark
 	MBps       map[string]float64 `json:"mbps,omitempty"`
-	URL        string             `json:"url,omitempty"`
+	// CacheHit says whether the job started with the cache an earlier run
+	// of the workload left; nil when the job didn't record it.
+	CacheHit *bool  `json:"cache_hit,omitempty"`
+	Go       string `json:"go,omitempty"` // the Go that compiled, as `go env GOVERSION` printed it
+	URL      string `json:"url,omitempty"`
 }
 
 // Device describes the machine Tentmaker ran on, as bench.sh recorded it.
@@ -69,6 +73,46 @@ var ghName = regexp.MustCompile(`^gh ([a-z0-9-]+) (cold|warm) ([0-9]+) / `)
 // phaseLine matches a mark that phase.sh report printed, anywhere in a line
 // (GitHub prefixes each log line with a timestamp).
 var phaseLine = regexp.MustCompile(`BENCH_PHASE (\S+) (begin|end) ([0-9]+(?:\.[0-9]+)?)(?: ([0-9]+))?`)
+
+// metaLine matches a fact phase.sh meta recorded: "BENCH_META go go1.25.0".
+var metaLine = regexp.MustCompile(`BENCH_META ([a-z_]+) (\S+)`)
+
+// parseMeta reads the BENCH_META lines in a job log. The last value of a key
+// counts.
+func parseMeta(log string) map[string]string {
+	out := map[string]string{}
+	for _, line := range strings.Split(log, "\n") {
+		if m := metaLine.FindStringSubmatch(line); m != nil {
+			out[m[1]] = m[2]
+		}
+	}
+	return out
+}
+
+// readLog fills the parts of s that come from its job log: phases, rates,
+// the cache hit and the Go version. A passing job always ends with
+// phase.sh report, so a log with no marks means the job didn't finish
+// its work (or its log is gone): the sample doesn't count as passing.
+// It returns why, or "".
+func readLog(s *Sample, log string, jobStart float64) string {
+	marks := parsePhases(log)
+	s.Phases, s.MBps = phaseTimes(marks, jobStart)
+	meta := parseMeta(log)
+	switch meta["cache_hit"] {
+	case "1":
+		s.CacheHit = ptr(true)
+	case "0":
+		s.CacheHit = ptr(false)
+	}
+	s.Go = meta["go"]
+	if s.OK && len(marks) == 0 {
+		s.OK = false
+		return "no phase report in its log; not counted as passing"
+	}
+	return ""
+}
+
+func ptr[T any](v T) *T { return &v }
 
 type mark struct {
 	begin, end float64
@@ -173,14 +217,21 @@ func parseGitHub(dir string) ([]Sample, []string, map[string]string, error) {
 		if !j.StartedAt.IsZero() && !j.CreatedAt.IsZero() && !j.StartedAt.Before(j.CreatedAt) {
 			s.StartS = round1(j.StartedAt.Sub(j.CreatedAt).Seconds())
 		}
-		if !j.CompletedAt.IsZero() && !j.StartedAt.IsZero() {
+		// A job time needs a start and an end, in order. Without them the
+		// sample can't count as passing: a zero would look fast.
+		if !j.StartedAt.IsZero() && !j.CompletedAt.IsZero() && j.CompletedAt.After(j.StartedAt) {
 			s.JobS = round1(j.CompletedAt.Sub(j.StartedAt).Seconds())
+		} else if s.OK {
+			s.OK = false
+			missing = append(missing, j.Name+": no ordered start and end time; not counted as passing")
 		}
 		log, err := os.ReadFile(filepath.Join(dir, "logs", strconv.FormatInt(j.ID, 10)+".txt"))
 		if err != nil {
 			missing = append(missing, "log of "+j.Name)
 		}
-		s.Phases, s.MBps = phaseTimes(parsePhases(string(log)), epoch(j.StartedAt))
+		if why := readLog(&s, string(log), epoch(j.StartedAt)); why != "" {
+			missing = append(missing, j.Name+": "+why)
+		}
 		out = append(out, s)
 	}
 	return out, missing, urls, nil
@@ -205,16 +256,17 @@ type ghStatus struct {
 
 // parseTentmakerSample reads one sample folder: meta.json, statuses.json
 // (the commit's statuses, newest first, as GitHub lists them) and log.txt
-// (the check log Tentmaker kept).
-func parseTentmakerSample(dir string) (Sample, error) {
+// (the check log Tentmaker kept). The second result says why a sample
+// that passed doesn't count as passing, or is "".
+func parseTentmakerSample(dir string) (Sample, string, error) {
 	var meta tmMeta
 	if err := readJSON(filepath.Join(dir, "meta.json"), &meta); err != nil {
-		return Sample{}, err
+		return Sample{}, "", err
 	}
 	s := Sample{Workload: meta.Workload, Platform: "tentmaker", Round: meta.Round, Rep: meta.Rep, URL: meta.URL, Conclusion: "none", StartS: -1}
 	var sts []ghStatus
 	if err := readJSON(filepath.Join(dir, "statuses.json"), &sts); err != nil {
-		return s, err
+		return s, "", err
 	}
 	var pending, final *ghStatus
 	for i := range sts {
@@ -238,18 +290,26 @@ func parseTentmakerSample(dir string) (Sample, error) {
 	}
 	s.OK = s.Conclusion == "success"
 	start := 0.0
+	var why string
 	if pending != nil {
 		start = epoch(pending.CreatedAt)
 		if meta.PushEpoch > 0 && pending.CreatedAt.Unix() >= meta.PushEpoch {
 			s.StartS = round1(start - float64(meta.PushEpoch))
 		}
-		if final != nil && !final.CreatedAt.Before(pending.CreatedAt) {
-			s.JobS = round1(final.CreatedAt.Sub(pending.CreatedAt).Seconds())
-		}
+	}
+	// The job time is the pending status to the final one. Without both,
+	// in order, the sample can't count as passing: a zero would look fast.
+	if pending != nil && final != nil && final.CreatedAt.After(pending.CreatedAt) {
+		s.JobS = round1(final.CreatedAt.Sub(pending.CreatedAt).Seconds())
+	} else if s.OK {
+		s.OK = false
+		why = "no pending status before its final one; not counted as passing"
 	}
 	log, _ := os.ReadFile(filepath.Join(dir, "log.txt"))
-	s.Phases, s.MBps = phaseTimes(parsePhases(string(log)), start)
-	return s, nil
+	if w := readLog(&s, string(log), start); why == "" {
+		why = w
+	}
+	return s, why, nil
 }
 
 func readJSON(path string, v any) error {
@@ -299,10 +359,13 @@ func LoadRun(dir string) (Run, error) {
 			if st, err := os.Stat(sd); err != nil || !st.IsDir() {
 				continue
 			}
-			s, err := parseTentmakerSample(sd)
+			s, why, err := parseTentmakerSample(sd)
 			if err != nil {
 				r.Missing = append(r.Missing, fmt.Sprintf("Tentmaker sample %s/%s: %v", filepath.Base(wd), filepath.Base(sd), err))
 				continue
+			}
+			if why != "" {
+				r.Missing = append(r.Missing, fmt.Sprintf("Tentmaker sample %s/%s: %s", filepath.Base(wd), filepath.Base(sd), why))
 			}
 			if s.URL == "" {
 				s.URL = jobURL

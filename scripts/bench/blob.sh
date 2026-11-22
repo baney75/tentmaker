@@ -8,7 +8,8 @@
 # workload measures.
 #
 #   blob.sh restore   Tentmaker: copy the cached blob into ~/bench-blob, if there is one
-#   blob.sh hit       print the blob's size if ~/bench-blob holds a blob, else 0
+#   blob.sh hit       print the blob's size if ~/bench-blob holds a blob, else 0,
+#                     and record cache_hit for the report
 #   blob.sh verify    check a restored blob against its sha256 (outside the timed restore)
 #   blob.sh make      write a new random blob and its sha256 when there is none
 #   blob.sh save      Tentmaker: copy a new blob into the repo cache, synced to disk
@@ -34,9 +35,11 @@ case ${1:-} in
 	hit)
 		if [ -s "$dir/blob.bin" ] && [ -s "$dir/blob.sha256" ]; then
 			echo 1 >"$state"
+			"$(dirname "$0")/phase.sh" meta cache_hit 1
 			stat -c %s "$dir/blob.bin"
 		else
 			echo 0 >"$state"
+			"$(dirname "$0")/phase.sh" meta cache_hit 0
 			echo 0
 		fi
 		;;

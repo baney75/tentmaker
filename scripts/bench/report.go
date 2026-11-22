@@ -11,18 +11,38 @@ import (
 const (
 	MaxStartS = 5.0 // median Tentmaker job start latency, seconds
 	MinRuns   = 3   // passing runs each gated cell needs
+	// Tentmaker warm fails only when it is slower than GitHub-hosted warm
+	// by more than SlackFrac of the hosted median plus SlackS. Both sides'
+	// job times come from timestamps with whole-second resolution, so a
+	// 1 s difference is noise, not a regression.
+	SlackFrac = 0.05
+	SlackS    = 1.0
 )
 
-// workloadInfo is the fixed list of workloads, in table order.
-var workloadInfo = []struct {
+type workload struct {
 	Name, Title string
 	Gated       bool
-}{
-	{"go-test", "Go test (this repo: gofmt, vet, go test -race)", true},
-	{"cross-build", "Go cross build (this repo, 6 targets)", true},
-	{"node", "Node: tj/commander.js v15.1.0, npm ci and npm test", true},
-	{"docker", "Docker build, two stages (baseline: no layer cache yet)", false},
-	{"cache", "Cache: 256 MiB blob save, then restore", true},
+	Cached      bool     // the warm run restores what the cold run saved; it records cache_hit
+	Go          bool     // compiles Go; both sides must record the same Go
+	Rates       []string // phases whose warm throughput the gate compares
+}
+
+// workloadInfo is the fixed list of workloads, in table order.
+var workloadInfo = []workload{
+	{"go-test", "Go test (this repo: gofmt, vet, go test -race)", true, true, true, nil},
+	{"cross-build", "Go cross build (this repo, 6 targets)", true, true, true, nil},
+	{"node", "Node: tj/commander.js v15.1.0, npm ci and npm test", true, true, false, nil},
+	{"docker", "Docker build, two stages (baseline: no layer cache yet)", false, false, false, nil},
+	{"cache", "Cache: 256 MiB blob save, then restore", true, true, false, []string{"restore"}},
+}
+
+func infoOf(name string) workload {
+	for _, wi := range workloadInfo {
+		if wi.Name == name {
+			return wi
+		}
+	}
+	return workload{Name: name}
 }
 
 // Cell is the spread of one number over runs.
@@ -49,12 +69,20 @@ func cellOf(v []float64) Cell {
 
 // Side is one workload on one platform in one round.
 type Side struct {
-	Runs   int             `json:"runs"`   // samples recorded
-	Failed int             `json:"failed"` // samples that did not pass
-	Job    Cell            `json:"job_s"`  // passing runs only
-	Start  Cell            `json:"start_s"`
-	Phases map[string]Cell `json:"phases_s,omitempty"`
-	MBps   map[string]Cell `json:"mbps,omitempty"`
+	Runs   int `json:"runs"`   // samples recorded
+	Failed int `json:"failed"` // samples that did not pass, or had no job time
+	// Warm runs of a cached workload only: passing runs that hit the cache,
+	// that missed it (left out of every number below), and that didn't
+	// record which (kept, but the gate fails on them).
+	Hits       int             `json:"cache_hits,omitempty"`
+	Missed     int             `json:"cache_missed,omitempty"`
+	Unrecorded int             `json:"cache_unrecorded,omitempty"`
+	Go         []string        `json:"go,omitempty"`    // the Go versions passing runs recorded
+	NoGo       int             `json:"no_go,omitempty"` // passing runs of a Go workload that recorded none
+	Job        Cell            `json:"job_s"`           // passing runs only
+	Start      Cell            `json:"start_s"`
+	Phases     map[string]Cell `json:"phases_s,omitempty"`
+	MBps       map[string]Cell `json:"mbps,omitempty"`
 }
 
 // WorkloadResult is one row of the tables.
@@ -101,7 +129,7 @@ func Summarize(r Run) Report {
 	}
 	for _, wi := range workloadInfo {
 		w := WorkloadResult{Name: wi.Name, Title: wi.Title, Gated: wi.Gated,
-			GitHub: side(r.Samples, wi.Name, "github"), Tentmaker: side(r.Samples, wi.Name, "tentmaker")}
+			GitHub: side(r.Samples, wi, "github"), Tentmaker: side(r.Samples, wi, "tentmaker")}
 		if g, t := w.GitHub["warm"].Job, w.Tentmaker["warm"].Job; g.N > 0 && t.N > 0 && t.Median > 0 {
 			w.SpeedupWarm = round1(g.Median / t.Median)
 		}
@@ -111,24 +139,45 @@ func Summarize(r Run) Report {
 	return rep
 }
 
-func side(samples []Sample, workload, platform string) map[string]*Side {
+func side(samples []Sample, wi workload, platform string) map[string]*Side {
 	out := map[string]*Side{}
 	for _, round := range []string{"cold", "warm"} {
 		var job, start []float64
 		phases := map[string][]float64{}
 		mbps := map[string][]float64{}
+		gos := map[string]bool{}
 		sd := &Side{}
 		for _, s := range samples {
-			if s.Workload != workload || s.Platform != platform || s.Round != round {
+			if s.Workload != wi.Name || s.Platform != platform || s.Round != round {
 				continue
 			}
 			sd.Runs++
 			if s.StartS >= 0 {
 				start = append(start, s.StartS)
 			}
-			if !s.OK {
+			// A passing run with no job time can't be measured; counting its
+			// zero would make it look fast.
+			if !s.OK || s.JobS <= 0 {
 				sd.Failed++
 				continue
+			}
+			if wi.Go {
+				if s.Go == "" {
+					sd.NoGo++
+				} else {
+					gos[s.Go] = true
+				}
+			}
+			if round == "warm" && wi.Cached {
+				switch {
+				case s.CacheHit == nil:
+					sd.Unrecorded++
+				case !*s.CacheHit:
+					sd.Missed++
+					continue
+				default:
+					sd.Hits++
+				}
 			}
 			job = append(job, s.JobS)
 			for k, v := range s.Phases {
@@ -139,6 +188,7 @@ func side(samples []Sample, workload, platform string) map[string]*Side {
 			}
 		}
 		sd.Job, sd.Start = cellOf(job), cellOf(start)
+		sd.Go = sortedKeys(gos)
 		if len(phases) > 0 {
 			sd.Phases = map[string]Cell{}
 			for k, v := range phases {
@@ -156,45 +206,80 @@ func side(samples []Sample, workload, platform string) map[string]*Side {
 	return out
 }
 
-// Gate fails the run when, on a gated workload, Tentmaker warm is slower
-// than GitHub-hosted warm (job time, and throughput for the phases that
-// moved bytes), when either side has fewer than MinRuns passing warm runs,
-// or when the median Tentmaker job start latency is over MaxStartS. A
-// number it can't read fails the gate.
+// Gate fails the run when, on a gated workload:
+//
+//   - either side has fewer than MinRuns passing warm runs (for a cached
+//     workload: passing warm runs that hit the cache; a warm run that
+//     missed it is left out, and one that didn't record it fails the gate);
+//   - a Go workload's runs didn't all record the same Go, on both sides;
+//   - Tentmaker warm is slower than GitHub-hosted warm by more than the
+//     SlackFrac + SlackS allowance;
+//   - a throughput the workload names (Rates) has fewer than MinRuns
+//     measurements on either side, or Tentmaker's median is lower.
+//
+// It also fails when the median Tentmaker job start latency is over
+// MaxStartS. A number it can't read fails the gate.
 func Gate(rep Report) GateResult {
 	var f []string
 	for _, w := range rep.Workloads {
 		if !w.Gated {
 			continue
 		}
+		wi := infoOf(w.Name)
 		gw, tw := w.GitHub["warm"], w.Tentmaker["warm"]
 		if gw == nil || tw == nil {
 			f = append(f, w.Name+": no warm runs")
 			continue
 		}
-		short := false
-		if tw.Job.N < MinRuns {
-			f = append(f, fmt.Sprintf("%s: %d passing Tentmaker warm runs of %d; the gate needs %d", w.Name, tw.Job.N, tw.Runs, MinRuns))
-			short = true
+		if wi.Go {
+			f = append(f, goFailures(w)...)
 		}
-		if gw.Job.N < MinRuns {
-			f = append(f, fmt.Sprintf("%s: %d passing GitHub-hosted warm runs of %d; the gate needs %d", w.Name, gw.Job.N, gw.Runs, MinRuns))
-			short = true
+		short := false
+		for _, pl := range []struct {
+			name string
+			sd   *Side
+		}{{"Tentmaker", tw}, {"GitHub-hosted", gw}} {
+			sd := pl.sd
+			if !wi.Cached {
+				if sd.Job.N < MinRuns {
+					f = append(f, fmt.Sprintf("%s: %d passing %s warm runs of %d; the gate needs %d", w.Name, sd.Job.N, pl.name, sd.Runs, MinRuns))
+					short = true
+				}
+				continue
+			}
+			if sd.Unrecorded > 0 {
+				f = append(f, fmt.Sprintf("%s: %d passing %s warm runs didn't record whether they hit the cache", w.Name, sd.Unrecorded, pl.name))
+			}
+			if sd.Hits < MinRuns {
+				short = true
+				if sd.Hits+sd.Unrecorded >= MinRuns {
+					continue // the line above says why
+				}
+				f = append(f, fmt.Sprintf("%s: %d passing %s warm runs that hit the cache, of %d (%d failed, %d missed the cache); the gate needs %d",
+					w.Name, sd.Hits, pl.name, sd.Runs, sd.Failed, sd.Missed, MinRuns))
+			}
+		}
+		for _, p := range wi.Rates {
+			g, t := gw.MBps[p], tw.MBps[p]
+			ok := true
+			if t.N < MinRuns {
+				f = append(f, fmt.Sprintf("%s: %d Tentmaker warm %s throughput measurements; the gate needs %d", w.Name, t.N, p, MinRuns))
+				ok = false
+			}
+			if g.N < MinRuns {
+				f = append(f, fmt.Sprintf("%s: %d GitHub-hosted warm %s throughput measurements; the gate needs %d", w.Name, g.N, p, MinRuns))
+				ok = false
+			}
+			if ok && t.Median < g.Median {
+				f = append(f, fmt.Sprintf("%s: Tentmaker warm %s (%.1f MB/s) is slower than GitHub-hosted warm (%.1f MB/s)", w.Name, p, t.Median, g.Median))
+			}
 		}
 		if short {
 			continue
 		}
-		if tw.Job.Median > gw.Job.Median {
-			f = append(f, fmt.Sprintf("%s: Tentmaker warm (%.1f s) is slower than GitHub-hosted warm (%.1f s)", w.Name, tw.Job.Median, gw.Job.Median))
-		}
-		for _, p := range sortedKeys(gw.MBps) {
-			t, ok := tw.MBps[p]
-			switch {
-			case !ok || t.N == 0:
-				f = append(f, fmt.Sprintf("%s: no Tentmaker warm %s throughput", w.Name, p))
-			case t.Median < gw.MBps[p].Median:
-				f = append(f, fmt.Sprintf("%s: Tentmaker warm %s (%.1f MB/s) is slower than GitHub-hosted warm (%.1f MB/s)", w.Name, p, t.Median, gw.MBps[p].Median))
-			}
+		if limit := gw.Job.Median*(1+SlackFrac) + SlackS; tw.Job.Median > limit {
+			f = append(f, fmt.Sprintf("%s: Tentmaker warm (%.1f s) is slower than GitHub-hosted warm (%.1f s) by more than the %.0f%% + %.0f s allowance",
+				w.Name, tw.Job.Median, gw.Job.Median, SlackFrac*100, SlackS))
 		}
 	}
 	lat, ok := rep.StartLatency["tentmaker"]
@@ -205,6 +290,46 @@ func Gate(rep Report) GateResult {
 		f = append(f, fmt.Sprintf("median Tentmaker job start latency is %.1f s over %d jobs; the limit is %.0f s", lat.Median, lat.N, MaxStartS))
 	}
 	return GateResult{Pass: len(f) == 0, Failures: f}
+}
+
+// goFailures checks that every passing run of a Go workload, cold and warm
+// on both sides, recorded its Go, and that they all recorded the same one.
+func goFailures(w WorkloadResult) []string {
+	var f []string
+	all := map[string]bool{}
+	byPlatform := map[string][]string{}
+	for _, pl := range []string{"github", "tentmaker"} {
+		m := w.GitHub
+		if pl == "tentmaker" {
+			m = w.Tentmaker
+		}
+		seen := map[string]bool{}
+		for _, round := range []string{"cold", "warm"} {
+			sd := m[round]
+			if sd == nil {
+				continue
+			}
+			if sd.NoGo > 0 {
+				f = append(f, fmt.Sprintf("%s: %d passing %s %s runs recorded no Go version", w.Name, sd.NoGo, platformName(pl), round))
+			}
+			for _, v := range sd.Go {
+				seen[v], all[v] = true, true
+			}
+		}
+		byPlatform[pl] = sortedKeys(seen)
+	}
+	if len(all) > 1 {
+		f = append(f, fmt.Sprintf("%s: the two sides didn't compile with the same Go: GitHub-hosted %s, Tentmaker %s",
+			w.Name, orNone(byPlatform["github"]), orNone(byPlatform["tentmaker"])))
+	}
+	return f
+}
+
+func orNone(v []string) string {
+	if len(v) == 0 {
+		return "none recorded"
+	}
+	return strings.Join(v, " and ")
 }
 
 func sortedKeys[V any](m map[string]V) []string {
@@ -275,8 +400,9 @@ func Markdown(rep Report) string {
 	p("## Job time\n\n")
 	p("Median seconds from the job starting to its result. Cold: an empty cache. Warm: the same\n")
 	p("workload again with the cache the cold run left (`actions/cache` on GitHub, Tentmaker's repo\n")
-	p("cache on Tentmaker). Speedup is GitHub-hosted warm over Tentmaker warm. n counts passing runs,\n")
-	p("GitHub-hosted / Tentmaker, warm.\n\n")
+	p("cache on Tentmaker). Speedup is GitHub-hosted warm over Tentmaker warm. n counts passing warm\n")
+	p("runs, GitHub-hosted / Tentmaker; for every workload but Docker, only warm runs that hit the cache\n")
+	p("count, and a warm run that missed it is left out of every number.\n\n")
 	p("| Workload | GitHub-hosted cold | GitHub-hosted warm | Tentmaker cold | Tentmaker warm | Speedup | n |\n")
 	p("|---|---|---|---|---|---|---|\n")
 	for _, w := range rep.Workloads {
@@ -288,6 +414,40 @@ func Markdown(rep Report) string {
 			secs(w.GitHub["cold"].Job), secs(w.GitHub["warm"].Job),
 			secs(w.Tentmaker["cold"].Job), secs(w.Tentmaker["warm"].Job), sp,
 			w.GitHub["warm"].Job.N, w.Tentmaker["warm"].Job.N)
+	}
+	p("\n")
+	var notes []string
+	for _, w := range rep.Workloads {
+		for _, pl := range []string{"github", "tentmaker"} {
+			sd := w.GitHub["warm"]
+			if pl == "tentmaker" {
+				sd = w.Tentmaker["warm"]
+			}
+			if sd.Missed > 0 {
+				notes = append(notes, fmt.Sprintf("%s, %s: %d warm runs missed the cache and are left out", w.Name, platformName(pl), sd.Missed))
+			}
+			if sd.Unrecorded > 0 {
+				notes = append(notes, fmt.Sprintf("%s, %s: %d warm runs didn't record whether they hit the cache", w.Name, platformName(pl), sd.Unrecorded))
+			}
+		}
+	}
+	for _, n := range notes {
+		p("- %s\n", n)
+	}
+	if len(notes) > 0 {
+		p("\n")
+	}
+	p("Go used by each side (`go env GOVERSION`, every passing run):\n\n")
+	for _, w := range rep.Workloads {
+		if !infoOf(w.Name).Go {
+			continue
+		}
+		var g, t []string
+		for _, round := range []string{"cold", "warm"} {
+			g = append(g, w.GitHub[round].Go...)
+			t = append(t, w.Tentmaker[round].Go...)
+		}
+		p("- %s: GitHub-hosted %s; Tentmaker %s\n", w.Name, orNone(uniq(g)), orNone(uniq(t)))
 	}
 	p("\nEvery run, with links to each job, is in [`benchmarks.json`](benchmarks.json) (`samples`).\n\n")
 
@@ -345,8 +505,11 @@ func Markdown(rep Report) string {
 
 	p("## Gate\n\n")
 	p("The bench run fails when, on any workload but the Docker baseline, Tentmaker warm is slower\n")
-	p("than GitHub-hosted warm (job time, and cache restore throughput), when either side has fewer\n")
-	p("than %d passing warm runs, or when the median Tentmaker job start latency is over %.0f s.\n\n", MinRuns, MaxStartS)
+	p("than GitHub-hosted warm by more than %.0f%% plus %.0f s (job times have whole-second\n", SlackFrac*100, SlackS)
+	p("resolution), when Tentmaker's median cache restore throughput is lower, when either side has\n")
+	p("fewer than %d passing warm runs that hit the cache or fewer than %d restore throughput\n", MinRuns, MinRuns)
+	p("measurements, when a warm run didn't record whether it hit the cache, when the two sides didn't\n")
+	p("record the same Go, or when the median Tentmaker job start latency is over %.0f s.\n\n", MaxStartS)
 	if rep.Gate.Pass {
 		p("This run: **pass**.\n\n")
 	} else {
@@ -368,15 +531,17 @@ func Markdown(rep Report) string {
 	p("- CPUs: a Tentmaker job is capped at 2 CPUs (the default `job.cpus`); the hosted job has the\n")
 	p("  VM's 4. That is most of why Tentmaker's cold runs are slower: they compile from nothing on\n")
 	p("  half the CPUs.\n")
-	p("- Toolchains: GitHub-hosted jobs download the exact Go in `go.mod` (inside their setup time).\n")
-	p("  Under Tentmaker, checks mode uses the first Go on the device that satisfies `go.mod`; on these\n")
-	p("  VMs that is the image's own, a newer minor version. Node is 22 on both.\n")
+	p("- Toolchains: the Go workloads pin the exact Go in `go.mod`. GitHub-hosted jobs download it\n")
+	p("  inside their setup time; the Tentmaker device has it installed in its tools folder, as a\n")
+	p("  device you use every day would. Each run records its Go, and the gate fails when the sides\n")
+	p("  differ. Node is 22 on both.\n")
 	p("- Pickup outliers: the five bench devices share one workflow `GITHUB_TOKEN`. When its hourly\n")
 	p("  budget runs low, Tentmaker stops polling until the reset, as designed, so a few runs wait\n")
 	p("  minutes (the Max column above). A device with its own token doesn't share that budget. The\n")
 	p("  gate uses the median.\n")
 	p("- Pulls: base images come from the ECR Public mirror, which can answer 429 to a busy shared IP;\n")
-	p("  a run that fails that way counts as failed, not slow.\n\n")
+	p("  a run that fails that way counts as failed, not slow. The gate leaves Docker out, so a failed\n")
+	p("  Docker run doesn't fail the bench run.\n\n")
 
 	p("## Blacksmith's published claims\n\n")
 	p("We can't run Blacksmith, so these are **their claims, not our measurements**, quoted from their\n")
@@ -400,6 +565,14 @@ func Markdown(rep Report) string {
 	p("raw data (`bench-raw` artifact): `go run ./scripts/bench report -raw <dir> -md docs/BENCHMARKS.md\n")
 	p("-json docs/benchmarks.json`.\n")
 	return b.String()
+}
+
+func uniq(v []string) []string {
+	m := map[string]bool{}
+	for _, s := range v {
+		m[s] = true
+	}
+	return sortedKeys(m)
 }
 
 func platformName(p string) string {

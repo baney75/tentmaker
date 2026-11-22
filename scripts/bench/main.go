@@ -3,9 +3,12 @@
 // docs/benchmarks.json, and gates the run.
 //
 //	go run ./scripts/bench report -raw DIR -md FILE -json FILE
+//	go run ./scripts/bench report -from FILE -md FILE -json FILE
 //	go run ./scripts/bench gate -json FILE
 //
-// report writes both files and prints the Markdown; gate recomputes every
+// report writes both files and prints the Markdown; with -from it reads the
+// samples of an earlier benchmarks.json instead of a raw folder, so a change
+// to this tool can re-render a published run. gate recomputes every
 // number from the samples in the JSON and exits 1 when the run fails the
 // gate (see Gate). It is a repo tool, not part of tentmaker.
 package main
@@ -22,12 +25,13 @@ func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }
 
 func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "usage: bench report -raw DIR -md FILE -json FILE | bench gate -json FILE")
+		fmt.Fprintln(stderr, "usage: bench report (-raw DIR | -from FILE) -md FILE -json FILE | bench gate -json FILE")
 		return 2
 	}
 	fs := flag.NewFlagSet("bench "+args[0], flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	raw := fs.String("raw", "", "raw bench folder (report)")
+	from := fs.String("from", "", "an earlier benchmarks.json to re-render (report)")
 	md := fs.String("md", "", "Markdown output (report)")
 	js := fs.String("json", "", "JSON output (report) or input (gate)")
 	if err := fs.Parse(args[1:]); err != nil {
@@ -35,16 +39,28 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	switch args[0] {
 	case "report":
-		if *raw == "" || *md == "" || *js == "" {
-			fmt.Fprintln(stderr, "bench report: -raw, -md and -json are required")
+		if (*raw == "") == (*from == "") || *md == "" || *js == "" {
+			fmt.Fprintln(stderr, "bench report: -md, -json and one of -raw or -from are required")
 			return 2
 		}
-		r, err := LoadRun(*raw)
-		if err != nil {
-			fmt.Fprintln(stderr, "bench report:", err)
-			return 1
+		var rep Report
+		if *raw != "" {
+			r, err := LoadRun(*raw)
+			if err != nil {
+				fmt.Fprintln(stderr, "bench report:", err)
+				return 1
+			}
+			rep = Summarize(r)
+		} else {
+			data, err := os.ReadFile(*from)
+			if err == nil {
+				rep, err = LoadReport(data)
+			}
+			if err != nil {
+				fmt.Fprintln(stderr, "bench report:", err)
+				return 1
+			}
 		}
-		rep := Summarize(r)
 		data, err := marshal(rep)
 		if err != nil {
 			fmt.Fprintln(stderr, "bench report:", err)

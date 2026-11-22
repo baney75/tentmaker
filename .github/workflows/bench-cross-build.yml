@@ -29,9 +29,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # Go is pinned to go.mod's go line here, not read from go.mod: checks
+      # mode treats a version read from go.mod as a minimum and took the
+      # device's newer Go, so the two sides compiled with different Go.
+      # scripts/bench tests that this matches go.mod, and the gate checks
+      # the Go each run recorded.
       - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
-          go-version-file: go.mod
+          go-version: "1.25.0"
           cache: false
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -51,4 +56,6 @@ jobs:
             done
           done
           scripts/bench/phase.sh end build
+      # After the work, so only a passing run marks the cache (hit.sh).
+      - run: scripts/bench/hit.sh "$(go env GOCACHE)" && scripts/bench/phase.sh meta go "$(go env GOVERSION)"
       - run: scripts/bench/phase.sh report

@@ -132,6 +132,7 @@
         "cold": {
           "runs": 3,
           "failed": 0,
+          "no_go": 3,
           "job_s": {
             "n": 3,
             "median": 80,
@@ -168,6 +169,8 @@
         "warm": {
           "runs": 3,
           "failed": 0,
+          "cache_unrecorded": 3,
+          "no_go": 3,
           "job_s": {
             "n": 3,
             "median": 28,
@@ -206,6 +209,7 @@
         "cold": {
           "runs": 3,
           "failed": 0,
+          "no_go": 3,
           "job_s": {
             "n": 3,
             "median": 135,
@@ -242,6 +246,8 @@
         "warm": {
           "runs": 3,
           "failed": 0,
+          "cache_unrecorded": 3,
+          "no_go": 3,
           "job_s": {
             "n": 3,
             "median": 22,
@@ -286,6 +292,7 @@
         "cold": {
           "runs": 3,
           "failed": 0,
+          "no_go": 3,
           "job_s": {
             "n": 3,
             "median": 90,
@@ -322,6 +329,8 @@
         "warm": {
           "runs": 3,
           "failed": 0,
+          "cache_unrecorded": 3,
+          "no_go": 3,
           "job_s": {
             "n": 3,
             "median": 19,
@@ -360,6 +369,7 @@
         "cold": {
           "runs": 3,
           "failed": 0,
+          "no_go": 3,
           "job_s": {
             "n": 3,
             "median": 143,
@@ -396,6 +406,8 @@
         "warm": {
           "runs": 3,
           "failed": 0,
+          "cache_unrecorded": 3,
+          "no_go": 3,
           "job_s": {
             "n": 3,
             "median": 6,
@@ -482,6 +494,7 @@
         "warm": {
           "runs": 3,
           "failed": 0,
+          "cache_unrecorded": 3,
           "job_s": {
             "n": 3,
             "median": 18,
@@ -568,6 +581,7 @@
         "warm": {
           "runs": 3,
           "failed": 0,
+          "cache_unrecorded": 3,
           "job_s": {
             "n": 3,
             "median": 18,
@@ -792,6 +806,7 @@
         "warm": {
           "runs": 3,
           "failed": 0,
+          "cache_unrecorded": 3,
           "job_s": {
             "n": 3,
             "median": 8,
@@ -882,6 +897,7 @@
         "warm": {
           "runs": 3,
           "failed": 0,
+          "cache_unrecorded": 3,
           "job_s": {
             "n": 3,
             "median": 2,
@@ -928,8 +944,25 @@
     }
   ],
   "gate": {
-    "pass": true,
-    "failures": null
+    "pass": false,
+    "failures": [
+      "go-test: 3 passing GitHub-hosted cold runs recorded no Go version",
+      "go-test: 3 passing GitHub-hosted warm runs recorded no Go version",
+      "go-test: 3 passing Tentmaker cold runs recorded no Go version",
+      "go-test: 3 passing Tentmaker warm runs recorded no Go version",
+      "go-test: 3 passing Tentmaker warm runs didn't record whether they hit the cache",
+      "go-test: 3 passing GitHub-hosted warm runs didn't record whether they hit the cache",
+      "cross-build: 3 passing GitHub-hosted cold runs recorded no Go version",
+      "cross-build: 3 passing GitHub-hosted warm runs recorded no Go version",
+      "cross-build: 3 passing Tentmaker cold runs recorded no Go version",
+      "cross-build: 3 passing Tentmaker warm runs recorded no Go version",
+      "cross-build: 3 passing Tentmaker warm runs didn't record whether they hit the cache",
+      "cross-build: 3 passing GitHub-hosted warm runs didn't record whether they hit the cache",
+      "node: 3 passing Tentmaker warm runs didn't record whether they hit the cache",
+      "node: 3 passing GitHub-hosted warm runs didn't record whether they hit the cache",
+      "cache: 3 passing Tentmaker warm runs didn't record whether they hit the cache",
+      "cache: 3 passing GitHub-hosted warm runs didn't record whether they hit the cache"
+    ]
   },
   "samples": [
     {

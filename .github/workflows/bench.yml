@@ -10,6 +10,11 @@
 # workload becomes the device, as in the dogfood scenario. The hosted side
 # calls the same workload files as reusable workflows, one run at a time per
 # workload so GitHub's queue isn't crowded by the bench itself.
+#
+# Cache keys are the run id and the rep, not the run attempt: after "Re-run
+# failed jobs", a rerun warm rep must still find the cache its cold rep saved
+# in the first attempt. Each warm run records whether it hit the cache, and
+# the report leaves out the ones that missed.
 name: bench
 
 on:
@@ -88,7 +93,7 @@ jobs:
         rep: [1, 2, 3]
     uses: ./.github/workflows/bench-go-test.yml
     with:
-      key: ${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.rep }}
+      key: ${{ github.run_id }}-${{ matrix.rep }}
   gh-go-test-warm:
     name: gh go-test warm ${{ matrix.rep }}
     needs: gh-go-test-cold
@@ -100,7 +105,7 @@ jobs:
         rep: [1, 2, 3]
     uses: ./.github/workflows/bench-go-test.yml
     with:
-      key: ${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.rep }}
+      key: ${{ github.run_id }}-${{ matrix.rep }}
 
   gh-cross-build-cold:
     name: gh cross-build cold ${{ matrix.rep }}
@@ -111,7 +116,7 @@ jobs:
         rep: [1, 2, 3]
     uses: ./.github/workflows/bench-cross-build.yml
     with:
-      key: ${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.rep }}
+      key: ${{ github.run_id }}-${{ matrix.rep }}
   gh-cross-build-warm:
     name: gh cross-build warm ${{ matrix.rep }}
     needs: gh-cross-build-cold
@@ -123,7 +128,7 @@ jobs:
         rep: [1, 2, 3]
     uses: ./.github/workflows/bench-cross-build.yml
     with:
-      key: ${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.rep }}
+      key: ${{ github.run_id }}-${{ matrix.rep }}
 
   gh-node-cold:
     name: gh node cold ${{ matrix.rep }}
@@ -134,7 +139,7 @@ jobs:
         rep: [1, 2, 3]
     uses: ./.github/workflows/bench-node.yml
     with:
-      key: ${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.rep }}
+      key: ${{ github.run_id }}-${{ matrix.rep }}
   gh-node-warm:
     name: gh node warm ${{ matrix.rep }}
     needs: gh-node-cold
@@ -146,7 +151,7 @@ jobs:
         rep: [1, 2, 3]
     uses: ./.github/workflows/bench-node.yml
     with:
-      key: ${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.rep }}
+      key: ${{ github.run_id }}-${{ matrix.rep }}
 
   gh-docker-cold:
     name: gh docker cold ${{ matrix.rep }}
@@ -157,7 +162,7 @@ jobs:
         rep: [1, 2, 3]
     uses: ./.github/workflows/bench-docker.yml
     with:
-      key: ${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.rep }}
+      key: ${{ github.run_id }}-${{ matrix.rep }}
   gh-docker-warm:
     name: gh docker warm ${{ matrix.rep }}
     needs: gh-docker-cold
@@ -169,7 +174,7 @@ jobs:
         rep: [1, 2, 3]
     uses: ./.github/workflows/bench-docker.yml
     with:
-      key: ${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.rep }}
+      key: ${{ github.run_id }}-${{ matrix.rep }}
 
   gh-cache-cold:
     name: gh cache cold ${{ matrix.rep }}
@@ -180,7 +185,7 @@ jobs:
         rep: [1, 2, 3]
     uses: ./.github/workflows/bench-cache.yml
     with:
-      key: ${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.rep }}
+      key: ${{ github.run_id }}-${{ matrix.rep }}
   gh-cache-warm:
     name: gh cache warm ${{ matrix.rep }}
     needs: gh-cache-cold
@@ -192,7 +197,7 @@ jobs:
         rep: [1, 2, 3]
     uses: ./.github/workflows/bench-cache.yml
     with:
-      key: ${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.rep }}
+      key: ${{ github.run_id }}-${{ matrix.rep }}
 
   report:
     needs:

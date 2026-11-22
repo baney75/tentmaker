@@ -26,8 +26,9 @@ VM). A real home or office machine is likely faster than this. Neither side is t
 
 Median seconds from the job starting to its result. Cold: an empty cache. Warm: the same
 workload again with the cache the cold run left (`actions/cache` on GitHub, Tentmaker's repo
-cache on Tentmaker). Speedup is GitHub-hosted warm over Tentmaker warm. n counts passing runs,
-GitHub-hosted / Tentmaker, warm.
+cache on Tentmaker). Speedup is GitHub-hosted warm over Tentmaker warm. n counts passing warm
+runs, GitHub-hosted / Tentmaker; for every workload but Docker, only warm runs that hit the cache
+count, and a warm run that missed it is left out of every number.
 
 | Workload | GitHub-hosted cold | GitHub-hosted warm | Tentmaker cold | Tentmaker warm | Speedup | n |
 |---|---|---|---|---|---|---|
@@ -36,6 +37,20 @@ GitHub-hosted / Tentmaker, warm.
 | Node: tj/commander.js v15.1.0, npm ci and npm test | 16.0 s | 18.0 s | 19.0 s | 18.0 s | 1.0x | 3 / 3 |
 | Docker build, two stages (baseline: no layer cache yet) | 28.0 s | 27.5 s | 39.0 s | 41.0 s | 0.7x | 2 / 3 |
 | Cache: 256 MiB blob save, then restore | 8.0 s | 8.0 s | 3.0 s | 2.0 s | 4.0x | 3 / 3 |
+
+- go-test, GitHub-hosted: 3 warm runs didn't record whether they hit the cache
+- go-test, Tentmaker: 3 warm runs didn't record whether they hit the cache
+- cross-build, GitHub-hosted: 3 warm runs didn't record whether they hit the cache
+- cross-build, Tentmaker: 3 warm runs didn't record whether they hit the cache
+- node, GitHub-hosted: 3 warm runs didn't record whether they hit the cache
+- node, Tentmaker: 3 warm runs didn't record whether they hit the cache
+- cache, GitHub-hosted: 3 warm runs didn't record whether they hit the cache
+- cache, Tentmaker: 3 warm runs didn't record whether they hit the cache
+
+Go used by each side (`go env GOVERSION`, every passing run):
+
+- go-test: GitHub-hosted none recorded; Tentmaker none recorded
+- cross-build: GitHub-hosted none recorded; Tentmaker none recorded
 
 Every run, with links to each job, is in [`benchmarks.json`](benchmarks.json) (`samples`).
 
@@ -94,25 +109,47 @@ step before to the step after. Tentmaker: a copy into its repo cache on the same
 ## Gate
 
 The bench run fails when, on any workload but the Docker baseline, Tentmaker warm is slower
-than GitHub-hosted warm (job time, and cache restore throughput), when either side has fewer
-than 3 passing warm runs, or when the median Tentmaker job start latency is over 5 s.
+than GitHub-hosted warm by more than 5% plus 1 s (job times have whole-second
+resolution), when Tentmaker's median cache restore throughput is lower, when either side has
+fewer than 3 passing warm runs that hit the cache or fewer than 3 restore throughput
+measurements, when a warm run didn't record whether it hit the cache, when the two sides didn't
+record the same Go, or when the median Tentmaker job start latency is over 5 s.
 
-This run: **pass**.
+This run: **fail**.
+
+- go-test: 3 passing GitHub-hosted cold runs recorded no Go version
+- go-test: 3 passing GitHub-hosted warm runs recorded no Go version
+- go-test: 3 passing Tentmaker cold runs recorded no Go version
+- go-test: 3 passing Tentmaker warm runs recorded no Go version
+- go-test: 3 passing Tentmaker warm runs didn't record whether they hit the cache
+- go-test: 3 passing GitHub-hosted warm runs didn't record whether they hit the cache
+- cross-build: 3 passing GitHub-hosted cold runs recorded no Go version
+- cross-build: 3 passing GitHub-hosted warm runs recorded no Go version
+- cross-build: 3 passing Tentmaker cold runs recorded no Go version
+- cross-build: 3 passing Tentmaker warm runs recorded no Go version
+- cross-build: 3 passing Tentmaker warm runs didn't record whether they hit the cache
+- cross-build: 3 passing GitHub-hosted warm runs didn't record whether they hit the cache
+- node: 3 passing Tentmaker warm runs didn't record whether they hit the cache
+- node: 3 passing GitHub-hosted warm runs didn't record whether they hit the cache
+- cache: 3 passing Tentmaker warm runs didn't record whether they hit the cache
+- cache: 3 passing GitHub-hosted warm runs didn't record whether they hit the cache
 
 ## Known limits of this bench
 
 - CPUs: a Tentmaker job is capped at 2 CPUs (the default `job.cpus`); the hosted job has the
   VM's 4. That is most of why Tentmaker's cold runs are slower: they compile from nothing on
   half the CPUs.
-- Toolchains: GitHub-hosted jobs download the exact Go in `go.mod` (inside their setup time).
-  Under Tentmaker, checks mode uses the first Go on the device that satisfies `go.mod`; on these
-  VMs that is the image's own, a newer minor version. Node is 22 on both.
+- Toolchains: the Go workloads pin the exact Go in `go.mod`. GitHub-hosted jobs download it
+  inside their setup time; the Tentmaker device has it installed in its tools folder, as a
+  device you use every day would. Each run records its Go, and the gate fails when the sides
+  differ. Node is 22 on both.
 - Pickup outliers: the five bench devices share one workflow `GITHUB_TOKEN`. When its hourly
   budget runs low, Tentmaker stops polling until the reset, as designed, so a few runs wait
   minutes (the Max column above). A device with its own token doesn't share that budget. The
   gate uses the median.
 - Pulls: base images come from the ECR Public mirror, which can answer 429 to a busy shared IP;
-  a run that fails that way counts as failed, not slow.
+  a run that fails that way counts as failed, not slow. The gate leaves Docker out, so a failed
+  Docker run doesn't fail the bench run.
 
 ## Blacksmith's published claims
 

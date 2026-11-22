@@ -49,4 +49,6 @@ jobs:
         working-directory: work
       - run: ../scripts/bench/phase.sh run test npm test
         working-directory: work
+      # After the work, so only a passing run marks the cache (hit.sh).
+      - run: scripts/bench/hit.sh "$(npm config get cache)"
       - run: scripts/bench/phase.sh report
