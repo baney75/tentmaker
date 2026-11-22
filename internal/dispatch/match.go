@@ -21,9 +21,16 @@ import (
 
 // Timing the reference dispatcher settled on.
 const (
-	pollMin         = 5 * time.Second
-	pollMax         = 30 * time.Second
-	pollFactor      = 1.5
+	pollMin    = 5 * time.Second
+	pollMax    = 30 * time.Second
+	pollFactor = 1.5
+	// pollFast is the poll interval of a forge whose unchanged polls are
+	// free (core.CheapPoller), stretched by pollFastPerRepo for each
+	// configured repo so a device with many repos stays well under
+	// GitHub's secondary limit (900 requests a minute).
+	pollFast        = 2 * time.Second
+	pollFastPerRepo = 500 * time.Millisecond
+	tickSlack       = 100 * time.Millisecond
 	identifyTimeout = 30 * time.Second
 	workerSilence   = 2 * time.Minute
 	repoInfoTTL     = time.Hour
@@ -34,7 +41,7 @@ const (
 	forgeTimeout    = 30 * time.Second
 	postGiveUp      = 24 * time.Hour
 
-	workerTick     = 2 * time.Second
+	workerTick     = time.Second
 	workTimeout    = 15 * time.Second
 	startTimeout   = 10 * time.Minute
 	execTimeout    = 30 * time.Second

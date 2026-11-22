@@ -38,6 +38,10 @@ type BrokerOptions struct {
 	StateDir string
 	Log      *slog.Logger
 	Now      func() time.Time
+	// OnWork, if set, is called (with no broker lock held) after a poll
+	// finds work a worker could take; the daemon kicks its worker so the
+	// grant doesn't wait for the worker's next tick.
+	OnWork func()
 }
 
 // Broker is the forge side of dispatch. It implements core.WorkSource.
@@ -96,6 +100,9 @@ type infoCache struct {
 	at  time.Time
 	err string
 	why string // refusal, "" = allowed
+	// noForks: a private repo whose fork PR workflows are off, so no fork
+	// job can reach a runner registered to it (see cacheSafe).
+	noForks bool
 }
 
 // grantRec is one runner the broker granted. It holds no secret.
@@ -135,6 +142,7 @@ type grantRec struct {
 
 	pending bool      // the grant call is in flight
 	checked time.Time // last forge check
+	drain   bool      // offer it with Drain: another repo waits for its device
 }
 
 type deviceRec struct {
@@ -447,6 +455,17 @@ func (b *Broker) newNameLocked(device string) string {
 // pickLocked reserves grants for the request. The reservations count as idle
 // runners at once, so a concurrent request can't over-serve a job.
 func (b *Broker) pickLocked(req core.WorkRequest, now time.Time) []*grantRec {
+	skipped := false
+	picks := b.pickAllLocked(req, now, &skipped)
+	for _, rec := range picks {
+		rec.drain = skipped
+	}
+	return picks
+}
+
+// pickAllLocked picks grants for req; it sets *skipped when a job this
+// device could run waits only because of req.OnlyRepo.
+func (b *Broker) pickAllLocked(req core.WorkRequest, now time.Time, skipped *bool) []*grantRec {
 	var picks []*grantRec
 	type cand struct {
 		r      *repoState
@@ -501,6 +520,12 @@ func (b *Broker) pickLocked(req core.WorkRequest, now time.Time) []*grantRec {
 			if !ok {
 				continue
 			}
+			// The device holds a repo's cache: only that repo's cache-safe
+			// jobs may join it; anything else waits (see WorkOffer.Drain).
+			if !onlyRepo(req, r.forge, r.cfg.Name) || (req.OnlyRepo != nil && !b.runnerCacheSafeLocked(r.forge, r.cfg.Name, j)) {
+				*skipped = true
+				continue
+			}
 			cands = append(cands, cand{r, j, p, labels})
 		}
 	}
@@ -541,6 +566,10 @@ func (b *Broker) pickLocked(req core.WorkRequest, now time.Time) []*grantRec {
 				}
 				p, ok := matchCheckPlatform(cj.Platform, req.Platforms)
 				if !ok {
+					continue
+				}
+				if !onlyRepo(req, r.forge, r.cfg.Name) {
+					*skipped = true
 					continue
 				}
 				job := core.Job{Forge: r.forge, Repo: r.cfg.Name, Name: cj.Name, Workflow: cj.Workflow,
@@ -623,7 +652,34 @@ func (b *Broker) realize(ctx context.Context, req core.WorkRequest, rec *grantRe
 	b.log.Info("runner granted", "runner", rec.Name, "runner_id", g.RunnerID, "device", req.Device,
 		"repo", rec.Repo, "job_id", rec.Job.ID, "job", rec.Job.Name, "platform", rec.Platform.String(),
 		"labels", strings.Join(rec.Labels, ","))
-	return core.WorkOffer{Job: rec.Job, Grant: g, Secret: g.Secret, Platform: rec.Platform}, true
+	return core.WorkOffer{Job: rec.Job, Grant: g, Secret: g.Secret, Platform: rec.Platform, Cache: b.cacheSafe(rec), Drain: rec.drain}, true
+}
+
+// cacheSafe says whether a runner job may use its repo's persistent cache.
+// A JIT runner takes whichever queued job matches its labels, not only the
+// one it was granted for, so the job's own FromFork isn't enough: only a
+// private repo with fork PR workflows off (the forge runs no fork job at
+// all) is safe. The forge's answer is at most repoInfoTTL old, like the
+// public-repo refusal it comes with.
+func (b *Broker) cacheSafe(rec *grantRec) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.runnerCacheSafeLocked(rec.Forge, rec.Repo, rec.Job)
+}
+
+func (b *Broker) runnerCacheSafeLocked(forge, repo string, j core.Job) bool {
+	if j.FromFork {
+		return false
+	}
+	c := b.infos[forge+":"+repo]
+	return c != nil && c.err == "" && c.noForks
+}
+
+// onlyRepo reports whether repo r may serve a request restricted to
+// req.OnlyRepo (always true without one).
+func onlyRepo(req core.WorkRequest, forge, repo string) bool {
+	o := req.OnlyRepo
+	return o == nil || (o.Forge == forge && strings.EqualFold(o.Repo, repo))
 }
 
 func (b *Broker) realizeCheck(ctx context.Context, req core.WorkRequest, rec *grantRec, now time.Time, drop func(string, error)) (core.WorkOffer, bool) {
@@ -704,7 +760,9 @@ func (b *Broker) realizeCheck(ctx context.Context, req core.WorkRequest, rec *gr
 		"context", rec.Context, "platform", rec.Platform.String())
 	g := core.Grant{Forge: rec.Forge, Repo: rec.Repo, RunnerName: rec.Name, Labels: rec.Labels,
 		Secret: secret, ExpiresAt: now.Add(time.Hour)}
-	return core.WorkOffer{Job: rec.Job, Grant: g, Secret: secret, Platform: rec.Platform}, true
+	// A check job runs exactly one commit the broker picked, never a fork's
+	// (pollChecks skips them), so it may use the repo's cache.
+	return core.WorkOffer{Job: rec.Job, Grant: g, Secret: secret, Platform: rec.Platform, Cache: !rec.Job.FromFork, Drain: rec.drain}, true
 }
 
 // maxCheckRetries is how many times a check whose grant ended unstarted
@@ -859,7 +917,9 @@ func (b *Broker) Tick(ctx context.Context) error {
 	now := b.now()
 	for _, r := range b.repos {
 		b.mu.Lock()
-		due := !r.denied && !now.Before(r.next)
+		// Run ticks every second; the slack keeps a 2 s poll from slipping
+		// to 3 s when a tick lands a hair early.
+		due := !r.denied && !now.Add(tickSlack).Before(r.next)
 		b.mu.Unlock()
 		if !due {
 			continue
@@ -877,6 +937,37 @@ func (b *Broker) Tick(ctx context.Context) error {
 	b.pruneArchivesLocked()
 	b.mu.Unlock()
 	return b.save()
+}
+
+// polledLocked schedules the next poll after a good one. A forge whose
+// unchanged polls are free is polled again in pollFast (more with many
+// repos), busy or not, so a new job is seen within about 2 s; any other
+// forge backs off as backoffLocked says. Errors and refused repos always go
+// through backoffLocked.
+func (b *Broker) polledLocked(r *repoState, now time.Time, busy bool) {
+	if !b.cheapLocked(r) {
+		b.backoffLocked(r, now, busy)
+		return
+	}
+	d := time.Duration(len(b.repos)) * pollFastPerRepo
+	if d < pollFast {
+		d = pollFast
+	}
+	r.lastPoll = now
+	r.interval = d
+	r.next = now.Add(d)
+}
+
+// cheapLocked reports whether repo r's forge says its polls are free now.
+func (b *Broker) cheapLocked(r *repoState) bool {
+	var f any
+	if r.mode == "checks" {
+		f = b.o.StatusForges[r.forge]
+	} else {
+		f = b.o.Forges[r.forge]
+	}
+	cp, ok := f.(core.CheapPoller)
+	return ok && cp.CheapPolls()
 }
 
 // backoffLocked schedules the next poll: 5 s while there is work, else the
@@ -914,6 +1005,7 @@ func (b *Broker) pollRunner(ctx context.Context, r *repoState, now time.Time) {
 			nc.err = err.Error()
 		} else {
 			nc.why = repoRefusal(r, info)
+			nc.noForks = !info.Public && info.ForkPolicy == "off"
 		}
 		b.mu.Lock()
 		old := b.infos[r.key()]
@@ -966,8 +1058,16 @@ func (b *Broker) pollRunner(ctx context.Context, r *repoState, now time.Time) {
 			delete(b.noted, k)
 		}
 	}
-	b.backoffLocked(r, now, busy)
+	b.polledLocked(r, now, busy)
 	b.mu.Unlock()
+	b.foundWork(busy)
+}
+
+// foundWork tells the daemon a poll found work.
+func (b *Broker) foundWork(busy bool) {
+	if busy && b.o.OnWork != nil {
+		b.o.OnWork()
+	}
 }
 
 // repoFailed records a per-repo error. The stale queue is dropped (no grant
@@ -1495,8 +1595,9 @@ func (b *Broker) pollChecks(ctx context.Context, r *repoState, now time.Time) {
 			delete(b.noted, k)
 		}
 	}
-	b.backoffLocked(r, now, busy)
+	b.polledLocked(r, now, busy)
 	b.mu.Unlock()
+	b.foundWork(busy)
 }
 
 func (b *Broker) noteCommit(r *repoState, c core.Commit, why string) {

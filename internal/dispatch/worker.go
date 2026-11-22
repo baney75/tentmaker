@@ -68,6 +68,7 @@ type Worker struct {
 	holds        int                    // Hold calls not yet released; memory only
 
 	starts sync.WaitGroup // executor Starts in flight
+	kick   chan struct{}  // Kick: tick now instead of at the next second
 }
 
 // relayEntry lets one running check job fetch its source archive from the
@@ -98,14 +99,20 @@ type sourceHealth struct {
 
 // workerState is state.json. It holds no secret.
 type workerState struct {
-	Version     int                `json:"version"`
-	Jobs        []*jobRec          `json:"jobs"`
-	Unacked     map[string]*report `json:"unacked"`
-	Leftovers   map[string]string  `json:"leftovers,omitempty"` // runner -> executor; Clean failed, retried
-	Dirty       bool               `json:"dirty"`
-	Quarantined map[string]string  `json:"quarantined,omitempty"` // source -> why
-	Paused      bool               `json:"paused,omitempty"`
-	PauseReason string             `json:"pause_reason,omitempty"`
+	Version   int                `json:"version"`
+	Jobs      []*jobRec          `json:"jobs"`
+	Unacked   map[string]*report `json:"unacked"`
+	Leftovers map[string]string  `json:"leftovers,omitempty"` // runner -> executor; Clean failed, retried
+	Dirty     bool               `json:"dirty"`
+	// DirtyTrust is the trust key every job since the last reset had, and
+	// empty when they differed or anything else dirtied the node. A job can
+	// leave a process behind that only a reset kills, and that process can
+	// read a later job's cache through /proc, so a cache goes only to the
+	// repo whose trusted jobs alone have run since the reset.
+	DirtyTrust  string            `json:"dirty_trust,omitempty"`
+	Quarantined map[string]string `json:"quarantined,omitempty"` // source -> why
+	Paused      bool              `json:"paused,omitempty"`
+	PauseReason string            `json:"pause_reason,omitempty"`
 }
 
 type report struct {
@@ -131,6 +138,10 @@ type jobRec struct {
 	// blocks its executor; pollJobs retries the stop.
 	Stopping string `json:"stopping,omitempty"`
 	StopErr  string `json:"stop_err,omitempty"`
+	// Trust is the repo (trustKey) whose cache the job was vouched safe for,
+	// "" if none; Cached says it got that cache. See cacheDecisionLocked.
+	Trust  string `json:"trust,omitempty"`
+	Cached bool   `json:"cached,omitempty"`
 
 	// starting is set while the executor's Start runs, off the tick, so a
 	// slow boot never stops the worker's heartbeat. The job holds its slot
@@ -165,6 +176,7 @@ func NewWorker(o WorkerOptions) *Worker {
 		sources: map[string]*sourceHealth{},
 		warned:  map[string]bool{},
 		relays:  map[string]*relayEntry{},
+		kick:    make(chan struct{}, 1),
 	}
 	if w.o.RelayAddr == nil {
 		w.o.RelayAddr = func() string { return DefaultRelayAddr }
@@ -181,7 +193,8 @@ func NewWorker(o WorkerOptions) *Worker {
 
 // ---------------------------------------------------------------- loop
 
-// Run ticks every 2 s until ctx ends. The daemon calls Shutdown afterwards.
+// Run ticks every second, and right away after Kick, until ctx ends. The
+// daemon calls Shutdown afterwards.
 func (w *Worker) Run(ctx context.Context) error {
 	t := time.NewTicker(workerTick)
 	defer t.Stop()
@@ -193,7 +206,18 @@ func (w *Worker) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-t.C:
+		case <-w.kick:
 		}
+	}
+}
+
+// Kick asks Run for a tick now: the local broker found work, so asking
+// for it shouldn't wait for the next tick. Kicks while a tick runs fold
+// into one more tick. It never blocks.
+func (w *Worker) Kick() {
+	select {
+	case w.kick <- struct{}{}:
+	default:
 	}
 }
 
@@ -251,7 +275,7 @@ func (w *Worker) reconcile(ctx context.Context) {
 	w.mu.Lock()
 	if !w.started {
 		w.started = true
-		w.st.Dirty = true // a restart never starts clean: reset at the first idle moment
+		w.markDirtyLocked() // a restart never starts clean: reset at the first idle moment
 	}
 	var todo []*execInfo
 	for _, e := range w.execs {
@@ -314,7 +338,7 @@ func (w *Worker) stopAndClean(ctx context.Context, e *execInfo, name string) {
 			w.log.Warn("runner left behind; retrying", "executor", e.name, "runner", name, "error", err)
 		}
 		w.leftoverLocked(name, e.name, err.Error())
-		w.st.Dirty = true
+		w.markDirtyLocked()
 	} else {
 		delete(w.st.Leftovers, name)
 		delete(w.cleanErrs, name)
@@ -493,7 +517,7 @@ func (w *Worker) stopJob(ctx context.Context, j *jobRec, why string) {
 	if j.starting {
 		// Stopped once its Start returns; until then it holds its slot.
 		j.Stopping, j.StopErr = why, "it is still starting"
-		w.st.Dirty = true
+		w.markDirtyLocked()
 		w.mu.Unlock()
 		return
 	}
@@ -507,7 +531,7 @@ func (w *Worker) stopJob(ctx context.Context, j *jobRec, why string) {
 		w.mu.Lock()
 		first := j.Stopping == ""
 		j.Stopping, j.StopErr = why, err.Error()
-		w.st.Dirty = true
+		w.markDirtyLocked()
 		w.mu.Unlock()
 		if first {
 			w.log.Warn("stop failed; the job stays counted and its executor takes nothing new until it stops",
@@ -592,7 +616,7 @@ func (w *Worker) maybeReset(ctx context.Context, now time.Time) {
 		return
 	}
 	lifted := len(w.st.Quarantined)
-	w.st.Dirty = false
+	w.st.Dirty, w.st.DirtyTrust = false, ""
 	w.st.Quarantined = nil
 	w.st.Leftovers = nil
 	w.cleanErrs = nil
@@ -740,6 +764,7 @@ func (w *Worker) exchange(ctx context.Context, now time.Time, d core.Decision, a
 		if len(platforms) == 0 {
 			free = 0
 		}
+		only := w.cachedRepoLocked()
 		var running []string
 		for _, j := range w.st.Jobs {
 			if j.Source == name && !j.starting {
@@ -768,7 +793,7 @@ func (w *Worker) exchange(ctx context.Context, now time.Time, d core.Decision, a
 		w.mu.Unlock()
 
 		req := core.WorkRequest{Device: w.device, Labels: w.labels, Platforms: platforms, Free: free,
-			Limits: w.limits, Running: running, Ended: sent.Ended, Results: sent.Results}
+			Limits: w.limits, Running: running, Ended: sent.Ended, Results: sent.Results, OnlyRepo: only}
 		wctx, cancel := context.WithTimeout(ctx, workTimeout)
 		resp, err := s.Work(wctx, req)
 		cancel()
@@ -793,7 +818,7 @@ func (w *Worker) exchange(ctx context.Context, now time.Time, d core.Decision, a
 				w.st.Quarantined = map[string]string{}
 			}
 			w.st.Quarantined[name] = "quarantined by " + name
-			w.st.Dirty = true
+			w.markDirtyLocked()
 			w.log.Warn("source quarantined this device; taking nothing from it until a reset", "source", name)
 		}
 		var stops []*jobRec
@@ -810,7 +835,11 @@ func (w *Worker) exchange(ctx context.Context, now time.Time, d core.Decision, a
 			w.stopJob(ctx, j, "stopped by the broker")
 		}
 		started := 0
+		mixed := mixedTrust(resp.Offers)
 		for _, off := range resp.Offers {
+			// Offers of more than one repo (or untrusted ones) in one
+			// response all run cold, so none is declined for another's cache.
+			off.Drain = off.Drain || mixed
 			if started >= free || resp.Quarantine {
 				w.decline(name, off, "no room for it")
 				continue
@@ -956,8 +985,16 @@ func (w *Worker) start(ctx context.Context, src core.WorkSource, off core.WorkOf
 		w.decline(source, off, "admission closed before the start")
 		return false
 	}
+	c, ok := w.cacheDecisionLocked(e, off)
+	if !ok {
+		w.dropRelaysLocked(name)
+		w.mu.Unlock()
+		w.decline(source, off, "a job holding another repo's cache runs here")
+		return false
+	}
+	spec.Cache, rec.Trust, rec.Cached = c, trustKey(offerCache(off)), !c.IsZero()
 	w.st.Jobs = append(w.st.Jobs, rec)
-	w.st.Dirty = true
+	w.ranLocked(rec.Trust)
 	w.mu.Unlock()
 	if err := w.save(); err != nil {
 		w.log.Error("state not saved before start", "error", err)
@@ -1304,4 +1341,90 @@ func (w *Worker) Status() WorkerStatus {
 // String makes a short summary for logs and tests.
 func (s WorkerStatus) String() string {
 	return fmt.Sprintf("%s: %d/%d slots used, admit=%v", s.Device, s.Slots.Used, s.Slots.Total, s.Decision.Admit)
+}
+
+// trustKey names the repo a cache is for, "" for none.
+func trustKey(c core.CacheRepo) string {
+	if c.IsZero() {
+		return ""
+	}
+	return c.Forge + "\x00" + strings.ToLower(c.Repo)
+}
+
+// cachedRepoLocked is the repo whose cache a job on the device holds, or
+// nil. cacheDecisionLocked keeps it to one repo at a time.
+func (w *Worker) cachedRepoLocked() *core.CacheRepo {
+	for _, j := range w.st.Jobs {
+		if j.Cached {
+			return &core.CacheRepo{Forge: j.Forge, Repo: j.Repo}
+		}
+	}
+	return nil
+}
+
+// cacheDecisionLocked decides whether offer off may start, and with which
+// cache. Every job on a device runs as one user and can reach the others'
+// files and mounts through /proc, so a cache is only as private as the
+// least trusted job beside it:
+//   - While a job holds repo R's cache, only jobs vouched safe for R may
+//     start (ok false otherwise: declined).
+//   - A job gets R's cache only when it is vouched safe for R, its
+//     executor keeps repo caches, the broker didn't ask it to drain, and
+//     every job already on the device is vouched safe for R.
+func (w *Worker) cacheDecisionLocked(e *execInfo, off core.WorkOffer) (core.CacheRepo, bool) {
+	t := offerCache(off)
+	tk := trustKey(t)
+	if held := w.cachedRepoLocked(); held != nil && trustKey(*held) != tk {
+		return core.CacheRepo{}, false
+	}
+	rc, caches := e.ex.(core.RepoCacher)
+	if tk == "" || off.Drain || !caches || !rc.CachesRepos() {
+		return core.CacheRepo{}, true
+	}
+	if w.st.Dirty && w.st.DirtyTrust != tk {
+		return core.CacheRepo{}, true // something else ran since the last reset
+	}
+	for _, j := range w.st.Jobs {
+		if j.Trust != tk {
+			return core.CacheRepo{}, true
+		}
+	}
+	return t, true
+}
+
+// markDirtyLocked records that the node needs a reset for a reason that
+// isn't one repo's trusted job, so no cache is handed out until it has one.
+func (w *Worker) markDirtyLocked() {
+	w.st.Dirty, w.st.DirtyTrust = true, ""
+}
+
+// ranLocked records that a job with trust key tk started.
+func (w *Worker) ranLocked(tk string) {
+	switch {
+	case !w.st.Dirty:
+		w.st.DirtyTrust = tk
+	case w.st.DirtyTrust != tk:
+		w.st.DirtyTrust = ""
+	}
+	w.st.Dirty = true
+}
+
+// mixedTrust says whether offers name more than one trust key ("" counts).
+func mixedTrust(offs []core.WorkOffer) bool {
+	for _, off := range offs[min(1, len(offs)):] {
+		if trustKey(offerCache(off)) != trustKey(offerCache(offs[0])) {
+			return true
+		}
+	}
+	return false
+}
+
+// offerCache is the repo cache a job may use: its repo's, only when the
+// broker marked the offer safe for it (an older broker never does) and the
+// job isn't a fork's.
+func offerCache(off core.WorkOffer) core.CacheRepo {
+	if !off.Cache || off.Job.FromFork || off.Job.Forge == "" || off.Job.Repo == "" {
+		return core.CacheRepo{}
+	}
+	return core.CacheRepo{Forge: off.Job.Forge, Repo: off.Job.Repo, Job: off.Job.Name}
 }

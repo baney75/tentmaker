@@ -523,6 +523,9 @@ scn_up() {
 	t=$(now_ms)
 	tm_setup "$@"
 	measure setup_s "$(secs_since "$t")"
+	# The daemon checks for updates on its own; against the real releases it
+	# would replace the build under test with the latest published one.
+	set_daemon_env TENTMAKER_UPDATE_API="http://127.0.0.1:$PORT"
 	tm_connect
 	measure_s version "$(timeout 30 tentmaker version --json | jqr -r .version)"
 	measure free_disk_gib "$(free_gib)"

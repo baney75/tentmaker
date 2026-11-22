@@ -247,7 +247,7 @@ func Default(totalMemory int64, cpus int) Config {
 		DenyRepos: []string{},
 		Mesh:      Mesh{Enabled: true, Pool: "default", Port: 7433},
 		Update:    Update{Channel: "stable", Auto: true},
-		CacheMax:  20 * GiB,
+		CacheMax:  10 * GiB,
 	}
 }
 

@@ -28,7 +28,7 @@ func forHost(goos, goarch string, cfg config.Config, binary func(core.Platform) 
 	var e core.Executor
 	switch goos {
 	case "linux":
-		e = linux.New(linux.Options{StateDir: cfg.StateDir, CacheDir: cfg.CacheDir, Log: log, Binary: binary, Arch: ghArch(goarch), AllowLAN: cfg.Guards.AllowLAN})
+		e = linux.New(linux.Options{StateDir: cfg.StateDir, CacheDir: cfg.CacheDir, Log: log, Binary: binary, Arch: ghArch(goarch), AllowLAN: cfg.Guards.AllowLAN, CacheMax: repoCacheMax(cfg)})
 	case "darwin":
 		e = darwin.New(darwin.Options{StateDir: cfg.StateDir, CacheDir: cfg.CacheDir, Log: log, Binary: binary, HostArch: goarch})
 	case "windows":
@@ -62,4 +62,13 @@ func ghArch(goarch string) string {
 		return "x64"
 	}
 	return goarch
+}
+
+// repoCacheMax maps cache_max to linux.Options.CacheMax: 0 in the config
+// turns the repo caches off.
+func repoCacheMax(cfg config.Config) int64 {
+	if cfg.CacheMax <= 0 {
+		return -1
+	}
+	return int64(cfg.CacheMax)
 }

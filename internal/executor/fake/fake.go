@@ -57,9 +57,26 @@ type Executor struct {
 	poolLimit core.Resources
 	poolInUse core.Resources
 	poolCalls int
+
+	cachesRepos bool
 }
 
 var _ core.Executor = (*Executor)(nil)
+var _ core.RepoCacher = (*Executor)(nil)
+
+// SetCachesRepos says whether the executor keeps repo caches (default no).
+func (e *Executor) SetCachesRepos(on bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.cachesRepos = on
+}
+
+// CachesRepos implements core.RepoCacher.
+func (e *Executor) CachesRepos() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.cachesRepos
+}
 
 // New returns an executor called name with maxSlots (0 = no cap) that runs
 // the given platforms.

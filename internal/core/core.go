@@ -124,6 +124,15 @@ type Forge interface {
 	CancelRun(ctx context.Context, repo string, runID int64) error
 }
 
+// CheapPoller is a forge whose unchanged polls cost no rate limit (GitHub
+// answers a conditional GET with 304, which its primary limit doesn't
+// count). The broker polls such a forge's repos at a short fixed interval
+// while CheapPolls is true; it is false when the forge says its rate limit
+// runs low, and then the broker backs off as for any other forge.
+type CheapPoller interface {
+	CheapPolls() bool
+}
+
 // ExecState is an executor's view of one runner it started.
 type ExecState string
 
@@ -158,7 +167,25 @@ type ExecSpec struct {
 	Limits      Resources     // hard per-job limit
 	MaxDuration time.Duration // the executor kills the job after this
 	TestWorkers int           // exported to the job as TENTMAKER_JOBS
+	// Cache names the repo whose persistent build cache the job may use,
+	// or is zero for none. The worker sets it only from an offer the broker
+	// marked cache-safe (WorkOffer.Cache), so no fork job ever sees one.
+	Cache CacheRepo
 }
+
+// CacheRepo names one repo's persistent cache: the forge's name in the
+// config and the repo's owner/name. A job only ever sees its own repo's.
+// Job, the job's name, only steers which of the repo's job folders it gets
+// (the one its last run used, so path-keyed caches hit); it never picks
+// the cache.
+type CacheRepo struct {
+	Forge string `json:"forge"`
+	Repo  string `json:"repo"`
+	Job   string `json:"job,omitempty"`
+}
+
+// IsZero reports whether no cache is named.
+func (c CacheRepo) IsZero() bool { return c.Forge == "" || c.Repo == "" }
 
 // NamePattern is the only shape a runner name may take. Executors refuse
 // anything else, since names reach argv, unit names and paths.
@@ -346,6 +373,12 @@ type WorkRequest struct {
 	// Results carries finished check jobs back to the broker that granted
 	// them, which posts the commit statuses.
 	Results []CheckResult `json:"results"`
+	// OnlyRepo, when set, says a job on the device holds this repo's cache:
+	// every job there runs as one user and can reach the others through
+	// /proc, so the device takes only that repo's cache-safe jobs until it
+	// ends. A broker offers nothing else (an older one that does gets its
+	// offers declined).
+	OnlyRepo *CacheRepo `json:"only_repo,omitempty"`
 }
 
 // WorkOffer is one job for the worker, with the grant to run it.
@@ -354,6 +387,23 @@ type WorkOffer struct {
 	Grant    Grant    `json:"grant"`
 	Secret   []byte   `json:"secret"` // Grant.Secret on the wire (tailnet only, encrypted by WireGuard)
 	Platform Platform `json:"platform"`
+	// Cache says the broker vouches that no fork job can reach this runner,
+	// so the worker may give it the repo's persistent cache: always for a
+	// check job (checks mode never plans a fork's commit), and in runner
+	// mode only when the forge runs no fork PR workflows for the repo. An
+	// older broker never sets it, so its jobs get no cache.
+	Cache bool `json:"cache,omitempty"`
+	// Drain asks the worker to run this cache-safe job without the cache:
+	// the broker skipped another repo's job for the device's OnlyRepo, and
+	// that job gets in once the device holds no cache.
+	Drain bool `json:"drain,omitempty"`
+}
+
+// RepoCacher is an executor that gives a job ExecSpec.Cache. Executors
+// without it ignore the field, and the worker never counts their jobs as
+// holding a cache.
+type RepoCacher interface {
+	CachesRepos() bool
 }
 
 // WorkResponse answers a WorkRequest.

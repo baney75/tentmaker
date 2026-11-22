@@ -26,7 +26,7 @@ Forge tokens never go in this file. They live in the OS secret store; set them w
 | `deny_repo_patterns` | list of strings | `[]` | Repos this device's broker never grants jobs for. Shell-style patterns matched without case, like `"acme/*"`. A malformed pattern denies every repo. |
 | `state_dir` | string | per OS: `/var/lib/tentmaker`, `/Library/Application Support/Tentmaker/state`, `%ProgramData%\Tentmaker\state` | Runner state, job directories and the control token. |
 | `cache_dir` | string | per OS: `/var/cache/tentmaker`, `/Library/Caches/Tentmaker`, `%ProgramData%\Tentmaker\cache` | Downloads such as runner archives, VM images and binaries for other platforms. |
-| `cache_max` | size | `20GiB` | The most `cache_dir` may hold. |
+| `cache_max` | size | `10GiB` | The most the per-repo build caches under `cache_dir/repos` may hold (Linux). Past it, whole repos go, least recently used first, never one with a job on the device. `0` turns the caches off. |
 
 ## `[budget]`
 

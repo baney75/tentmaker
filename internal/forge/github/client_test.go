@@ -523,3 +523,51 @@ func TestTokenNeverLeaks(t *testing.T) {
 	}
 	h.noLeak(t, e6, e7, e8)
 }
+
+// Polls are cheap until the limit runs low (a quarter of it, at least
+// CheapPollMin); they are cheap again once its reset time passes.
+// RateFloor's wait is separate and unchanged.
+func TestCheapPollsFollowsRateLeft(t *testing.T) {
+	h := newHarness(t)
+	if !h.c.CheapPolls() {
+		t.Fatal("an unknown limit should poll cheaply")
+	}
+	reset := t0.Add(10 * time.Minute)
+	left, limit := "4999", "5000"
+	h.f.on("GET", "/repos/acme/app/actions/runners/5", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-RateLimit-Limit", limit)
+		w.Header().Set("X-RateLimit-Remaining", left)
+		w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(reset.Unix(), 10))
+		fmt.Fprint(w, `{"status":"online","busy":true}`)
+	})
+	if _, err := h.c.Runner(context.Background(), "acme/app", 5); err != nil {
+		t.Fatal(err)
+	}
+	if !h.c.CheapPolls() {
+		t.Fatal("4999 left should poll cheaply")
+	}
+	for _, tc := range []struct {
+		left, limit string
+		cheap       bool
+	}{
+		{"1250", "5000", true}, {"1249", "5000", false},
+		// A workflow's GITHUB_TOKEN gets 1000 an hour.
+		{"999", "1000", true}, {"400", "1000", true}, {"399", "1000", false},
+		{"399", "", false}, {"400", "", true},
+	} {
+		left, limit = tc.left, tc.limit
+		if _, err := h.c.Runner(context.Background(), "acme/app", 5); err != nil {
+			t.Fatal(err)
+		}
+		if h.c.CheapPolls() != tc.cheap {
+			t.Fatalf("%s of %q left: cheap %v, want %v", left, limit, !tc.cheap, tc.cheap)
+		}
+	}
+	if len(h.slept()) != 0 {
+		t.Fatal("above RateFloor nothing waits")
+	}
+	h.c.now = func() time.Time { return reset }
+	if !h.c.CheapPolls() {
+		t.Fatal("after the reset time polls are cheap again")
+	}
+}
