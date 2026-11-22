@@ -198,16 +198,36 @@ function Install-Tentmaker {
                     [Security.AccessControl.PropagationFlags]::None, [Security.AccessControl.AccessControlType]::Allow)))
             }
             $trusted = @('S-1-5-18', 'S-1-5-32-544')
+            # Anyone else who could change the folder or anything in it may
+            # still hold a handle that a new DACL can't revoke, or may have
+            # left a file the service would load (a DLL beside the exe). Such
+            # a folder is never repaired in place: it is set aside.
+            $write = [Security.AccessControl.FileSystemRights]'WriteData, AppendData, WriteExtendedAttributes, WriteAttributes, DeleteSubdirectoriesAndFiles, Delete, ChangePermissions, TakeOwnership'
+            function Get-Untrusted([string]$path) {
+                $acl = Get-Acl -LiteralPath $path
+                $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+                if ($trusted -notcontains $owner) { return "it is owned by $owner" }
+                foreach ($r in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
+                    if ($r.AccessControlType -eq 'Allow' -and $trusted -notcontains $r.IdentityReference.Value -and ($r.FileSystemRights -band $write)) {
+                        return "$($r.IdentityReference.Value) can change it"
+                    }
+                }
+                return $null
+            }
             if (Test-Path -LiteralPath $InstallDir) {
-                $was = (Get-Acl -LiteralPath $InstallDir).GetOwner([Security.Principal.SecurityIdentifier]).Value
-                if ($trusted -notcontains $was) {
-                    # Someone else owned it, so nothing in it can be trusted
-                    # and they may still hold a handle to it. Set it aside.
+                $why = Get-Untrusted $InstallDir
+                if (-not $why) {
+                    foreach ($child in Get-ChildItem -LiteralPath $InstallDir -Force -Recurse) {
+                        $because = Get-Untrusted $child.FullName
+                        if ($because) { $why = "in $($child.FullName), $because"; break }
+                    }
+                }
+                if ($why) {
                     $aside = "$InstallDir.untrusted-" + [DateTime]::UtcNow.Ticks
                     try { [IO.Directory]::Move($InstallDir, $aside) } catch {
-                        Fail "$InstallDir is owned by $was and can't be moved aside: $_" "close anything using it, then delete it and run the installer again"
+                        Fail "$InstallDir can't be trusted ($why) and can't be moved aside: $_" "stop the service with 'Stop-Service tentmaker' and close anything using the folder, then delete it and run the installer again"
                     }
-                    Say "moved $InstallDir, which $was owned, to $aside"
+                    Say "moved $InstallDir to $aside, because $why"
                 }
             }
             if (Test-Path -LiteralPath $InstallDir) {

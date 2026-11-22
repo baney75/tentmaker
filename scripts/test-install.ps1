@@ -133,13 +133,8 @@ try {
             if ($LASTEXITCODE -ne 0) { throw "icacls $prev /setowner: $out" }
             & $installer -InstallDir $sys -NoSetup
             if (Test-Path -LiteralPath $prev) { Pass 'system reinstall kept an Administrators-owned tentmaker.exe.prev' } else { Bad 'system reinstall removed an Administrators-owned tentmaker.exe.prev' }
-            # A folder Administrators own, but with an entry planted while
-            # someone else did, and a staged file planted beside it: the
-            # install replaces the DACL outright and makes a new file.
-            Set-Content -LiteralPath (Join-Path $sys 'tentmaker.new.exe') -Value 'planted'
-            $out = & icacls.exe $sys /grant '*S-1-5-32-545:(OI)(CI)M' "*${me}:(OI)(CI)F" /Q 2>&1
-            if ($LASTEXITCODE -ne 0) { throw "icacls $sys /grant: $out" }
-            & $installer -InstallDir $sys -NoSetup
+            & (Join-Path $PSScriptRoot 'test_install_system.ps1') -Installer $installer -Sys $sys -Me $me
+            $failures += $LASTEXITCODE
             $write = [Security.AccessControl.FileSystemRights]'WriteData, AppendData, WriteAttributes, WriteExtendedAttributes, Delete, ChangePermissions, TakeOwnership'
             foreach ($p in @($sys, (Join-Path $sys 'tentmaker.exe'))) {
                 $rules = @((Get-Acl -LiteralPath $p).GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))

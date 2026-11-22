@@ -596,9 +596,11 @@ are rediscovered every 30 s; a peer failing 3 calls in a row is skipped for a mi
   keeps working after the owner changes. A new folder is created with Administrators as owner and
   a protected DACL: SYSTEM and Administrators full, Users read and execute, and OWNER RIGHTS read
   and execute, which takes the owner's implicit rights away from every file made in it. An
-  existing folder Administrators or SYSTEM own gets that DACL in place of its own, so an entry
-  planted earlier does not survive; one anyone else owns is moved aside to
-  `Tentmaker.untrusted-<ticks>`, and the install fails if it can't be. A `tentmaker.exe.prev`
+  existing folder is kept only when SYSTEM or Administrators own it and everything in it, and no
+  one else can change any of them; it then gets that DACL in place of its own. Any other folder
+  is moved aside to `Tentmaker.untrusted-<ticks>`, never repaired in place, since its other owner
+  or writer may hold a handle a new DACL can't revoke or have left a DLL the service would load;
+  the install fails, naming `Stop-Service tentmaker`, if it can't be moved. A `tentmaker.exe.prev`
   anyone else owns is deleted, since rollback would run it. The archive is read once and checked
   and extracted from the same bytes, since the temp folder is the user's, and the staged binary is
   always a new file. Before, every Windows install failed setup with "owned by S-1-5-21-..., not
