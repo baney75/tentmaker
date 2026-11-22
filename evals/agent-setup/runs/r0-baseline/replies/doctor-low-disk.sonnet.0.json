@@ -1,0 +1,10 @@
+{
+ "case": "doctor-low-disk",
+ "responder": "sonnet",
+ "sample": 0,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "The only failing check is `disk`. `/var/lib/tentmaker` has 11.4 GiB free, below the `guards.min_free_disk` of 20 GiB, so Tentmaker takes no new jobs. Everything else is healthy, so this is the cause.\n\nI'll start with read-only commands to see where the space is going. These change nothing:\n\n```sh\ndf -h /var/lib/tentmaker\nsudo du -xh --max-depth=1 /var/lib/tentmaker 2>/dev/null | sort -h | tail\nsudo du -xh --max-depth=1 /var /home 2>/dev/null | sort -h | tail -15\njournalctl --disk-usage\n```\n\nIf `/var/lib/tentmaker` holds most of it (the cache or leftover sandboxes), I'll show you what's there before touching anything.\n\nWhen we know where the space went, there are two ways to fix it:\n\n1. **Free about 9 GiB or more** (preferred). Typical candidates are old container images and build cache, journal logs, and package caches. I won't run any of these until you say yes:\n   ```sh\n   sudo journalctl --vacuum-size=500M\n   sudo apt clean          # or: sudo dnf clean all\n   ```\n   I'd check for podman data before pruning it, since I don't know which user owns it.\n2. **Lower the guard.** The CLI contract I have doesn't include a command for `guards.min_free_disk`, so this would be an edit to `/etc/tentmaker/config.toml` under `[guards]`. I'd need to check `docs/config.md` for the exact key syntax first. The guard protects your machine, and 11.4 GiB free leaves little headroom for a job, so I'd only do this if the disk is small and 20 GiB isn't realistic.\n\nQuestions for you:\n- Do you want me to clean up, and if so, is it OK to run the `journalctl` and package cache cleanups above once I've confirmed their size?\n- Or would you rather lower the guard, and to what value?\n\nAfter either fix, I'll verify with:\n\n```sh\ntentmaker doctor --json\ntentmaker budget --json\n```\n\nDone when doctor exits 0 and `budget` no longer reports the disk guard. If jobs still don't start after that, I'll check `tentmaker logs -n 200`."
+}

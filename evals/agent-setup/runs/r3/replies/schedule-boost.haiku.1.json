@@ -1,0 +1,9 @@
+{
+ "case": "schedule-boost",
+ "responder": "haiku",
+ "sample": 1,
+ "models": [
+  "claude-haiku-5-5"
+ ],
+ "text": "Yes. A schedule window with the boost profile will do it, and this laptop qualifies because it stays on AC power. Boost windows ignore `boost_needs_idle`, so the overnight window won't wait for you to be away.\n\nBefore I add it, I'd ask you:\n\n1. **Times.** Is 22:00 to 07:00 right? If you're still working at 22:00, jobs would take the 12 GiB budget while you use the machine. A later start, like 23:00, avoids that.\n2. **Weekends.** Should it stay off Saturday and Sunday? I've assumed yes, per \"weekdays.\"\n3. **Sleep.** Does the laptop suspend overnight? If it does, no jobs run during sleep. I'd check the lid and idle sleep settings and tell you what to change, but I wouldn't change them without your say-so.\n\nOnce you confirm, I'd run:\n\n```sh\ntentmaker budget --json\nsudo tentmaker schedule add --name nights --days mon-fri --from 23:00 --to 07:00 --profile boost --json\ntentmaker budget --json\n```\n\nThe first call shows any existing windows so the new one doesn't overlap them. The last one confirms the window is active and what the budget reads now. Since `--to` is earlier than `--from`, the window spans midnight. Outside the window the normal everyday profile applies, so daytime use is unchanged."
+}

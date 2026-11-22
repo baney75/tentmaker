@@ -1,0 +1,10 @@
+{
+ "case": "pause-gaming",
+ "responder": "sonnet",
+ "sample": 1,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "I'd run this now. Pausing is reversible and doesn't need your sign-off.\n\n```sh\nsudo tentmaker pause --json --for 6h gaming\ntentmaker budget --json\n```\n\nThe second command confirms the pause took effect and shows the current profile and why.\n\nI picked 6 hours so CI comes back on its own if you forget to resume. If you'd rather have a different length (`--for 3h`, `--for 10h`), tell me and I'll rerun it. To end it early:\n\n```sh\nsudo tentmaker resume\n```\n\nI don't know from the docs whether a pause stops jobs already running or just stops new ones from starting. I'd read that from the `budget --json` output and tell you before your game starts.\n\nIf you game often, the `guards` config can pause CI automatically whenever a process you list (your game) is running. I'd only set that up if you ask."
+}

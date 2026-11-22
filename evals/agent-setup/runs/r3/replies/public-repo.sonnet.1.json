@@ -1,0 +1,10 @@
+{
+ "case": "public-repo",
+ "responder": "sonnet",
+ "sample": 1,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "I need your OK before I add acme/site, because it's public.\n\n**What I'd ask you first**\n\nFork pull requests never run on your machines. But with a public repo, two other things would run on them:\n- code you merge from outside contributors\n- workflows that outsiders can trigger on the repo itself, such as ones that run on issue comments\n\nTentmaker only accepts a public repo if it requires approval before **any** outside contributor's workflow runs. acme/site has GitHub's default, which is approval for first-time contributors only, and Tentmaker refuses that. The `--enable` flag changes that setting on acme/site on GitHub, and the token on this desktop needs admin rights on the repo for that.\n\nQuestions for you:\n1. Do you want acme/site's CI to run on this desktop, with `--allow-public`?\n2. Is it OK for me to change acme/site's setting to require approval for all outside contributors?\n\n**What I'd run now (read-only, no changes)**\n\n```sh\ntentmaker status --json\ntentmaker doctor --json\ntentmaker repo list --json\n```\n\n**What I'd run after you say yes**\n\n```sh\nsudo tentmaker repo add acme/site --allow-public --enable --json\ntentmaker repo list --json    # confirm acme/site is listed\ntentmaker doctor --json       # must exit 0\n```\n\n**Pointing the workflows at the pool**\n\nThe repo only uses your machines once its workflows say `runs-on: [self-hosted, tentmaker, linux]`. In a checkout of acme/site, I'd start with a report that changes nothing:\n\n```sh\ntentmaker migrate . --json\n```\n\nI'd show you that report. Only if you say yes to writing files would I run:\n\n```sh\ntentmaker migrate . --write --json\ngit diff\n```\n\nThen I'd commit on a branch for you to review. The migrated jobs send fork PRs to GitHub-hosted runners, and Tentmaker refuses fork jobs on its own anyway.\n\nPlease send me a yes or no on both questions, and the path to your acme/site checkout."
+}

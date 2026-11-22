@@ -1,0 +1,10 @@
+{
+ "case": "public-repo",
+ "responder": "sonnet",
+ "sample": 0,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "I haven't changed anything yet. Public repos need your explicit yes first, so I have a few questions.\n\n**Questions**\n\n1. **Public repo risk.** Is it OK to serve `acme/site` from your machines? Fork PRs never run, but code you merge from outside contributors would run on your desktop. So would any workflow outsiders can trigger on the repo itself, such as one that runs on issue comments. Linux jobs share your kernel and can reach your LAN and tailnet.\n2. **Changing the repo's GitHub setting.** The repo has GitHub's default fork approval, which Tentmaker refuses. `--enable` changes the repo to require approval before any outside contributor's workflow runs. It uses your stored GitHub token, which must have admin rights on `acme/site`. Is that OK?\n3. **Workflows.** Do you want me to point the workflows at the pool (`runs-on: [self-hosted, tentmaker, linux]`)? If so, where is your local checkout of `acme/site`? The current directory isn't a git repo. I'd only report what would change and ask again before writing any files.\n\n**Read-only checks I'd run now**\n\n```sh\ntentmaker status --json\ntentmaker repo list --json\n```\n\n**After your yes to 1 and 2**\n\n```sh\nsudo tentmaker repo add acme/site --allow-public --enable --json\ntentmaker repo list --json\ntentmaker doctor --json\n```\n\nIf `doctor` reports a problem, I'd apply its fix and rerun it. I won't call this done until it exits 0.\n\n**After you give me the checkout path (question 3)**\n\n```sh\ntentmaker migrate /path/to/site --json\n```\n\nI'd show you that report. Only after your yes would I run:\n\n```sh\ntentmaker migrate /path/to/site --write --json\ngit -C /path/to/site diff\n```\n\nThen I'd commit on a branch, again only if you say so. Migrated jobs send fork PRs to GitHub-hosted runners."
+}

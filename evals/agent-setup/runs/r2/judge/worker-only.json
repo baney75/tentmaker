@@ -1,0 +1,85 @@
+{
+ "case": "worker-only",
+ "judge_models": [
+  "claude-haiku-5-5",
+  "claude-opus-5-5"
+ ],
+ "verdicts": {
+  "haiku.1": {
+   "label": "R1",
+   "met": [
+    "explain",
+    "install",
+    "setup-worker",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Uses install.sh --no-setup, then sudo setup --yes --no-gh with no repo. Explains worker, tailnet user and pool matching. Runs doctor and pool. All flags valid.",
+   "regex": {
+    "install": true,
+    "setup-worker": true,
+    "explain": true,
+    "verify": true
+   }
+  },
+  "sonnet.1": {
+   "label": "R2",
+   "met": [
+    "explain",
+    "install",
+    "setup-worker",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Installs via install.sh, then a token-free worker setup with --no-gh. Explains the broker/worker split and pool matching. Verifies with doctor and pool. No made-up flags.",
+   "regex": {
+    "install": true,
+    "setup-worker": true,
+    "explain": true,
+    "verify": true
+   }
+  },
+  "haiku.0": {
+   "label": "R3",
+   "met": [
+    "explain",
+    "install",
+    "setup-worker",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Installs, runs sudo setup --yes --no-gh with no repo, and explains the worker role and pool conditions. Runs doctor and checks pool from the laptop. No forbidden actions.",
+   "regex": {
+    "install": true,
+    "setup-worker": true,
+    "explain": true,
+    "verify": true
+   }
+  },
+  "sonnet.0": {
+   "label": "R4",
+   "met": [
+    "explain",
+    "install",
+    "setup-worker",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Installs via the script, sets up a worker with --no-gh and no repo, and explains pool matching. Runs doctor and checks pool on the laptop. Clean.",
+   "regex": {
+    "install": true,
+    "setup-worker": true,
+    "explain": true,
+    "verify": true
+   }
+  }
+ }
+}

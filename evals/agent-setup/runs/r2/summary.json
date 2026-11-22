@@ -1,0 +1,279 @@
+{
+ "run": "r2",
+ "responders": {
+  "haiku": {
+   "mean": 0.964,
+   "forbidden": 2,
+   "replies": 28,
+   "cases": {
+    "laptop-plugged-in": {
+     "mean": 1.0,
+     "scores": [
+      1.0,
+      1.0
+     ],
+     "missed": [],
+     "forbidden": []
+    },
+    "add-devices": {
+     "mean": 1.0,
+     "scores": [
+      1.0,
+      1.0
+     ],
+     "missed": [],
+     "forbidden": []
+    },
+    "public-repo": {
+     "mean": 1.0,
+     "scores": [
+      1.0,
+      1.0
+     ],
+     "missed": [],
+     "forbidden": []
+    },
+    "gitlab-selfhosted": {
+     "mean": 1.0,
+     "scores": [
+      1.0,
+      1.0
+     ],
+     "missed": [],
+     "forbidden": []
+    },
+    "codeberg": {
+     "mean": 1.0,
+     "scores": [
+      1.0,
+      1.0
+     ],
+     "missed": [],
+     "forbidden": []
+    },
+    "pause-gaming": {
+     "mean": 1.0,
+     "scores": [
+      1.0,
+      1.0
+     ],
+     "missed": [],
+     "forbidden": []
+    },
+    "schedule-boost": {
+     "mean": 0.875,
+     "scores": [
+      0.75,
+      1.0
+     ],
+     "missed": [],
+     "forbidden": [
+      "made-up"
+     ]
+    },
+    "migrate-forks": {
+     "mean": 0.75,
+     "scores": [
+      0.75,
+      0.75
+     ],
+     "missed": [
+      "fork-routing"
+     ],
+     "forbidden": []
+    },
+    "worker-only": {
+     "mean": 1.0,
+     "scores": [
+      1.0,
+      1.0
+     ],
+     "missed": [],
+     "forbidden": []
+    },
+    "doctor-low-disk": {
+     "mean": 1.0,
+     "scores": [
+      1.0,
+      1.0
+     ],
+     "missed": [],
+     "forbidden": []
+    },
+    "dev-channel": {
+     "mean": 1.0,
+     "scores": [
+      1.0,
+      1.0
+     ],
+     "missed": [],
+     "forbidden": []
+    },
+    "uninstall": {
+     "mean": 1.0,
+     "scores": [
+      1.0,
+      1.0
+     ],
+     "missed": [],
+     "forbidden": []
+    },
+    "mcp-claude": {
+     "mean": 1.0,
+     "scores": [
+      1.0,
+      1.0
+     ],
+     "missed": [],
+     "forbidden": []
+    },
+    "windows-pc": {
+     "mean": 0.875,
+     "scores": [
+      1.0,
+      0.75
+     ],
+     "missed": [],
+     "forbidden": [
+      "made-up"
+     ]
+    }
+   }
+  },
+  "sonnet": {
+   "mean": 0.991,
+   "forbidden": 1,
+   "replies": 28,
+   "cases": {
+    "laptop-plugged-in": {
+     "mean": 1.0,
+     "scores": [
+      1.0,
+      1.0
+     ],
+     "missed": [],
+     "forbidden": []
+    },
+    "add-devices": {
+     "mean": 1.0,
+     "scores": [
+      1.0,
+      1.0
+     ],
+     "missed": [],
+     "forbidden": []
+    },
+    "public-repo": {
+     "mean": 1.0,
+     "scores": [
+      1.0,
+      1.0
+     ],
+     "missed": [],
+     "forbidden": []
+    },
+    "gitlab-selfhosted": {
+     "mean": 1.0,
+     "scores": [
+      1.0,
+      1.0
+     ],
+     "missed": [],
+     "forbidden": []
+    },
+    "codeberg": {
+     "mean": 0.875,
+     "scores": [
+      0.75,
+      1.0
+     ],
+     "missed": [],
+     "forbidden": [
+      "made-up"
+     ]
+    },
+    "pause-gaming": {
+     "mean": 1.0,
+     "scores": [
+      1.0,
+      1.0
+     ],
+     "missed": [],
+     "forbidden": []
+    },
+    "schedule-boost": {
+     "mean": 1.0,
+     "scores": [
+      1.0,
+      1.0
+     ],
+     "missed": [],
+     "forbidden": []
+    },
+    "migrate-forks": {
+     "mean": 1.0,
+     "scores": [
+      1.0,
+      1.0
+     ],
+     "missed": [],
+     "forbidden": []
+    },
+    "worker-only": {
+     "mean": 1.0,
+     "scores": [
+      1.0,
+      1.0
+     ],
+     "missed": [],
+     "forbidden": []
+    },
+    "doctor-low-disk": {
+     "mean": 1.0,
+     "scores": [
+      1.0,
+      1.0
+     ],
+     "missed": [],
+     "forbidden": []
+    },
+    "dev-channel": {
+     "mean": 1.0,
+     "scores": [
+      1.0,
+      1.0
+     ],
+     "missed": [],
+     "forbidden": []
+    },
+    "uninstall": {
+     "mean": 1.0,
+     "scores": [
+      1.0,
+      1.0
+     ],
+     "missed": [],
+     "forbidden": []
+    },
+    "mcp-claude": {
+     "mean": 1.0,
+     "scores": [
+      1.0,
+      1.0
+     ],
+     "missed": [],
+     "forbidden": []
+    },
+    "windows-pc": {
+     "mean": 1.0,
+     "scores": [
+      1.0,
+      1.0
+     ],
+     "missed": [],
+     "forbidden": []
+    }
+   }
+  }
+ }
+}

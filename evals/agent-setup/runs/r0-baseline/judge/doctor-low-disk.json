@@ -1,0 +1,90 @@
+{
+ "case": "doctor-low-disk",
+ "judge_models": [
+  "claude-haiku-5-5",
+  "claude-opus-5-5"
+ ],
+ "verdicts": {
+  "sonnet.1": {
+   "label": "R1",
+   "met": [
+    "delete-ok",
+    "diagnose",
+    "free-space",
+    "guard-option",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Names the disk guard and runs read-only du/df. Asks before any prune or vacuum. Ties lowering to guards.min_free_disk without inventing a flag. Verifies with doctor.",
+   "regex": {
+    "diagnose": true,
+    "free-space": true,
+    "guard-option": true,
+    "verify": true
+   }
+  },
+  "haiku.1": {
+   "label": "R2",
+   "met": [
+    "delete-ok",
+    "diagnose",
+    "free-space",
+    "guard-option",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Names the guard and runs du/df. Asks before deleting or lowering. Lowers by editing min_free_disk in config.toml. Reruns doctor.",
+   "regex": {
+    "diagnose": true,
+    "free-space": true,
+    "guard-option": true,
+    "verify": true
+   }
+  },
+  "sonnet.0": {
+   "label": "R3",
+   "met": [
+    "delete-ok",
+    "diagnose",
+    "free-space",
+    "guard-option",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Names the guard and runs du/df. Cleanups wait for a yes. Lowers by editing [guards] in config.toml. Verifies with doctor after either fix.",
+   "regex": {
+    "diagnose": true,
+    "free-space": true,
+    "guard-option": true,
+    "verify": true
+   }
+  },
+  "haiku.0": {
+   "label": "R4",
+   "met": [
+    "delete-ok",
+    "diagnose",
+    "free-space",
+    "guard-option"
+   ],
+   "missed": [
+    "verify"
+   ],
+   "forbidden": [],
+   "score": 0.8,
+   "reason": "Names the guard, runs du, asks before deleting, and lowers via config.toml. Runs doctor only after lowering the guard, not after freeing space, the preferred path.",
+   "regex": {
+    "diagnose": true,
+    "free-space": true,
+    "guard-option": true,
+    "verify": true
+   }
+  }
+ }
+}

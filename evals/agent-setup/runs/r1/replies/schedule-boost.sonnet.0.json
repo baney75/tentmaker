@@ -1,0 +1,10 @@
+{
+ "case": "schedule-boost",
+ "responder": "sonnet",
+ "sample": 0,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "Yes. A schedule window with the boost profile does this. The laptop stays plugged in, which a boost window requires, and a boost window ignores `boost_needs_idle`. That setting is why it rarely reaches boost now: it waits for you to be away for 10 minutes. Each job reserves 2 GiB by default, so boost (12 GiB) fits about 6 jobs at a time versus about 2 at the everyday 4 GiB, if the CPUs allow it.\n\n**One thing I'd ask first:** are 22:00 to 07:00 the right hours? I'd use those unless you say otherwise. A `to` earlier than `from` spans midnight.\n\n**Commands I'd run:**\n\n```sh\nsudo tentmaker schedule add --name weeknights --days mon-fri --from 22:00 --to 07:00 --profile boost --json\ntentmaker budget --json\n```\n\nThe second command checks that the window is registered. During the window it should report the boost profile, and outside it, everyday. If it's not in the window yet, I'd also run `tentmaker doctor --json` to confirm the config is valid.\n\nThis changes only the schedule, not the guards. CI still pauses for low disk, low memory left for you, or a process you've listed, even in the window. If you want more than 12 GiB overnight, I can raise it with `sudo tentmaker budget set --boost-memory 16GiB --json`."
+}

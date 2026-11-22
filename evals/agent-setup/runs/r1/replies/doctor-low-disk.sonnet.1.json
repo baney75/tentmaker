@@ -1,0 +1,10 @@
+{
+ "case": "doctor-low-disk",
+ "responder": "sonnet",
+ "sample": 1,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "Only the disk check fails, and it is why no jobs start: `/var/lib/tentmaker` has 11.4 GiB free against a 20 GiB `min_free_disk` guard, so the device takes no new jobs. Everything else is fine.\n\nI'd start with read-only commands to see what's using the space:\n\n```sh\ndf -h /var/lib/tentmaker\nsudo du -xh --max-depth=1 /var/lib/tentmaker | sort -h\nsudo du -xh --max-depth=1 / 2>/dev/null | sort -h | tail -15\ntentmaker budget --json\n```\n\nI need your answer on one thing before I change anything. Which do you want?\n\n1. **Free space (my recommendation).** Tell me what is safe to delete, or let me show you the biggest items first. I won't delete anything without your yes. You need to free at least about 8.6 GiB to clear the 20 GiB guard. More is better, since the guard also wants room for jobs.\n2. **Lower the guard.** There's no CLI flag for it, so I'd edit `[guards]` in `/etc/tentmaker/config.toml`, for example `min_free_disk = \"10GiB\"`. This only helps if 11.4 GiB is enough for your jobs. A job that fills the disk can hit the very-low-disk stop, which kills running jobs. I'd want your explicit OK on the new value.\n\nOnce the space is freed, no restart is needed. If we lower the guard instead, the service has to be restarted for the config to take effect:\n\n```sh\nsudo systemctl restart tentmaker\n```\n\nEither way, I'd then verify:\n\n```sh\ntentmaker doctor --json\ntentmaker budget --json\ntentmaker logs -n 200\n```\n\nI'm done when `doctor` exits 0 and `budget` shows the device accepting jobs. If it still won't take jobs after that, the logs are the next place to look."
+}

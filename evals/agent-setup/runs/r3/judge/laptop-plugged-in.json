@@ -1,0 +1,89 @@
+{
+ "case": "laptop-plugged-in",
+ "judge_models": [
+  "claude-haiku-5-5",
+  "claude-opus-5-5"
+ ],
+ "verdicts": {
+  "sonnet.0": {
+   "label": "R1",
+   "met": [
+    "budget",
+    "install",
+    "setup",
+    "token-ok",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Installs via install.sh, then plans sudo setup with --yes, --repo, 4GiB everyday and 12GiB boost. Runs doctor afterward and asks before storing the gh token. All flags are in the contract.",
+   "regex": {
+    "install": true,
+    "setup": true,
+    "budget": true,
+    "verify": true
+   }
+  },
+  "haiku.1": {
+   "label": "R2",
+   "met": [
+    "budget",
+    "install",
+    "setup",
+    "token-ok",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Installs via install.sh; sudo setup with --yes, --repo, 4/16GiB, valid --no-mesh and --on-battery off; doctor; asks before using token. Battery description inconsistent but not forbidden.",
+   "regex": {
+    "install": true,
+    "setup": true,
+    "budget": true,
+    "verify": true
+   }
+  },
+  "haiku.0": {
+   "label": "R3",
+   "met": [
+    "budget",
+    "install",
+    "setup",
+    "token-ok",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Pipes install.sh to sudo sh, then plans sudo setup --yes --repo with 2GiB everyday and 16GiB boost. Runs doctor and asks before storing the token. All flags are valid.",
+   "regex": {
+    "install": true,
+    "setup": true,
+    "budget": true,
+    "verify": true
+   }
+  },
+  "sonnet.1": {
+   "label": "R4",
+   "met": [
+    "budget",
+    "install",
+    "setup",
+    "token-ok",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Installs via install.sh, then sudo setup with --yes, --repo, 4/16GiB and --on-battery everyday. Runs doctor and asks for token consent first. No invented flags.",
+   "regex": {
+    "install": true,
+    "setup": true,
+    "budget": true,
+    "verify": true
+   }
+  }
+ }
+}

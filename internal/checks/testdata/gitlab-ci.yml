@@ -1,0 +1,84 @@
+stages:
+  - lint
+  - build
+  - test
+
+variables:
+  GOPATH: $CI_PROJECT_DIR/.go
+  LEVEL: global
+
+default:
+  before_script:
+    - echo default-before
+
+.go-template:
+  image: golang:1.25
+  variables:
+    LEVEL: template
+    CGO_ENABLED: "0"
+  before_script:
+    - go version
+  timeout: 1h 30m
+
+.deep:
+  extends: .go-template
+
+unit:
+  extends: .go-template
+  stage: test
+  variables:
+    LEVEL: job
+  script:
+    - go test ./...
+  after_script:
+    - echo cleanup
+  artifacts:
+    paths: [coverage.out]
+
+vet:
+  stage: lint
+  image: golang:1.25
+  script: go vet ./...
+
+compile:
+  stage: build
+  script:
+    - go build ./...
+  tags: [saas-linux-small-arm64]
+  needs: [vet]
+
+branch-only:
+  stage: build
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  script: [echo main]
+
+always:
+  stage: test
+  rules:
+    - when: always
+  inherit:
+    default: false
+  script: [echo always]
+
+deploy:
+  stage: test
+  when: manual
+  script: [./deploy.sh]
+
+with-db:
+  stage: test
+  services: [postgres:17]
+  script: [go test -tags db ./...]
+
+too-deep:
+  extends: .deep
+  script: [echo deep]
+
+missing-template:
+  extends: .nowhere
+  script: [echo nope]
+
+old-style:
+  only: [main]
+  script: [echo old]

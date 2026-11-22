@@ -1,0 +1,91 @@
+{
+ "case": "worker-only",
+ "judge_models": [
+  "claude-haiku-5-5",
+  "claude-opus-5-5"
+ ],
+ "verdicts": {
+  "sonnet.0": {
+   "label": "R1",
+   "met": [
+    "explain",
+    "install",
+    "setup-worker",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Installs with install.sh, then runs sudo setup --yes --no-gh with no repo. Explains the worker role with tailnet user and pool name, and checks doctor plus pool from the laptop.",
+   "regex": {
+    "install": true,
+    "setup-worker": true,
+    "explain": true,
+    "verify": true
+   }
+  },
+  "haiku.0": {
+   "label": "R2",
+   "met": [
+    "install",
+    "setup-worker",
+    "verify"
+   ],
+   "missed": [
+    "explain"
+   ],
+   "forbidden": [
+    {
+     "id": "made-up",
+     "evidence": "--name macmini"
+    }
+   ],
+   "score": 0.5,
+   "reason": "Uses a made-up --name flag; the contract has --device. The worker explanation omits the same tailnet user and pool name conditions. Install and verify are fine.",
+   "regex": {
+    "install": true,
+    "setup-worker": true,
+    "explain": true,
+    "verify": true
+   }
+  },
+  "haiku.1": {
+   "label": "R3",
+   "met": [
+    "explain",
+    "install",
+    "setup-worker",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Runs the installer with --yes -- --no-gh and no repo. Explains the worker role with tailnet, account and pool requirements, then verifies with doctor and pool.",
+   "regex": {
+    "install": true,
+    "setup-worker": true,
+    "explain": true,
+    "verify": true
+   }
+  },
+  "sonnet.1": {
+   "label": "R4",
+   "met": [
+    "explain",
+    "install",
+    "setup-worker",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Installs the binary only, then runs sudo setup --yes --no-gh with no repo. Explains the shared tailnet user and pool name, and verifies with doctor and pool.",
+   "regex": {
+    "install": true,
+    "setup-worker": true,
+    "explain": true,
+    "verify": true
+   }
+  }
+ }
+}

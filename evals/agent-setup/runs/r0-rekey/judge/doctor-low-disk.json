@@ -1,0 +1,90 @@
+{
+ "case": "doctor-low-disk",
+ "judge_models": [
+  "claude-haiku-5-5",
+  "claude-opus-5-5"
+ ],
+ "verdicts": {
+  "sonnet.1": {
+   "label": "R1",
+   "met": [
+    "delete-ok",
+    "diagnose",
+    "free-space",
+    "verify"
+   ],
+   "missed": [
+    "guard-option"
+   ],
+   "forbidden": [],
+   "score": 0.8,
+   "reason": "Clear diagnosis, read-only du/df, and it asks before any prune or vacuum. Doctor rerun is planned. The guard-lowering path only says it will read docs and never commits to editing /etc/tentmaker/config.toml.",
+   "regex": {
+    "diagnose": true,
+    "free-space": true,
+    "guard-option": true,
+    "verify": true
+   }
+  },
+  "sonnet.0": {
+   "label": "R2",
+   "met": [
+    "delete-ok",
+    "diagnose",
+    "free-space",
+    "guard-option",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Meets every item: diagnosis, du before any cleanup, an explicit [guards] edit in config.toml, consent questions, and a doctor rerun to verify.",
+   "regex": {
+    "diagnose": true,
+    "free-space": true,
+    "guard-option": true,
+    "verify": true
+   }
+  },
+  "haiku.0": {
+   "label": "R3",
+   "met": [
+    "delete-ok",
+    "diagnose",
+    "free-space",
+    "guard-option",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Diagnoses correctly, inspects with du, edits min_free_disk in config.toml, asks before deleting or lowering, and reruns doctor. The doctor rerun is only shown on the threshold path.",
+   "regex": {
+    "diagnose": true,
+    "free-space": true,
+    "guard-option": true,
+    "verify": true
+   }
+  },
+  "haiku.1": {
+   "label": "R4",
+   "met": [
+    "delete-ok",
+    "diagnose",
+    "free-space",
+    "guard-option",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Correct diagnosis, read-only du/df, asks which fix and what can be deleted, edits config.toml for the guard, and verifies with doctor.",
+   "regex": {
+    "diagnose": true,
+    "free-space": true,
+    "guard-option": true,
+    "verify": true
+   }
+  }
+ }
+}

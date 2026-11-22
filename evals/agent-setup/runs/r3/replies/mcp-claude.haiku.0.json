@@ -1,0 +1,9 @@
+{
+ "case": "mcp-claude",
+ "responder": "haiku",
+ "sample": 0,
+ "models": [
+  "claude-haiku-5-5"
+ ],
+ "text": "I'd run these commands. Nothing on the device changes, so no root is needed.\n\n```sh\n# 1. Confirm the binary runs and has the MCP subcommand\n/usr/local/bin/tentmaker version --json\n\n# 2. Register the server with Claude Code\nclaude mcp add tentmaker -- /usr/local/bin/tentmaker mcp\n\n# 3. Confirm it registered and connects\nclaude mcp list\nclaude mcp get tentmaker\n```\n\nI used the full path `/usr/local/bin/tentmaker` so Claude Code doesn't depend on your shell's `PATH`. The README uses bare `tentmaker`, so either works if it's on `PATH`.\n\nBefore I run step 2, I need one answer from you. `claude mcp add` defaults to **local** scope, which ties the server to this project directory only. This directory is a temp folder that isn't a git repo, so you'd probably want the server available everywhere:\n\n```sh\nclaude mcp add --scope user tentmaker -- /usr/local/bin/tentmaker mcp\n```\n\nShould I use `--scope user` or keep the default local scope?\n\nTwo things to know about what the server can do:\n- The read tools (`status`, `pool`, `doctor`) work as your user.\n- Tools that change the device need the MCP server to run as root. Claude Code runs it as you, so those tools will return an error saying so. To make changes, run `sudo tentmaker ...` in a terminal instead."
+}

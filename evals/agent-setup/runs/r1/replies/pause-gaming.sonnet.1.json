@@ -1,0 +1,10 @@
+{
+ "case": "pause-gaming",
+ "responder": "sonnet",
+ "sample": 1,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "I'd run this, with no questions first:\n\n```sh\nsudo tentmaker pause --for 8h --json gaming\n```\n\nI picked 8 hours as \"tonight\", so tell me if you want a different length. `sudo -n` already works, so it won't stop for a password. Any job already running will finish, and no new ones start.\n\nTo check that it took effect:\n\n```sh\ntentmaker budget --json\n```\n\nTo end the pause early:\n\n```sh\nsudo tentmaker resume --json\n```\n\nIf you game often, there's a way to skip the manual pause. The `[guards]` section of the config file takes a list of process names, such as your game or launcher. CI then pauses itself whenever one of those is running. Say so if you want me to set that up. It means editing the config and restarting the service (`sudo systemctl restart tentmaker`), so I'd ask you first."
+}

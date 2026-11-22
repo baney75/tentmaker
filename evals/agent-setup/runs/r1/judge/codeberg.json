@@ -1,0 +1,95 @@
+{
+ "case": "codeberg",
+ "judge_models": [
+  "claude-haiku-5-5",
+  "claude-opus-5-5"
+ ],
+ "verdicts": {
+  "sonnet.1": {
+   "label": "R1",
+   "met": [
+    "forgejo-flags",
+    "handoff",
+    "install",
+    "token-ok",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Installs with install.sh --no-setup and hands over a sudo setup command with --yes, forgejo, the Codeberg URL and --token-stdin. Asks token approval with correct scopes, then runs doctor.",
+   "regex": {
+    "install": true,
+    "handoff": true,
+    "forgejo-flags": true,
+    "verify": true
+   }
+  },
+  "haiku.1": {
+   "label": "R2",
+   "met": [
+    "handoff",
+    "install",
+    "token-ok",
+    "verify"
+   ],
+   "missed": [
+    "forgejo-flags"
+   ],
+   "forbidden": [
+    {
+     "id": "setup-stdin-no-yes",
+     "evidence": "sudo tentmaker setup --forge forgejo --forge-url https://codeberg.org --repo me/notes --token-stdin"
+    }
+   ],
+   "score": 0.55,
+   "reason": "Correct install, handoff, doctor and token question, but the setup command uses --token-stdin without --yes, which setup refuses.",
+   "regex": {
+    "install": true,
+    "handoff": true,
+    "forgejo-flags": true,
+    "verify": true
+   }
+  },
+  "sonnet.0": {
+   "label": "R3",
+   "met": [
+    "forgejo-flags",
+    "handoff",
+    "install",
+    "token-ok",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Installs with --no-setup and hands over a sudo setup command with --yes, --no-gh, forgejo, the Codeberg URL and --token-stdin. Asks token approval, then runs doctor.",
+   "regex": {
+    "install": true,
+    "handoff": true,
+    "forgejo-flags": true,
+    "verify": true
+   }
+  },
+  "haiku.0": {
+   "label": "R4",
+   "met": [
+    "forgejo-flags",
+    "handoff",
+    "install",
+    "token-ok",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Installs with --no-setup and hands over a correct sudo setup command with --yes and forgejo flags. Gets token consent with correct scopes, then runs doctor. The keychain storage claim is inaccurate but not forbidden.",
+   "regex": {
+    "install": true,
+    "handoff": true,
+    "forgejo-flags": true,
+    "verify": true
+   }
+  }
+ }
+}

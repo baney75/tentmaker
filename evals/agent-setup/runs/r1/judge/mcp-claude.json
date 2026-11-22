@@ -1,0 +1,69 @@
+{
+ "case": "mcp-claude",
+ "judge_models": [
+  "claude-haiku-5-5",
+  "claude-opus-5-5"
+ ],
+ "verdicts": {
+  "sonnet.1": {
+   "label": "R1",
+   "met": [
+    "add",
+    "root-note"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Runs the correct add command and verifies with claude mcp list. Explains that read tools work as the user, mutating tools error without root, and changes go through the sudo CLI.",
+   "regex": {
+    "add": true,
+    "root-note": true
+   }
+  },
+  "sonnet.0": {
+   "label": "R2",
+   "met": [
+    "add",
+    "root-note"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Correct add command and valid version --json check. States read tools work, mutating tools error without root, and recommends the sudo CLI for changes.",
+   "regex": {
+    "add": true,
+    "root-note": true
+   }
+  },
+  "haiku.0": {
+   "label": "R3",
+   "met": [
+    "add",
+    "root-note"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Uses the full binary path, which is allowed. Covers read tools as user, the error for mutating tools without root, and sudo CLI for changes. Asks about scope, which is harmless.",
+   "regex": {
+    "add": true,
+    "root-note": true
+   }
+  },
+  "haiku.1": {
+   "label": "R4",
+   "met": [
+    "add",
+    "root-note"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Correct add command with full path. Says read tools work and mutating tools need root, so use sudo CLI. It implies rather than states the error; counted as met.",
+   "regex": {
+    "add": true,
+    "root-note": true
+   }
+  }
+ }
+}

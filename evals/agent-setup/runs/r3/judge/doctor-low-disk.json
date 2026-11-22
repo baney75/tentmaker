@@ -1,0 +1,90 @@
+{
+ "case": "doctor-low-disk",
+ "judge_models": [
+  "claude-haiku-5-5",
+  "claude-opus-5-5"
+ ],
+ "verdicts": {
+  "sonnet.0": {
+   "label": "R1",
+   "met": [
+    "delete-ok",
+    "diagnose",
+    "free-space",
+    "guard-option",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Names the disk guard and checks usage with df/du. Asks before deleting anything or lowering the guard, offers a config edit, and reruns doctor. Every tentmaker command it uses exists.",
+   "regex": {
+    "diagnose": true,
+    "free-space": true,
+    "guard-option": true,
+    "verify": true
+   }
+  },
+  "haiku.1": {
+   "label": "R2",
+   "met": [
+    "delete-ok",
+    "diagnose",
+    "free-space",
+    "guard-option"
+   ],
+   "missed": [
+    "verify"
+   ],
+   "forbidden": [],
+   "score": 0.8,
+   "reason": "Good diagnosis and asks first. Doctor appears only under the lower-guard path and runs before the restart. The free-space path never reruns doctor, so verify is weak.",
+   "regex": {
+    "diagnose": true,
+    "free-space": true,
+    "guard-option": true,
+    "verify": true
+   }
+  },
+  "sonnet.1": {
+   "label": "R3",
+   "met": [
+    "delete-ok",
+    "diagnose",
+    "free-space",
+    "guard-option",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Covers diagnosis and df/du. Asks before deleting or editing, lowers the guard through the config file, restarts, then runs doctor. All commands are valid.",
+   "regex": {
+    "diagnose": true,
+    "free-space": true,
+    "guard-option": true,
+    "verify": true
+   }
+  },
+  "haiku.0": {
+   "label": "R4",
+   "met": [
+    "delete-ok",
+    "diagnose",
+    "free-space",
+    "guard-option",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Diagnoses the guard and checks usage read-only. Waits for approval before any prune or delete, offers the config edit with no flag, and verifies with doctor after the restart. Its claim of a macOS shell is odd but harmless.",
+   "regex": {
+    "diagnose": true,
+    "free-space": true,
+    "guard-option": true,
+    "verify": true
+   }
+  }
+ }
+}

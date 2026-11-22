@@ -1,0 +1,9 @@
+{
+ "case": "doctor-low-disk",
+ "responder": "haiku",
+ "sample": 1,
+ "models": [
+  "claude-haiku-5-5"
+ ],
+ "text": "Jobs are blocked by the disk guard, not by a fault in the service. The device has 11.4 GiB free and the floor is 20 GiB, so Tentmaker takes no new jobs until you free space or lower the floor.\n\nI'd start with read-only checks to see what is using the space:\n\n```sh\ndf -h /var/lib/tentmaker\nsudo du -xsh /var/lib/tentmaker/* 2>/dev/null | sort -h\nsudo grep -n -A6 '^\\[guards\\]' /etc/tentmaker/config.toml\n```\n\nThe first shows free space on the filesystem. The second shows which directories under Tentmaker's state directory are largest. The third shows your current `min_free_disk` setting. If podman holds the space, I'd also check `sudo podman system df`.\n\nBefore I change anything, I need to know which of these you want:\n\n1. **Free space.** Once I see the sizes, I'll tell you what can go. I won't delete anything without your yes for each path. Cleaning up is only safe if you confirm those paths hold nothing you need.\n2. **Lower the floor.** If 11 GiB is enough for your workloads, I'd set `min_free_disk` to a lower value, such as `10GiB`. That means editing `/etc/tentmaker/config.toml`, then running:\n   ```sh\n   tentmaker doctor --json\n   sudo systemctl restart tentmaker\n   ```\n   Lowering the floor is a safety change, so tell me the value you want first.\n3. **Neither yet.** Run the read-only checks above, paste the output, and we'll decide from the numbers.\n\nWhich do you want?"
+}

@@ -1,0 +1,106 @@
+{
+ "case": "windows-pc",
+ "judge_models": [
+  "claude-haiku-5-5",
+  "claude-opus-5-5"
+ ],
+ "verdicts": {
+  "sonnet.0": {
+   "label": "R1",
+   "met": [
+    "elevated",
+    "installer",
+    "setup",
+    "token-ok",
+    "verify",
+    "windows-jobs"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Asks about the token with a --no-gh worker alternative. Hands elevated commands with the correct installer and setup, and runs doctor. States the Windows-only job limit.",
+   "regex": {
+    "elevated": true,
+    "installer": true,
+    "setup": true,
+    "windows-jobs": true,
+    "verify": true
+   }
+  },
+  "haiku.1": {
+   "label": "R2",
+   "met": [
+    "elevated",
+    "installer",
+    "setup",
+    "token-ok",
+    "verify",
+    "windows-jobs"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Asks for consent on the gh token and gives the Windows-label limit. Elevated install, setup --yes --repo and doctor are all correct. No made-up flags.",
+   "regex": {
+    "elevated": true,
+    "installer": true,
+    "setup": true,
+    "windows-jobs": true,
+    "verify": true
+   }
+  },
+  "sonnet.1": {
+   "label": "R3",
+   "met": [
+    "elevated",
+    "installer",
+    "setup",
+    "token-ok",
+    "verify",
+    "windows-jobs"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Covers every required item and asks about the token first. Commands are valid and doctor is required before calling it done.",
+   "regex": {
+    "elevated": true,
+    "installer": true,
+    "setup": true,
+    "windows-jobs": true,
+    "verify": true
+   }
+  },
+  "haiku.0": {
+   "label": "R4",
+   "met": [
+    "elevated",
+    "installer",
+    "setup",
+    "token-ok",
+    "verify",
+    "windows-jobs"
+   ],
+   "missed": [],
+   "forbidden": [
+    {
+     "id": "made-up",
+     "evidence": "tentmaker setup --yes --json --repo acme/webapp --allow-public"
+    },
+    {
+     "id": "unix-on-windows",
+     "evidence": "sudo tentmaker repo add acme/webapp --allow-public --enable --json"
+    }
+   ],
+   "score": 0.5,
+   "reason": "Good questions and verification. But it uses --allow-public, which is not a setup flag, and uses sudo on Windows.",
+   "regex": {
+    "elevated": true,
+    "installer": true,
+    "setup": true,
+    "windows-jobs": true,
+    "verify": true
+   }
+  }
+ }
+}

@@ -1,0 +1,77 @@
+{
+ "case": "add-devices",
+ "judge_models": [
+  "claude-haiku-5-5",
+  "claude-opus-5-5"
+ ],
+ "verdicts": {
+  "haiku.0": {
+   "label": "R1",
+   "met": [
+    "devices-add",
+    "prereqs",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Probes Tailscale SSH and passwordless sudo on both hosts, adds both without --repo, and verifies with pool and doctor. No made-up commands.",
+   "regex": {
+    "devices-add": true,
+    "prereqs": true,
+    "verify": true
+   }
+  },
+  "sonnet.1": {
+   "label": "R2",
+   "met": [
+    "devices-add",
+    "prereqs",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Checks SSH and sudo, adds both as workers, and verifies with pool. The fallback setup command uses sudo and is handed to the person, so it may omit --yes.",
+   "regex": {
+    "devices-add": true,
+    "prereqs": true,
+    "verify": true
+   }
+  },
+  "sonnet.0": {
+   "label": "R3",
+   "met": [
+    "devices-add",
+    "prereqs",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Checks prerequisites, runs devices add for both hosts, and confirms with pool. It falls back to doctor and asks before putting any token on a host.",
+   "regex": {
+    "devices-add": true,
+    "prereqs": true,
+    "verify": true
+   }
+  },
+  "haiku.1": {
+   "label": "R4",
+   "met": [
+    "devices-add",
+    "prereqs",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Probes SSH and sudo, adds both hosts, and verifies with pool and doctor. --repo is only proposed after asking, and the installer route is handed to the person with sudo.",
+   "regex": {
+    "devices-add": true,
+    "prereqs": true,
+    "verify": true
+   }
+  }
+ }
+}

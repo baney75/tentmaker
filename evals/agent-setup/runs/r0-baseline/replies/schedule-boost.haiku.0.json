@@ -1,0 +1,9 @@
+{
+ "case": "schedule-boost",
+ "responder": "haiku",
+ "sample": 0,
+ "models": [
+  "claude-haiku-5-5"
+ ],
+ "text": "Yes. A schedule window can set the profile for weekday nights, so the device takes boost-sized work overnight without changing the everyday or boost settings.\n\nCommand to add it (needs root):\n\n```sh\nsudo tentmaker schedule add --name nights --days mon-fri --from 22:00 --to 07:00 --profile boost\n```\n\nThen check the result:\n\n```sh\ntentmaker budget --json\n```\n\nTwo things to check after that:\n\n- **`boost_needs_idle` may still block it.** Your config sets `boost_needs_idle = true`, and I can't confirm from the docs I have whether a schedule window bypasses that. The docs say a window set to boost still needs AC power, but they don't mention idle. If `tentmaker budget` still shows everyday overnight, the idle gate is the likely cause. Setting `boost_needs_idle = false` would fix that, but it applies to every boost period, not just this window, so I'd want your go-ahead before changing it.\n- **The window only runs while the laptop is on AC.** That's fine for a laptop that stays plugged in at its desk.\n\nBefore I run anything, I'd want to confirm:\n\n1. **Hours:** is 22:00 to 07:00 right? Should it start earlier or end later?\n2. **Days:** `mon-fri` means Friday night and Saturday morning are included. Should the window end Friday morning instead, so weekends are excluded?\n3. **Idle gate:** should I leave `boost_needs_idle` alone and check the result first, or turn it off now?\n4. **Headroom:** boost allows 12 GiB while you're asleep. Is that OK, or should the window use a lower budget?"
+}

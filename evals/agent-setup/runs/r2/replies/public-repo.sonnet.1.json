@@ -1,0 +1,10 @@
+{
+ "case": "public-repo",
+ "responder": "sonnet",
+ "sample": 1,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "I need your yes before I run anything that changes the repo or the device, because acme/site is public.\n\n**My question for you**\n\nDo you want acme/site served from this desktop, with `--allow-public` and `--enable`? Here is what that means:\n\n- Fork pull requests never run on your machines.\n- Code you merge from outside contributors does run on your machine. So can any workflow outsiders can trigger on the repo itself, such as one that runs on issue comments. Linux jobs share your kernel and have access to your LAN and tailnet.\n- GitHub's default fork approval (\"first-time contributors only\") isn't enough, and Tentmaker refuses it. `--enable` changes the repo's GitHub setting to require approval before any outside contributor's workflow runs. That is a change to acme/site's settings, made with your stored token.\n- Your stored GitHub token needs admin rights on acme/site to do this.\n\n**Read-only checks I'd run now** (no changes):\n\n```sh\ntentmaker status --json\ntentmaker repo list --json\ntentmaker doctor --json\n```\n\n**After you say yes:**\n\n```sh\nsudo tentmaker repo add acme/site --allow-public --enable --json\ntentmaker repo list --json    # confirm acme/site is listed\ntentmaker doctor --json       # must exit 0\n```\n\nIf doctor reports problems, I'd apply each fix it names and rerun it.\n\n**Workflow changes (optional, separate yes):**\n\nJobs only reach your machines once their `runs-on` points at the pool. I'd first run this to report what would change, which touches no files:\n\n```sh\ntentmaker migrate PATH_TO_CHECKOUT --json\n```\n\nI'd show you that report. Only if you agree would I run `tentmaker migrate PATH_TO_CHECKOUT --write --json`, review `git diff`, and commit on a branch. I won't push or open a PR without asking you first.\n\nI also need the path to a local checkout of acme/site for the migrate step."
+}

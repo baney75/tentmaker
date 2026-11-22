@@ -1,0 +1,10 @@
+{
+ "case": "dev-channel",
+ "responder": "sonnet",
+ "sample": 1,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "I don't need to ask you anything first. Switching channels doesn't spend money, touch a public repo, give a device a token, write your files or remove anything. Passwordless sudo works, so I can run it all myself.\n\n```sh\ntentmaker status --json\nsudo tentmaker setup --yes --json --channel dev\nsudo tentmaker update --json\ntentmaker version --json\ntentmaker doctor --json\n```\n\n1. `status` confirms Tentmaker is set up and running on stable.\n2. `setup --channel dev` saves the dev channel and keeps every other setting. I'm not passing `--repo`, so the existing repos and token stay as they are. I check that every entry in `steps` succeeded.\n3. `update` installs the current dev build. I'm not using `update --channel dev` alone, because that installs one dev build and leaves auto-updates on the saved stable channel.\n4. `version` should show a version like `0.1.1-dev.<timestamp>.<sha>`.\n5. `doctor` should exit 0. If it reports a problem, I apply the fix it gives and rerun it. If the same problem survives two fixes, I stop and report it to you.\n\nIf `update` says the device is busy, it only swaps the binary between jobs. In that case I'd wait and rerun it. If the new build's service isn't healthy within 60 seconds, it rolls back automatically, and `sudo tentmaker rollback` is also available."
+}

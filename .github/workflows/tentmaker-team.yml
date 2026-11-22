@@ -1,0 +1,44 @@
+# The workflow team.yml pushes to its throwaway tm-team-* branches, where two
+# Tentmaker brokers run it in checks mode and post tentmaker/linux and
+# tentmaker/windows. Each branch is a child of the team.yml commit that
+# changes only .github/team/check/*: the GITHUB_TOKEN may not create or edit
+# a workflow file, so this file stays as it is and the sleeps live there.
+#
+# GitHub's own runners never run it: team.yml pushes those branches with the
+# GITHUB_TOKEN, and pushes made with it start no workflow. If one ever does,
+# each step sees no TENTMAKER=1 and exits at once.
+name: tentmaker-team
+
+on:
+  push:
+    branches: ["tm-team-*"]
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - run: |
+          if [ "${TENTMAKER:-}" != 1 ]; then echo "not under Tentmaker; nothing to do"; exit 0; fi
+          d="$GITHUB_WORKSPACE/.github/team/check"
+          s=$(cat "$d/linux.sleep")
+          echo "tentmaker-team linux mark=$(cat "$d/mark") sleep=$s RUNNER_OS=$RUNNER_OS"
+          sleep "$s"
+          echo "tentmaker-team linux done"
+
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - shell: pwsh
+        run: |
+          if ($env:TENTMAKER -ne '1') { Write-Output 'not under Tentmaker; nothing to do'; exit 0 }
+          $d = Join-Path $env:GITHUB_WORKSPACE '.github/team/check'
+          $s = [int](Get-Content -Raw (Join-Path $d 'windows.sleep'))
+          $m = (Get-Content -Raw (Join-Path $d 'mark')).Trim()
+          Write-Output "tentmaker-team windows mark=$m sleep=$s RUNNER_OS=$env:RUNNER_OS"
+          Start-Sleep -Seconds $s
+          Write-Output 'tentmaker-team windows done'

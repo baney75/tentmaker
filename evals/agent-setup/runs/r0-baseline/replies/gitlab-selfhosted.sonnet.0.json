@@ -1,0 +1,10 @@
+{
+ "case": "gitlab-selfhosted",
+ "responder": "sonnet",
+ "sample": 0,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "I need two yeses before I run anything, because this changes what this box is.\n\n**Questions**\n1. **Token on this box:** Right now it's a worker with no forge token. Connecting GitLab makes it a broker for `group/app`. It will hold the GitLab token in its secret store and run `group/app`'s jobs. Is that what you want, or should another device hold the token and this box stay a worker?\n2. **Visibility of `group/app`:** Is it private or internal, or is it public on your GitLab? If it's public I won't add it unless you explicitly approve `--allow-public`. That would let approved outside contributors' code run on this machine.\n3. **The token:** I can't create one. Please make a GitLab access token for `group/app` on gitlab.example.com. Don't paste it into this chat, and don't put it in argv, an env var or a file. Which scopes it needs isn't in the docs I have, so I'll go by what `tentmaker connect` reports.\n\n**Commands once you say yes** (checks mode is the only GitLab mode in v0.1)\n\nRun this one in your own terminal. It reads the token from stdin, so paste the token, press Enter, then Ctrl-D:\n```sh\nsudo tentmaker connect gitlab --url https://gitlab.example.com --token-stdin --json\n```\n\nThen I run:\n```sh\nsudo tentmaker repo add group/app --forge gitlab --json\ntentmaker repo list --json\ntentmaker doctor --json\n```\nI'll apply the fix for each problem `doctor` reports and report back if the same problem survives two fixes.\n\n**What to expect**\n- Tentmaker posts commit statuses named `tentmaker/<job name>`. Mark them required in branch protection if you want them to gate merges.\n- It runs pushes to the default branch and same-repo merge requests from the authors you list, which is the repo owner by default. It never runs forks.\n- It skips jobs it doesn't understand (other `uses:`, `services`, `container`, job-level `if`, multi-combination matrices), and a skipped job gets no status."
+}

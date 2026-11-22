@@ -9,6 +9,7 @@ package core
 import (
 	"context"
 	"errors"
+	"io"
 	"regexp"
 	"time"
 )
@@ -51,10 +52,25 @@ type Job struct {
 	FromFork   bool      `json:"from_fork"` // head repo differs from base repo
 	Status     string    `json:"status"`    // queued, in_progress, completed, waiting
 	CreatedAt  time.Time `json:"created_at"`
+	// HeadSHA is the commit a check job (Event KindCheck) tests. Check jobs
+	// have no forge ID, so it and Name identify them.
+	HeadSHA string `json:"head_sha,omitempty"`
+	// RunnerID and RunnerName name the runner that took the job, when the
+	// forge says (GitHub does on in-progress and finished jobs). They are
+	// how the broker learns which job a runner took when Runner reports no
+	// JobID.
+	RunnerID   int64  `json:"runner_id,omitempty"`
+	RunnerName string `json:"runner_name,omitempty"`
 }
 
-// Key identifies a job across the pool.
-func (j Job) Key() string { return j.Forge + ":" + j.Repo + ":" + itoa(j.ID) }
+// Key identifies a job across the pool. A check job's key is its commit and
+// job name, since every check job has ID 0.
+func (j Job) Key() string {
+	if j.Event == KindCheck && j.HeadSHA != "" {
+		return j.Forge + ":" + j.Repo + ":" + KindCheck + ":" + j.HeadSHA + ":" + j.Name
+	}
+	return j.Forge + ":" + j.Repo + ":" + itoa(j.ID)
+}
 
 // RepoInfo is what a forge reports about a repository's safety settings.
 type RepoInfo struct {
@@ -207,14 +223,31 @@ type CheckJob struct {
 	Timeout  time.Duration     `json:"timeout"`
 }
 
-// CheckBundle is what check-run receives on stdin. ArchiveURL may carry a
-// short-lived token, so the whole bundle is a secret.
+// CheckBundle is what check-run receives on stdin.
+//
+// A broker never puts a forge URL, a forge token or a download header in a
+// bundle: it sets ArchiveRef, an opaque reference the worker that was
+// granted the check redeems through the broker's ArchiveSource. Before the
+// job starts, the worker swaps ArchiveRef for ArchiveURL, a loopback relay
+// URL whose random id is the only capability (Darwin VMs get a file://
+// URL instead). The bundle is still handled as a secret.
 type CheckBundle struct {
 	Repo       string   `json:"repo"`
 	SHA        string   `json:"sha"`
-	ArchiveURL string   `json:"archive_url"`      // tar.gz of the repo at SHA
-	Header     string   `json:"header,omitempty"` // optional "Authorization: ..." for the download
+	ArchiveURL string   `json:"archive_url,omitempty"` // tar.gz of the repo at SHA: http(s) or file://
+	Header     string   `json:"header,omitempty"`      // optional "Name: value" for the download; brokers never set it
+	ArchiveRef string   `json:"archive_ref,omitempty"` // opaque; the worker turns it into ArchiveURL
+	Ref        string   `json:"ref,omitempty"`         // branch name, for github.ref_name
 	Job        CheckJob `json:"job"`
+}
+
+// ArchiveSource streams a check's source archive. A broker implements it
+// (in-process, or over the mesh's GET /v1/archive/<ref>): it serves ref only
+// to the device the check was granted to, while the check is active, and
+// fetches from the forge itself, so the forge token never leaves the
+// broker. An unknown ref, another device or an ended check is ErrNotFound.
+type ArchiveSource interface {
+	FetchArchive(ctx context.Context, ref, device string, w io.Writer) error
 }
 
 // CheckResult is the outcome of one check job.
@@ -244,8 +277,10 @@ type Commit struct {
 // GitHub, Forgejo/Gitea and GitLab implement it.
 type StatusForge interface {
 	Name() string
-	// PendingCommits lists open same-repo PR heads and default-branch heads.
-	PendingCommits(ctx context.Context, repo string) ([]Commit, error)
+	// PendingCommits lists open PR heads (forks marked FromFork), the
+	// default branch head, and the heads of branches that exist (a branch
+	// that doesn't is left out, not an error).
+	PendingCommits(ctx context.Context, repo string, branches ...string) ([]Commit, error)
 	FileAt(ctx context.Context, repo, sha, path string) ([]byte, error)
 	ListDir(ctx context.Context, repo, sha, path string) ([]string, error)
 	// Archive returns a URL (and optional auth header) for a tar.gz of the repo at sha.
@@ -340,6 +375,28 @@ type WorkSource interface {
 
 // ErrNotFound is returned when a forge object does not exist.
 var ErrNotFound = errors.New("not found")
+
+// ErrOtherNode is a broker's answer to a work request for a device whose
+// grants another tailnet node holds. The mesh answers it with 403.
+var ErrOtherNode = errors.New("another tailnet node holds this device's grants")
+
+type callerNodeKey struct{}
+
+// WithCallerNode returns ctx carrying node, the tailnet stable node ID that
+// WhoIs authenticated for a remote caller. The mesh sets it before it calls
+// a broker's Work or FetchArchive; a broker binds each grant to the caller's
+// node and serves that grant's reports and archive only to the same node, so
+// another node that announces the same device name can't act for it.
+func WithCallerNode(ctx context.Context, node string) context.Context {
+	return context.WithValue(ctx, callerNodeKey{}, node)
+}
+
+// CallerNode is the node WithCallerNode put in ctx, or "" for an in-process
+// caller (the broker's own device).
+func CallerNode(ctx context.Context) string {
+	s, _ := ctx.Value(callerNodeKey{}).(string)
+	return s
+}
 
 func itoa(n int64) string {
 	if n == 0 {

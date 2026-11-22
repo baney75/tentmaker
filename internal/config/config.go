@@ -6,6 +6,7 @@ package config
 import (
 	"bytes"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -24,9 +25,14 @@ const (
 	KiB Size = 1 << 10
 	MiB Size = 1 << 20
 	GiB Size = 1 << 30
+
+	// MaxSize is the largest size ParseSize accepts (1 EiB). Sizes are
+	// added together (a job plus memory kept free), so the cap keeps those
+	// sums far from overflowing.
+	MaxSize Size = 1 << 60
 )
 
-var sizeRe = regexp.MustCompile(`^\s*([0-9]+(?:\.[0-9]+)?)\s*([KMGT]?)(i?B?)\s*$`)
+var sizeRe = regexp.MustCompile(`^\s*([0-9]+(?:\.[0-9]+)?)\s*([KMGT]?)(I?B?)\s*$`)
 
 // ParseSize reads "4GiB", "4G", "4GB" (all binary), "512MiB" or "0".
 func ParseSize(s string) (Size, error) {
@@ -42,6 +48,11 @@ func ParseSize(s string) (Size, error) {
 	if m[2] == "" && m[1] != "0" && m[3] == "" {
 		return 0, fmt.Errorf("size %q has no unit: write %sGiB or %sMiB", s, m[1], m[1])
 	}
+	// Compare as floats: converting an out-of-range float to an integer
+	// gives a different garbage value on each CPU.
+	if v := n * mult; !(v <= float64(MaxSize)) {
+		return 0, fmt.Errorf("size %q is larger than 1 EiB", s)
+	}
 	return Size(n * mult), nil
 }
 
@@ -53,8 +64,11 @@ func (s Size) String() string {
 		return fmt.Sprintf("%dGiB", s/GiB)
 	case s%MiB == 0:
 		return fmt.Sprintf("%dMiB", s/MiB)
-	default:
+	case s%KiB == 0:
 		return fmt.Sprintf("%dKiB", s/KiB)
+	default:
+		// Exact bytes, so Save and Load keep "1.5KiB" or "100B" as is.
+		return fmt.Sprintf("%dB", int64(s))
 	}
 }
 
@@ -122,16 +136,21 @@ type Job struct {
 
 // Guards keep CI out of the way of what the machine is for.
 type Guards struct {
-	// PauseWhenRunning lists process names (case-insensitive) that pause CI,
-	// such as games or a video call. Running jobs finish.
+	// PauseWhenRunning lists process names (case-insensitive), such as games
+	// or a video call, that drop boost to the reserved everyday budget.
 	PauseWhenRunning []string `toml:"pause_when_running" json:"pause_when_running"`
 	MinFreeDisk      Size     `toml:"min_free_disk" json:"min_free_disk"`
 	StopBelowDisk    Size     `toml:"stop_below_disk" json:"stop_below_disk"`
 	// MinFreeMemory: take no new job unless this much memory stays free for
 	// the user after the job's own memory.
 	MinFreeMemory Size `toml:"min_free_memory" json:"min_free_memory"`
-	// MaxLoadPerCPU pauses CI while load average / CPUs exceeds it (0 = off).
+	// MaxLoadPerCPU drops boost to everyday while load average / CPUs
+	// exceeds it (0 = off).
 	MaxLoadPerCPU float64 `toml:"max_load_per_cpu" json:"max_load_per_cpu"`
+	// AllowLAN lets CI jobs reach private (RFC 1918) addresses. The tailnet,
+	// link-local, this host and the mesh port stay blocked either way. Linux
+	// and Windows only; rerun setup after changing it.
+	AllowLAN bool `toml:"allow_lan" json:"allow_lan"`
 }
 
 // Repo is one repository whose jobs this device serves.
@@ -150,6 +169,9 @@ type Repo struct {
 	Workflows []string `toml:"workflows" json:"workflows"`
 	// Authors whose PR heads checks mode runs (empty = the repo owner only).
 	Authors []string `toml:"authors" json:"authors"`
+	// Branches whose heads checks mode runs besides the default branch, such
+	// as a release branch. Only people who can push to the repo move them.
+	Branches []string `toml:"branches" json:"branches"`
 }
 
 // Forge is how to reach one forge.
@@ -239,8 +261,19 @@ func (c Config) Validate() []string {
 	if b.Boost.Memory != 0 && b.Boost.Memory < b.Everyday.Memory {
 		p = append(p, "budget.boost.memory is smaller than budget.everyday.memory; boost should be the larger one")
 	}
-	if c.Job.Memory <= 0 || c.Job.CPUs <= 0 {
+	if c.Job.Memory <= 0 || !(c.Job.CPUs > 0) {
 		p = append(p, "job.memory and job.cpus must be above zero")
+	}
+	for _, x := range []struct {
+		name string
+		v    float64
+	}{{"budget.everyday.cpus", b.Everyday.CPUs}, {"budget.boost.cpus", b.Boost.CPUs}, {"job.cpus", c.Job.CPUs}} {
+		if math.IsNaN(x.v) || math.IsInf(x.v, 0) || x.v < 0 {
+			p = append(p, x.name+" must be a finite number of CPUs, 0 or more")
+		}
+	}
+	if c.Job.MaxSlots < 0 {
+		p = append(p, "job.max_slots can't be negative")
 	}
 	if b.Everyday.Memory > 0 && b.Everyday.Memory < c.Job.Memory {
 		p = append(p, fmt.Sprintf("budget.everyday.memory (%s) is below one job (%s), so no job fits outside boost", b.Everyday.Memory, c.Job.Memory))
@@ -280,8 +313,20 @@ func (c Config) Validate() []string {
 		default:
 			p = append(p, fmt.Sprintf(`repo %q: mode must be "runner" or "checks"`, r.Name))
 		}
-		if r.Forge == "gitlab" && r.Mode != "checks" {
-			p = append(p, fmt.Sprintf(`repo %q: GitLab repos run in mode = "checks"`, r.Name))
+		kind := r.Forge
+		if f, ok := c.Forges[r.Forge]; ok && f.Kind != "" {
+			kind = f.Kind
+		}
+		if (kind == "gitlab" || kind == "forgejo" || kind == "gitea") && r.Mode != "checks" {
+			p = append(p, fmt.Sprintf(`repo %q: %s repos run in mode = "checks" in this version`, r.Name, kind))
+		}
+		for _, b := range r.Branches {
+			if !ValidBranch(b) {
+				p = append(p, fmt.Sprintf("repo %q: %q is not a branch name", r.Name, b))
+			}
+		}
+		if len(r.Branches) > 0 && r.Mode != "checks" {
+			p = append(p, fmt.Sprintf(`repo %q: branches apply only to mode = "checks"`, r.Name))
 		}
 	}
 	switch c.Update.Channel {
@@ -408,4 +453,20 @@ func maxf(a, b float64) float64 {
 		return a
 	}
 	return b
+}
+
+// ValidBranch reports whether b is a plain git branch name: no spaces,
+// control characters, "..", or the characters git refuses in refs.
+func ValidBranch(b string) bool {
+	if b == "" || len(b) > 255 || strings.HasPrefix(b, "-") || strings.HasPrefix(b, "/") ||
+		strings.HasSuffix(b, "/") || strings.HasSuffix(b, ".") || strings.HasSuffix(b, ".lock") ||
+		strings.Contains(b, "..") || strings.Contains(b, "//") || strings.Contains(b, "@{") {
+		return false
+	}
+	for _, r := range b {
+		if r <= ' ' || r == 0x7f || strings.ContainsRune("~^:?*[\\", r) {
+			return false
+		}
+	}
+	return true
 }

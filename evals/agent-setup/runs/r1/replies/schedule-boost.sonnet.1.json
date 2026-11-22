@@ -1,0 +1,10 @@
+{
+ "case": "schedule-boost",
+ "responder": "sonnet",
+ "sample": 1,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "Yes. A schedule window with the boost profile gives it the 12GiB budget overnight, and a boost window ignores `boost_needs_idle`. That is the setting that has been keeping it at everyday. The laptop is always plugged in, so the AC requirement is met. At the default 2 GiB per job, that's about 6 jobs at once instead of 2.\n\n**One question first:** is 22:00 to 07:00 right for \"overnight\"? I'd use that unless you say otherwise. The window starts on the listed day, so a Friday window runs until Saturday 07:00, and Monday morning is covered by Sunday night only if you add `sun`.\n\nIf that works, I'd run:\n\n```sh\nsudo tentmaker schedule add --name weeknights --days mon-fri --from 22:00 --to 07:00 --profile boost --json\ntentmaker budget --json\n```\n\nThe second command confirms the window is registered. It will only show the boost profile once the clock is inside the window, so a daytime check will still say everyday.\n\nA few things still apply overnight even in boost:\n- The guards still pause jobs (under 20 GiB free disk, a listed process running, load above your limit).\n- If you want more than 12GiB overnight, that is `sudo tentmaker budget set --boost-memory SIZE`. I wouldn't change it unless you ask."
+}

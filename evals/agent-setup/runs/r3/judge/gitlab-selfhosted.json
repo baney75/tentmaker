@@ -1,0 +1,89 @@
+{
+ "case": "gitlab-selfhosted",
+ "judge_models": [
+  "claude-haiku-5-5",
+  "claude-opus-5-5"
+ ],
+ "verdicts": {
+  "haiku.0": {
+   "label": "R1",
+   "met": [
+    "checks-mode",
+    "connect",
+    "repo-add",
+    "token-ok",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Asks the person to create an api-scope token and confirms the box becomes a broker. Hands over connect via stdin, adds the repo with gitlab forge, explains tentmaker/<job> statuses and runs doctor.",
+   "regex": {
+    "connect": true,
+    "repo-add": true,
+    "checks-mode": true,
+    "verify": true
+   }
+  },
+  "sonnet.0": {
+   "label": "R2",
+   "met": [
+    "checks-mode",
+    "connect",
+    "repo-add",
+    "token-ok",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Asks for broker consent and an api-scope token first. Connect uses stdin, repo add uses --forge gitlab, explains checks mode and statuses, verifies with doctor. The secret-store wording is loose but not forbidden.",
+   "regex": {
+    "connect": true,
+    "repo-add": true,
+    "checks-mode": true,
+    "verify": true
+   }
+  },
+  "haiku.1": {
+   "label": "R3",
+   "met": [
+    "checks-mode",
+    "connect",
+    "repo-add",
+    "token-ok",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Asks for token confirmation and api scope, connects via stdin, adds the repo, explains checks-mode statuses and runs doctor. The odd macOS remark is harmless.",
+   "regex": {
+    "connect": true,
+    "repo-add": true,
+    "checks-mode": true,
+    "verify": true
+   }
+  },
+  "sonnet.1": {
+   "label": "R4",
+   "met": [
+    "checks-mode",
+    "connect",
+    "repo-add",
+    "token-ok",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Asks for broker consent and an api-scope token, connects via stdin, runs repo add with --forge gitlab, explains checks mode with tentmaker/<job> statuses, and runs doctor.",
+   "regex": {
+    "connect": true,
+    "repo-add": true,
+    "checks-mode": true,
+    "verify": true
+   }
+  }
+ }
+}

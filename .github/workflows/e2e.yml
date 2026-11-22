@@ -1,0 +1,489 @@
+# End to end on real hosts: GitHub's throwaway runners stand in for a
+# user's machine. Each job builds the release archives, serves them as a fake
+# release on 127.0.0.1, installs with the real installer, runs setup as root
+# (or Administrator), checks the service and every read command, runs one
+# real check job through the daemon (Linux and Windows), then uninstalls with
+# --purge and checks that nothing is left.
+name: e2e
+
+on:
+  push:
+    branches: [e2e, main]
+  pull_request:
+  workflow_dispatch:
+
+# contents: write makes the throwaway commit and branch the real check job
+# tests (tm-e2e/<run>.<attempt>/<os>) and deletes them after.
+permissions:
+  contents: write
+  statuses: write
+  pull-requests: read
+
+concurrency:
+  group: e2e-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  TM_VERSION: 0.0.0-e2e.${{ github.run_number }}
+  TM_PORT: "8765"
+  # The commit Tentmaker tests: the PR head on pull_request, else the pushed commit.
+  TM_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+  # Fork PRs get a read-only token and Tentmaker refuses forks anyway.
+  TM_SMOKE: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+
+jobs:
+  unix:
+    name: e2e (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+
+      - name: build the release archives
+        run: scripts/build.sh "$TM_VERSION"
+
+      - name: serve dist/ as a fake release
+        run: |
+          srv=$RUNNER_TEMP/srv
+          mkdir -p "$srv/latest/download"
+          cp dist/* "$srv/latest/download/"
+          cp scripts/install.sh "$srv/install.sh"
+          nohup python3 -m http.server --bind 127.0.0.1 --directory "$srv" "$TM_PORT" >"$RUNNER_TEMP/http.log" 2>&1 &
+          for _ in $(seq 1 50); do
+            curl -fsS --max-time 2 -o /dev/null "http://127.0.0.1:$TM_PORT/latest/download/SHA256SUMS" && exit 0
+            sleep 0.2
+          done
+          echo "::error::the release server did not start"; cat "$RUNNER_TEMP/http.log"; exit 1
+
+      - name: install with the one-liner
+        run: |
+          curl -fsSL --max-time 60 "http://127.0.0.1:$TM_PORT/install.sh" |
+            sudo env TENTMAKER_DOWNLOAD_BASE="http://127.0.0.1:$TM_PORT" sh
+          command -v tentmaker
+          got=$(tentmaker version --json | jq -r .version)
+          test "$got" = "$TM_VERSION" || { echo "::error::installed $got, want $TM_VERSION"; exit 1; }
+
+      # The runner image leaves /home/linuxbrew world-readable, and setup
+      # refuses a host where the CI user could read a home. This is the fix
+      # setup and doctor print.
+      - name: close home directories (Linux)
+        if: runner.os == 'Linux'
+        run: for h in /home/*; do sudo chmod o-rwx "$h"; done
+
+      - name: setup
+        id: setup
+        run: |
+          rc=0
+          sudo tentmaker setup --yes --json --no-mesh --no-gh --memory 2GiB --boost-memory 4GiB >"$RUNNER_TEMP/setup.json" || rc=$?
+          cat "$RUNNER_TEMP/setup.json"
+          test "$rc" = 0 || { echo "::error::setup exited $rc"; exit 1; }
+          jq -e '.ok == true' "$RUNNER_TEMP/setup.json" >/dev/null || { echo "::error::setup ok is not true"; exit 1; }
+          if [ "$RUNNER_OS" = macOS ]; then
+            # A hosted Mac has far less than the ~130 GiB the macOS image
+            # plus a job need, so setup skips the macOS guests, succeeds,
+            # and its doctor says how to turn them on.
+            jq -e '[.doctor.checks[] | select(.what | test("^macOS guests are off: the macOS image needs [0-9]+ GiB, [0-9]+ GiB free; run sudo tentmaker setup --macos-guests when you have room"))] | length == 1' "$RUNNER_TEMP/setup.json" >/dev/null ||
+              { echo "::error::setup's doctor did not say macOS guests are off"; exit 1; }
+          fi
+          jq -e '.service == "running"' "$RUNNER_TEMP/setup.json" >/dev/null || { echo "::error::setup says the service is not running"; exit 1; }
+          jq -e --arg v "$TM_VERSION" '.doctor.version == $v' "$RUNNER_TEMP/setup.json" >/dev/null || { echo "::error::setup's doctor reports another version"; exit 1; }
+
+      - name: the service is running
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            systemctl is-active tentmaker
+          else
+            out=$(sudo launchctl print system/dev.tentmaker.daemon)
+            printf '%s\n' "$out" | head -40
+            printf '%s\n' "$out" | grep -q 'state = running' || { echo "::error::launchd says the daemon is not running"; exit 1; }
+          fi
+
+      - name: status
+        run: |
+          tentmaker status --json | tee "$RUNNER_TEMP/status.json"
+          jq -e '.service == "running"' "$RUNNER_TEMP/status.json" >/dev/null || { echo "::error::status: service not running"; exit 1; }
+          jq -e --arg v "$TM_VERSION" '.version == $v' "$RUNNER_TEMP/status.json" >/dev/null || { echo "::error::status: wrong version"; exit 1; }
+
+      - name: doctor
+        run: |
+          rc=0
+          # The sandbox checks read root-only state, so the full doctor
+          # runs under sudo; a user's doctor is checked next.
+          sudo tentmaker doctor --json >"$RUNNER_TEMP/doctor.json" || rc=$?
+          cat "$RUNNER_TEMP/doctor.json"
+          jq -e '.checks | length > 0' "$RUNNER_TEMP/doctor.json" >/dev/null || { echo "::error::doctor ran no checks"; exit 1; }
+          # Every failed or warned check says how to fix it.
+          jq -e '[.checks[] | select(.status != "ok" and (.fix // "") == "")] | length == 0' "$RUNNER_TEMP/doctor.json" >/dev/null ||
+            { echo "::error::doctor has a problem with no fix"; exit 1; }
+          ok=$(jq -r .ok "$RUNNER_TEMP/doctor.json")
+          if [ "$ok" = true ]; then want=0; else want=1; fi
+          test "$rc" = "$want" || { echo "::error::doctor exit $rc does not match ok=$ok"; exit 1; }
+          if [ "$RUNNER_OS" = macOS ]; then
+            # macOS guests are off for lack of disk: a warning with a fix,
+            # not a failure.
+            jq -e '[.checks[] | select(.status == "warn" and (.what | test("^macOS guests are off: the macOS image needs [0-9]+ GiB, [0-9]+ GiB free")) and (.fix // "") != "")] | length == 1' "$RUNNER_TEMP/doctor.json" >/dev/null ||
+              { echo "::error::doctor did not say macOS guests are off"; exit 1; }
+          else
+            test "$ok" = true || { echo "::error::doctor found problems"; exit 1; }
+          fi
+
+      - name: doctor as a user
+        run: |
+          rc=0
+          tentmaker doctor --json >"$RUNNER_TEMP/doctor-user.json" || rc=$?
+          cat "$RUNNER_TEMP/doctor-user.json"
+          # It skips the sandbox checks and says how to run them, instead of
+          # calling a working machine broken.
+          jq -e '[.checks[] | select(.check == "executor" and .status == "warn" and .fix == "sudo tentmaker doctor")] | length == 1' "$RUNNER_TEMP/doctor-user.json" >/dev/null ||
+            { echo "::error::a user's doctor did not say it skipped the sandbox checks"; exit 1; }
+          test "$rc" = 0 && jq -e '.ok == true' "$RUNNER_TEMP/doctor-user.json" >/dev/null ||
+            { echo "::error::a user's doctor found problems on a working machine (exit $rc)"; exit 1; }
+
+      - name: budget
+        run: |
+          tentmaker budget --json | tee "$RUNNER_TEMP/budget.json"
+          jq -e '.source == "service"' "$RUNNER_TEMP/budget.json" >/dev/null || { echo "::error::budget did not come from the service"; exit 1; }
+          jq -e '.decision.profile == "boost" or .decision.profile == "everyday"' "$RUNNER_TEMP/budget.json" >/dev/null || { echo "::error::budget profile is not boost or everyday"; exit 1; }
+          jq -e '(.why | type) == "string" and (.why | length) > 0' "$RUNNER_TEMP/budget.json" >/dev/null || { echo "::error::budget has no reason"; exit 1; }
+          echo "why: $(jq -r .why "$RUNNER_TEMP/budget.json")"
+
+      - name: pause and resume
+        run: |
+          sudo tentmaker pause --json e2e check | jq -e '.ok == true and .paused == true'
+          tentmaker status --json | jq -e '.paused == true and .pause_reason == "e2e check"'
+          sudo tentmaker resume --json | jq -e '.ok == true'
+          tentmaker status --json | jq -e '.paused == false'
+
+      - name: logs
+        run: |
+          sudo tentmaker logs -n 50 | tee "$RUNNER_TEMP/logs.txt"
+          test -s "$RUNNER_TEMP/logs.txt" || { echo "::error::no log lines"; exit 1; }
+          sudo tentmaker logs -n 50 --json | jq -e '.lines | length > 0' >/dev/null
+
+      - name: a real check job (Linux)
+        if: runner.os == 'Linux' && env.TM_SMOKE == 'true'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          ctx=tentmaker/smoke
+          start=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          # Tentmaker never reruns a context a commit already has a status
+          # for, and an earlier run may have tested $TM_SHA. A new commit
+          # with its tree, on a throwaway branch, is one no run has seen.
+          # Commits made with GITHUB_TOKEN trigger no workflows.
+          tree=$(timeout 30 gh api "repos/$REPO/git/commits/$TM_SHA" --jq .tree.sha)
+          sha=$(timeout 30 gh api "repos/$REPO/git/commits" -f "tree=$tree" -f "parents[]=$TM_SHA" \
+            -f "message=tentmaker e2e $GITHUB_RUN_ID.$GITHUB_RUN_ATTEMPT ($RUNNER_OS) of $TM_SHA" --jq .sha)
+          branch="tm-e2e/$GITHUB_RUN_ID.$GITHUB_RUN_ATTEMPT/linux"
+          timeout 30 gh api "repos/$REPO/git/refs" -f "ref=refs/heads/$branch" -f "sha=$sha" >/dev/null
+          echo "TM_E2E_BRANCH=$branch" >>"$GITHUB_ENV"
+          printf %s "$GITHUB_TOKEN" | sudo tentmaker connect github --token-stdin --json | tee "$RUNNER_TEMP/connect.json"
+          jq -e '.ok == true' "$RUNNER_TEMP/connect.json" >/dev/null || { echo "::error::connect failed"; exit 1; }
+          # An author with no PRs keeps this run off other PRs' heads.
+          sudo tentmaker repo add "$REPO" --mode checks --allow-public --workflow .github/workflows/tentmaker-smoke.yml --branch "$branch" --author tentmaker-e2e-nobody --json | tee "$RUNNER_TEMP/repo.json"
+          jq -e '.ok == true' "$RUNNER_TEMP/repo.json" >/dev/null || { echo "::error::repo add failed"; exit 1; }
+          echo "waiting for $ctx on $sha (branch $branch, a copy of $TM_SHA)"
+          deadline=$((SECONDS + 360))
+          while :; do
+            # Only a status set during this run counts.
+            st=$(timeout 30 gh api "repos/$REPO/commits/$sha/statuses?per_page=100" \
+              --jq "[.[] | select(.context == \"$ctx\" and .created_at >= \"$start\")][0] | if . == null then \"none\" else \"\(.state) \(.created_at) \(.description)\" end") || st="api-error"
+            echo "$(date -u +%T) $ctx: $st"
+            case $st in
+              success*) break ;;
+              failure* | error*) echo "::error::$ctx is $st"; exit 1 ;;
+            esac
+            if [ "$SECONDS" -ge "$deadline" ]; then echo "::error::$ctx did not succeed within 6 minutes"; exit 1; fi
+            sleep 10
+          done
+          # The job ran under Tentmaker, not GitHub's runner: the broker keeps
+          # the check's log, and it shows the env Tentmaker set.
+          log="/var/lib/tentmaker/checks/${REPO/\//_}-${sha:0:12}-smoke.log"
+          sudo cat "$log" || { echo "::error::no check log at $log"; exit 1; }
+          sudo grep -q '^state: success' "$log" || { echo "::error::$log does not record success"; exit 1; }
+          sudo grep -q 'TENTMAKER=1 GITHUB_ACTIONS=unset' "$log" ||
+            { echo "::error::$log does not show TENTMAKER=1 GITHUB_ACTIONS=unset"; exit 1; }
+
+      - name: dump on failure
+        if: failure()
+        run: |
+          echo "== status"; tentmaker status --json || true
+          if [ "$RUNNER_OS" = Linux ]; then
+            echo "== daemon log"; sudo journalctl -u tentmaker --no-pager -n 400 || true
+            if uid=$(id -u tentmaker-runner 2>/dev/null); then
+              pid=$(systemctl show -p MainPID --value "user@$uid.service")
+              echo "== user manager $pid"; sudo readlink /proc/1/ns/mnt /proc/1/ns/net "/proc/$pid/ns/mnt" "/proc/$pid/ns/net" || true
+              echo "== runtime dir, host view"; sudo ls -la "/run/user/$uid" "/run/user/$uid/podman" || true
+              findmnt -R "/run/user/$uid" || true
+              echo "== runtime dir, manager view"; sudo nsenter -t "$pid" -m ls -la "/run/user/$uid" "/run/user/$uid/podman" || true
+              sudo nsenter -t "$pid" -m findmnt -R "/run/user/$uid" || true
+              systemctl status --no-pager "user@$uid.service" "user-runtime-dir@$uid.service" tentmaker-podnet.service tentmaker-podnet-uplink.service tentmaker-podns.service || true
+              sudo journalctl --no-pager -n 300 -u "user@$uid.service" -u "user-runtime-dir@$uid.service" -u tentmaker-podnet.service -u tentmaker-podnet-uplink.service -u tentmaker-podns.service -u systemd-logind || true
+              echo "== user journal"; sudo journalctl --no-pager -n 200 "_UID=$uid" || true
+            fi
+            state=/var/lib/tentmaker
+          else
+            echo "== daemon log"; sudo tail -n 400 /Library/Logs/Tentmaker/tentmaker.log || true
+            state="/Library/Application Support/Tentmaker/state"
+          fi
+          echo "== state files"; sudo find "$state" -maxdepth 4 -not -path '*/runner/*' 2>/dev/null | head -200 || true
+          sudo find "$state" \( -name log.txt -o -name result.json -o -name 'broker*.json' -o -name state.json \) -type f 2>/dev/null |
+            while read -r f; do echo "== $f"; sudo tail -c 20000 "$f"; echo; done || true
+
+      - name: delete the throwaway branch
+        if: always() && env.TM_E2E_BRANCH != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: timeout 30 gh api -X DELETE "repos/$REPO/git/refs/heads/$TM_E2E_BRANCH" || echo "::warning::could not delete $TM_E2E_BRANCH"
+
+      - name: uninstall --purge
+        if: ${{ !cancelled() && steps.setup.outcome != 'skipped' }}
+        run: |
+          sudo tentmaker uninstall --purge --yes --json | tee "$RUNNER_TEMP/uninstall.json"
+          jq -e '.ok == true and .purged == true' "$RUNNER_TEMP/uninstall.json" >/dev/null || { echo "::error::uninstall did not finish"; exit 1; }
+          left=""
+          if [ "$RUNNER_OS" = Linux ]; then
+            if systemctl cat tentmaker.service >/dev/null 2>&1; then left="$left systemd-unit"; fi
+            if [ -e /etc/systemd/system/tentmaker.service ]; then left="$left /etc/systemd/system/tentmaker.service"; fi
+            if id tentmaker-runner >/dev/null 2>&1; then left="$left user:tentmaker-runner"; fi
+            for p in /etc/tentmaker /var/lib/tentmaker /var/cache/tentmaker /etc/systemd/system/tentmaker.slice /usr/local/lib/tentmaker /opt/tentmaker; do
+              if sudo test -e "$p"; then left="$left $p"; fi
+            done
+          else
+            if sudo launchctl print system/dev.tentmaker.daemon >/dev/null 2>&1; then left="$left launchd-job"; fi
+            for p in /Library/LaunchDaemons/dev.tentmaker.daemon.plist "/Library/Application Support/Tentmaker" /Library/Caches/Tentmaker /Library/Logs/Tentmaker; do
+              if sudo test -e "$p"; then left="$left $p"; fi
+            done
+          fi
+          if [ -n "$left" ]; then echo "::error::left after uninstall --purge:$left"; exit 1; fi
+          tentmaker version
+
+  windows:
+    name: e2e (windows-latest)
+    runs-on: windows-latest
+    timeout-minutes: 40
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+
+      - name: build the release archives
+        shell: bash
+        run: |
+          # Git Bash has no zip; MSYS2 on the image has pacman. Its tools go last on PATH.
+          if ! command -v zip >/dev/null; then
+            timeout 300 /c/msys64/usr/bin/pacman.exe -S --noconfirm --needed zip >/dev/null
+            export PATH="$PATH:/c/msys64/usr/bin"
+          fi
+          scripts/build.sh "$TM_VERSION"
+
+      # The runner ends a step's processes with the step, so the release
+      # server and the install share one.
+      - name: serve dist/ as a fake release and install with the one-liner
+        run: |
+          $srv = Join-Path $env:RUNNER_TEMP 'srv'
+          New-Item -ItemType Directory -Force -Path "$srv\latest\download" | Out-Null
+          Copy-Item dist\* "$srv\latest\download\"
+          Copy-Item scripts\install.ps1 "$srv\install.ps1"
+          $server = Start-Process -PassThru -FilePath python -ArgumentList @('-m', 'http.server', '--bind', '127.0.0.1', '--directory', $srv, $env:TM_PORT) -WindowStyle Hidden `
+            -RedirectStandardOutput "$env:RUNNER_TEMP\http.out" -RedirectStandardError "$env:RUNNER_TEMP\http.err"
+          $up = $false
+          for ($i = 0; $i -lt 50 -and -not $up; $i++) {
+            try { Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 "http://127.0.0.1:$env:TM_PORT/latest/download/SHA256SUMS" | Out-Null; $up = $true } catch { Start-Sleep -Milliseconds 200 }
+          }
+          if (-not $up) { Write-Output "::error::the release server did not start"; Get-Content "$env:RUNNER_TEMP\http.err"; exit 1 }
+
+          $env:TENTMAKER_DOWNLOAD_BASE = "http://127.0.0.1:$env:TM_PORT"
+          irm -TimeoutSec 60 "http://127.0.0.1:$env:TM_PORT/install.ps1" | iex
+          Stop-Process -Id $server.Id -ErrorAction SilentlyContinue
+          # A new terminal sees the machine PATH; later steps get it here.
+          Add-Content -Path $env:GITHUB_PATH -Value (Join-Path $env:ProgramFiles 'Tentmaker')
+          $got = ((& "$env:ProgramFiles\Tentmaker\tentmaker.exe" version --json) -join "`n" | ConvertFrom-Json).version
+          if ($got -ne $env:TM_VERSION) { Write-Output "::error::installed $got, want $env:TM_VERSION"; exit 1 }
+
+      - name: setup
+        id: setup
+        run: |
+          $out = (tentmaker setup --yes --json --no-mesh --no-gh --memory 2GiB --boost-memory 4GiB) -join "`n"
+          $rc = $LASTEXITCODE
+          Write-Output $out
+          if ($rc -ne 0) { Write-Output "::error::setup exited $rc"; exit 1 }
+          $v = $out | ConvertFrom-Json
+          if (-not $v.ok) { Write-Output "::error::setup ok is not true"; exit 1 }
+          if ($v.service -ne 'running') { Write-Output "::error::setup says the service is $($v.service)"; exit 1 }
+          if ($v.doctor.version -ne $env:TM_VERSION) { Write-Output "::error::setup's doctor reports another version"; exit 1 }
+
+      - name: the service is running
+        run: |
+          $s = Get-Service Tentmaker
+          $s | Format-List Name, Status, StartType
+          if ($s.Status -ne 'Running') { Write-Output "::error::service is $($s.Status)"; exit 1 }
+
+      - name: status
+        run: |
+          $out = (tentmaker status --json) -join "`n"; Write-Output $out
+          $v = $out | ConvertFrom-Json
+          if ($v.service -ne 'running') { Write-Output "::error::status: service not running"; exit 1 }
+          if ($v.version -ne $env:TM_VERSION) { Write-Output "::error::status: wrong version"; exit 1 }
+
+      - name: doctor
+        run: |
+          $out = (tentmaker doctor --json) -join "`n"; $rc = $LASTEXITCODE
+          Write-Output $out
+          $v = $out | ConvertFrom-Json
+          if (@($v.checks).Count -eq 0) { Write-Output "::error::doctor ran no checks"; exit 1 }
+          $nofix = @($v.checks | Where-Object { $_.status -ne 'ok' -and -not $_.fix })
+          if ($nofix.Count -gt 0) { Write-Output "::error::doctor has a problem with no fix"; exit 1 }
+          $want = if ($v.ok) { 0 } else { 1 }
+          if ($rc -ne $want) { Write-Output "::error::doctor exit $rc does not match ok=$($v.ok)"; exit 1 }
+          if (-not $v.ok) { Write-Output "::error::doctor found problems"; exit 1 }
+
+      - name: budget
+        run: |
+          $out = (tentmaker budget --json) -join "`n"; Write-Output $out
+          $v = $out | ConvertFrom-Json
+          if ($v.source -ne 'service') { Write-Output "::error::budget did not come from the service"; exit 1 }
+          if (@('boost', 'everyday') -notcontains $v.decision.profile) { Write-Output "::error::budget profile is $($v.decision.profile)"; exit 1 }
+          if (-not $v.why) { Write-Output "::error::budget has no reason"; exit 1 }
+          Write-Output "why: $($v.why)"
+
+      - name: pause and resume
+        run: |
+          $p = (tentmaker pause --json e2e check) -join "`n" | ConvertFrom-Json
+          if (-not ($p.ok -and $p.paused)) { Write-Output "::error::pause failed"; exit 1 }
+          $s = (tentmaker status --json) -join "`n" | ConvertFrom-Json
+          if (-not $s.paused -or $s.pause_reason -ne 'e2e check') { Write-Output "::error::status is not paused"; exit 1 }
+          $r = (tentmaker resume --json) -join "`n" | ConvertFrom-Json
+          if (-not $r.ok) { Write-Output "::error::resume failed"; exit 1 }
+          $s = (tentmaker status --json) -join "`n" | ConvertFrom-Json
+          if ($s.paused) { Write-Output "::error::status is still paused"; exit 1 }
+
+      - name: logs
+        run: |
+          $lines = @(tentmaker logs -n 50)
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $lines
+          if ($lines.Count -eq 0) { Write-Output "::error::no log lines"; exit 1 }
+          $v = (tentmaker logs -n 50 --json) -join "`n" | ConvertFrom-Json
+          if (@($v.lines).Count -eq 0) { Write-Output "::error::no log lines in --json"; exit 1 }
+
+      - name: a real check job (Windows)
+        if: env.TM_SMOKE == 'true'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          $ctx = 'tentmaker/smoke-windows'
+          $start = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
+          $headers = @{ Authorization = "Bearer $env:GITHUB_TOKEN"; Accept = 'application/vnd.github+json'; 'User-Agent' = 'tentmaker-e2e' }
+          $api = "https://api.github.com/repos/$env:REPO"
+          # Tentmaker never reruns a context a commit already has a status
+          # for, and an earlier run may have tested TM_SHA. A new commit
+          # with its tree, on a throwaway branch, is one no run has seen.
+          # Commits made with GITHUB_TOKEN trigger no workflows.
+          $tree = (Invoke-RestMethod -TimeoutSec 30 -Headers $headers "$api/git/commits/$env:TM_SHA").tree.sha
+          $body = @{ tree = $tree; parents = @($env:TM_SHA); message = "tentmaker e2e $env:GITHUB_RUN_ID.$env:GITHUB_RUN_ATTEMPT ($env:RUNNER_OS) of $env:TM_SHA" } | ConvertTo-Json
+          $sha = (Invoke-RestMethod -TimeoutSec 30 -Method Post -Headers $headers -ContentType 'application/json' -Body $body "$api/git/commits").sha
+          if (-not $sha) { Write-Output "::error::could not make the throwaway commit"; exit 1 }
+          $branch = "tm-e2e/$env:GITHUB_RUN_ID.$env:GITHUB_RUN_ATTEMPT/windows"
+          $body = @{ ref = "refs/heads/$branch"; sha = $sha } | ConvertTo-Json
+          Invoke-RestMethod -TimeoutSec 30 -Method Post -Headers $headers -ContentType 'application/json' -Body $body "$api/git/refs" | Out-Null
+          Add-Content -Path $env:GITHUB_ENV -Value "TM_E2E_BRANCH=$branch"
+          $c = ($env:GITHUB_TOKEN | tentmaker connect github --token-stdin --json) -join "`n"
+          Write-Output $c
+          if (-not ($c | ConvertFrom-Json).ok) { Write-Output "::error::connect failed"; exit 1 }
+          # An author with no PRs keeps this run off other PRs' heads.
+          $r = (tentmaker repo add $env:REPO --mode checks --allow-public --workflow .github/workflows/tentmaker-smoke.yml --branch $branch --author tentmaker-e2e-nobody --json) -join "`n"
+          Write-Output $r
+          if (-not ($r | ConvertFrom-Json).ok) { Write-Output "::error::repo add failed"; exit 1 }
+          Write-Output "waiting for $ctx on $sha (branch $branch, a copy of $env:TM_SHA)"
+          $deadline = [DateTime]::UtcNow.AddMinutes(6)
+          while ($true) {
+            $st = $null
+            try {
+              $all = Invoke-RestMethod -TimeoutSec 30 -Headers $headers "$api/commits/$sha/statuses?per_page=100"
+              # Only a status set during this run counts.
+              $st = @($all | Where-Object {
+                  $_.context -eq $ctx -and
+                  [string]::CompareOrdinal(([DateTime]$_.created_at).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ'), $start) -ge 0
+                })[0]
+            } catch { Write-Output "api error: $($_.Exception.Message)" }
+            if ($st) {
+              $created = ([DateTime]$st.created_at).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+              Write-Output "$([DateTime]::UtcNow.ToString('HH:mm:ss')) ${ctx}: $($st.state) $created $($st.description)"
+              if ($st.state -eq 'success') { break }
+              if ($st.state -in @('failure', 'error')) { Write-Output "::error::$ctx is $($st.state): $($st.description)"; exit 1 }
+            } else {
+              Write-Output "$([DateTime]::UtcNow.ToString('HH:mm:ss')) ${ctx}: none"
+            }
+            if ([DateTime]::UtcNow -gt $deadline) { Write-Output "::error::$ctx did not succeed within 6 minutes"; exit 1 }
+            Start-Sleep -Seconds 10
+          }
+          # The job ran under Tentmaker, not GitHub's runner: the broker keeps
+          # the check's log, and it shows the env Tentmaker set.
+          $log = "$env:ProgramData\Tentmaker\state\checks\$($env:REPO -replace '/', '_')-$($sha.Substring(0, 12))-smoke-windows.log"
+          if (-not (Test-Path $log)) { Write-Output "::error::no check log at $log"; exit 1 }
+          Get-Content $log
+          if (-not (Select-String -Path $log -Pattern '^state: success' -Quiet)) { Write-Output "::error::$log does not record success"; exit 1 }
+          if (-not (Select-String -Path $log -Pattern 'TENTMAKER=1 GITHUB_ACTIONS=unset' -SimpleMatch -Quiet)) { Write-Output "::error::$log does not show TENTMAKER=1 GITHUB_ACTIONS=unset"; exit 1 }
+
+      - name: dump on failure
+        if: failure()
+        run: |
+          $ErrorActionPreference = 'Continue'
+          Write-Output "== status"; try { tentmaker status --json } catch { Write-Output $_ }
+          Write-Output "== daemon log"; Get-Content -Tail 400 "$env:ProgramData\Tentmaker\logs\tentmaker.log" -ErrorAction SilentlyContinue
+          Write-Output "== state files"
+          Get-ChildItem -Recurse -Depth 4 "$env:ProgramData\Tentmaker" -ErrorAction SilentlyContinue | Where-Object { $_.FullName -notmatch '\\runner\\' } | Select-Object -First 200 -ExpandProperty FullName
+          Get-ChildItem -Recurse -File "$env:ProgramData\Tentmaker" -Include log.txt, result.json, state.json, 'broker*.json' -ErrorAction SilentlyContinue |
+            ForEach-Object { Write-Output "== $($_.FullName)"; Get-Content -Tail 300 $_.FullName }
+          exit 0
+
+      - name: delete the throwaway branch
+        if: always() && env.TM_E2E_BRANCH != ''
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          $headers = @{ Authorization = "Bearer $env:GITHUB_TOKEN"; Accept = 'application/vnd.github+json'; 'User-Agent' = 'tentmaker-e2e' }
+          try { Invoke-RestMethod -TimeoutSec 30 -Method Delete -Headers $headers "https://api.github.com/repos/$env:REPO/git/refs/heads/$env:TM_E2E_BRANCH" | Out-Null }
+          catch { Write-Output "::warning::could not delete $env:TM_E2E_BRANCH" }
+
+      - name: uninstall --purge
+        if: ${{ !cancelled() && steps.setup.outcome != 'skipped' }}
+        run: |
+          $out = (tentmaker uninstall --purge --yes --json) -join "`n"; Write-Output $out
+          $v = $out | ConvertFrom-Json
+          if (-not ($v.ok -and $v.purged)) { Write-Output "::error::uninstall did not finish"; exit 1 }
+          $left = @()
+          if (Get-Service Tentmaker -ErrorAction SilentlyContinue) { $left += 'service' }
+          if (Get-LocalUser tentmaker-runner -ErrorAction SilentlyContinue) { $left += 'user:tentmaker-runner' }
+          if (Test-Path "$env:ProgramData\Tentmaker") {
+            $left += "$env:ProgramData\Tentmaker"
+            Get-ChildItem -Recurse -Force "$env:ProgramData\Tentmaker" | Select-Object -First 50 -ExpandProperty FullName
+          }
+          if ($left.Count -gt 0) { Write-Output "::error::left after uninstall --purge: $($left -join ', ')"; exit 1 }
+          tentmaker version
+          if ($LASTEXITCODE -ne 0) { exit 1 }

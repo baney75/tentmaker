@@ -1,0 +1,9 @@
+{
+ "case": "schedule-boost",
+ "responder": "haiku",
+ "sample": 0,
+ "models": [
+  "claude-haiku-5-5"
+ ],
+ "text": "Yes. A schedule window can set the profile to boost, and boost ignores `boost_needs_idle`, which is why the device rarely reaches it today. Your laptop is on AC power at its desk, so the window's \"needs AC\" condition is met. I haven't changed anything yet. First I'd check the current state:\n\n```sh\ntentmaker budget --json\ntentmaker doctor --json\n```\n\nThen I'd add a weekday overnight window:\n\n```sh\nsudo tentmaker schedule add --name nights --days mon-fri --from 22:00 --to 07:00 --profile boost --json\ntentmaker budget --json\n```\n\nThe `--to` time is earlier than `--from`, so the window spans midnight. `tentmaker budget --json` should then show the boost profile during the window. Each job reserves 2 GiB and 2 CPUs by default, so 12 GiB fits about six jobs at once.\n\nBefore I run the schedule command, I need to know:\n\n1. **Does the laptop stay awake overnight?** If it suspends on idle or when the lid is closed, no jobs run whatever the budget says. Tell me whether the lid is open and whether the screen or system sleeps, or I'll check the power settings with you.\n2. **Are 22:00 to 07:00 on weekdays the right hours?** Tell me your time zone if it isn't local to the machine.\n3. **Is 12 GiB the right overnight ceiling?** The window uses the boost memory you set, so I can leave it, or lower it with `sudo tentmaker budget set --boost-memory SIZE --json` if you want less pressure on the machine while you're at it.\n4. **Is anything else using this laptop overnight,** such as a backup, a video call or a long download? If so, I'd add a `pause` or a guard for it instead of relying on the window alone.\n\nOnce you answer these, I'll run the schedule command and verify it with `tentmaker budget --json`."
+}

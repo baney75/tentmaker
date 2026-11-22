@@ -1,0 +1,10 @@
+{
+ "case": "pause-gaming",
+ "responder": "sonnet",
+ "sample": 0,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "Pausing is on the list of everyday changes, so nothing needs your approval first. I'd run:\n\n```sh\nsudo tentmaker pause --for 8h --json gaming\ntentmaker budget --json\n```\n\nThe first command pauses CI for 8 hours with the reason \"gaming\". The second confirms the device shows as paused.\n\n- **Running jobs:** a job already in progress will finish, since pause only stops new ones from starting. If one is running when you start your game, you'll see some load until it ends.\n- **Duration:** you didn't give one, so I picked 8 hours to cover the evening. I can use a different value if you prefer.\n- **Ending it early:** once you're done, run `sudo tentmaker resume`."
+}

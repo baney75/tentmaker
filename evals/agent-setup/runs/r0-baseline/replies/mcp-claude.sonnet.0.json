@@ -1,0 +1,10 @@
+{
+ "case": "mcp-claude",
+ "responder": "sonnet",
+ "sample": 0,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "Nothing to ask first. The command is from the README:\n\n```sh\nclaude mcp add tentmaker -- tentmaker mcp\n```\n\nThen check that it registered:\n\n```sh\nclaude mcp list\n```\n\n- **Scope:** this registers it for the current project only (Claude Code's default scope). To have it in every project, run `claude mcp add --scope user tentmaker -- tentmaker mcp` instead.\n- **Permissions:** the read tools (`status`, `pool`, `doctor`) work as your normal user. Tools that change the device need the MCP server to run as root, and otherwise return an error saying so. If you want those, the server would have to be launched with sudo, which I'd check with you before setting up. For changes, the simpler route is running the CLI with `sudo tentmaker ...` yourself.\n\nTell me if you want the user-scope version, and I'll run it."
+}

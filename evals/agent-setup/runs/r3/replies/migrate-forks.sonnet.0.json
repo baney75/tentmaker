@@ -1,0 +1,10 @@
+{
+ "case": "migrate-forks",
+ "responder": "sonnet",
+ "sample": 0,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "I'd start with a read-only report, since `migrate` without `--write` changes nothing and needs no sudo:\n\n```sh\ncd ~/src/webapp\ntentmaker migrate . --json\n```\n\nIf any workflow has macOS jobs, I'd also run the report for that platform:\n\n```sh\ntentmaker migrate . --platform macos --json\n```\n\nI'd show you the report before changing anything. It lists which jobs get moved and which it leaves alone and why (deploy, publish, release or sign jobs, environments, write permissions, secrets, `sudo` on Linux, unsupported runner images).\n\n**What I'd ask you before the next step:**\n- Do you want me to run `--write` and edit `.github/workflows` in place? I won't touch your files without a yes.\n- Should I commit the result on a new branch (e.g. `tentmaker-migrate`)? I wouldn't push or open a PR unless you ask.\n\n**After your yes:**\n\n```sh\ntentmaker migrate . --write --json\ngit diff\ngit switch -c tentmaker-migrate\ngit commit -am \"Run CI on Tentmaker pool\"\n```\n\n**What the migrated jobs will do:**\n- They use the fork-aware `runs-on`, so fork pull requests go to GitHub-hosted `ubuntu-latest` and everything else goes to `[self-hosted, tentmaker, linux]`:\n  ```yaml\n  runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('[\"self-hosted\",\"tentmaker\",\"linux\"]') }}\n  ```\n- That expression is only routing, because a fork PR can edit the workflow it runs. The real boundary is that Tentmaker's broker refuses any job from a fork, whatever the workflow says.\n- Changed workflows also get a concurrency block that cancels a pull request's older run.\n\nSince `acme/webapp` is already set up as a broker and doctor is clean, no setup or sudo is needed. One thing I'd check in the report is whether the repo is public. If it is, `--allow-public` and the approval requirement for outside contributors would need to be in place before the pool serves it."
+}

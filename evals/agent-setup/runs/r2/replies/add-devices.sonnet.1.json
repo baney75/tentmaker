@@ -1,0 +1,10 @@
+{
+ "case": "add-devices",
+ "responder": "sonnet",
+ "sample": 1,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "I'll add both as workers, which is the default without `--repo`. They take jobs from this laptop and never hold a forge token, so I don't need your approval for a token. First I'd confirm this laptop is set up and that both hosts allow what `devices add` needs (Tailscale SSH for you, and passwordless sudo):\n\n```sh\ntentmaker status --json\ntailscale ssh desktop sudo -n true; echo \"desktop exit: $?\"\ntailscale ssh homeserver sudo -n true; echo \"homeserver exit: $?\"\n```\n\nIf both exit 0, I'd add them with the default budgets (a quarter of RAM everyday, half on AC power):\n\n```sh\ntentmaker devices add desktop --json\ntentmaker devices add homeserver --json\n```\n\nThen I'd verify:\n\n```sh\ntentmaker pool --json\n```\n\nDone when `pool` lists `desktop` and `homeserver` alongside this laptop.\n\n**Questions for you:**\n1. Do you want specific budgets for either machine? If so, I'd add `--memory 4GiB --boost-memory 16GiB` (or your numbers) to that host's command. Otherwise I'll use the defaults.\n2. Should either machine also act as a broker for acme/webapp? That would put a forge token on it, and I'd need your yes first. I'm assuming worker-only.\n\n**If a check fails:**\n- **Tailscale SSH not allowed:** I can't fix that from here. You'd need to allow it for your user in your tailnet ACLs, or I can hand you the setup command to run directly on that machine.\n- **sudo asks for a password:** nobody can type it over this connection, so you'd either enable passwordless sudo for your user on that host or run the installer there yourself:\n  ```sh\n  curl -fsSL https://raw.githubusercontent.com/baney75/tentmaker/main/scripts/install.sh | sh\n  sudo tentmaker setup --no-gh\n  ```"
+}

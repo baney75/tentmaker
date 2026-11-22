@@ -1,0 +1,14 @@
+{
+ "stamp": "r2",
+ "commit": "4a08827018e2ea1ecc0015c207590ba62193ff74",
+ "dirty": true,
+ "claude": "2.1.328 (Claude Code)",
+ "responders": [
+  "haiku",
+  "sonnet"
+ ],
+ "judge": "opus",
+ "samples": 2,
+ "penalty": 0.25,
+ "docs_from": "repo"
+}

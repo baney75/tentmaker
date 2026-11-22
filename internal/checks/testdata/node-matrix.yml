@@ -1,0 +1,41 @@
+name: Node
+on:
+  pull_request:
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [20]
+        os: [ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm test -- --runner=${{ runner.os }}-${{ matrix.node }}
+  wide:
+    strategy:
+      matrix:
+        node: [18, 20, 22]
+    runs-on: ubuntu-latest
+    steps:
+      - run: npm test
+  included:
+    strategy:
+      matrix:
+        include:
+          - python: "3.10"
+            label: py310
+    name: Python ${{ matrix.python }}
+    runs-on: windows-latest
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pytest
+        shell: pwsh
+      - run: echo ${{ matrix.missing }}

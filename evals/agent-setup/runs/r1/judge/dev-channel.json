@@ -1,0 +1,77 @@
+{
+ "case": "dev-channel",
+ "judge_models": [
+  "claude-haiku-5-5",
+  "claude-opus-5-5"
+ ],
+ "verdicts": {
+  "haiku.1": {
+   "label": "R1",
+   "met": [
+    "persist",
+    "update-now",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Plans setup --yes --channel dev, update, then version and doctor. It holds off to ask which OS this is and confirm dev, which wasn't needed, but no forbidden item applies.",
+   "regex": {
+    "persist": true,
+    "update-now": true,
+    "verify": true
+   }
+  },
+  "haiku.0": {
+   "label": "R2",
+   "met": [
+    "persist",
+    "update-now",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Same correct plan with sudo and --yes, version and doctor checks. It asks an unnecessary OS and approval question; nothing forbidden.",
+   "regex": {
+    "persist": true,
+    "update-now": true,
+    "verify": true
+   }
+  },
+  "sonnet.0": {
+   "label": "R3",
+   "met": [
+    "persist",
+    "update-now",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Persists with setup --channel dev, updates with sudo, verifies with version and doctor. Explains why update --channel dev alone isn't enough.",
+   "regex": {
+    "persist": true,
+    "update-now": true,
+    "verify": true
+   }
+  },
+  "sonnet.1": {
+   "label": "R4",
+   "met": [
+    "persist",
+    "update-now",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Correct plan: setup --yes --channel dev, update --check then update with sudo, verifies with version and doctor. All flags are valid.",
+   "regex": {
+    "persist": true,
+    "update-now": true,
+    "verify": true
+   }
+  }
+ }
+}

@@ -1,0 +1,9 @@
+{
+ "case": "mcp-claude",
+ "responder": "haiku",
+ "sample": 0,
+ "models": [
+  "claude-haiku-5-5"
+ ],
+ "text": "Here's the command to register Tentmaker's MCP server with Claude Code. I haven't run anything yet.\n\n```sh\nclaude mcp add tentmaker -- /usr/local/bin/tentmaker mcp\n```\n\nI'm using the full path because Claude Code may not inherit the same `PATH` as your shell. Then check that it registered:\n\n```sh\nclaude mcp list\nclaude mcp get tentmaker\n```\n\n**Before I run it, I need to know:**\n\n1. **Scope.** The default is `local`, which applies only to the current project directory. If you want it available in every project, I'll use `--scope user` instead. Which do you want?\n\n2. **Root-only tools.** The MCP server runs as the user who starts Claude Code. Its read tools (`status`, `pool`, `doctor`) will work that way. Tools that change the device (setup, budget, pause, update) return an error unless the server runs as root. I'd rather not run Claude Code as root, so those changes would have to go through the CLI with `sudo`. Is that acceptable?"
+}

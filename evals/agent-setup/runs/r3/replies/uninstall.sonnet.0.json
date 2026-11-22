@@ -1,0 +1,10 @@
+{
+ "case": "uninstall",
+ "responder": "sonnet",
+ "sample": 0,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "I haven't run anything yet. Two things need your yes first.\n\n**Questions**\n\n1. **Purge:** `uninstall --purge` deletes this laptop's Tentmaker config, the forge token in the secret store, state, cache and logs. Is that what you want?\n2. **acme/webapp's workflows:** they use `runs-on: [self-hosted, tentmaker, ...]`, and this laptop is the only device serving that repo. Once Tentmaker is gone, those jobs will wait forever for a runner. Do you want me to point them back at hosted runners first? That means editing `.github/workflows` on a branch for you to review, and I'd need the checkout path. If you'd rather handle it yourself, or leave them as they are, tell me.\n\n**Commands I'd run after your yes**\n\nRead-only check first, to see whether jobs are running:\n```sh\ntentmaker status --json\ntentmaker repo list --json\n```\nIf a job is running, I'd tell you before stopping it.\n\nRemove the service, sandboxes and all data:\n```sh\nsudo tentmaker uninstall --purge --yes --json\n```\n\nThen delete the binary, which uninstall leaves behind:\n```sh\nsudo rm /usr/local/bin/tentmaker\n```\n\nThen confirm nothing is left:\n```sh\ncommand -v tentmaker\nls \"/Library/LaunchDaemons/dev.tentmaker.daemon.plist\" \"/Library/Application Support/Tentmaker\" 2>&1\n```\nBoth should report \"not found\" or \"No such file\".\n\nI'd delete nothing else by hand. If you want the workflow revert, I'd edit the `runs-on` lines, remove the concurrency block migrate added, and leave the diff for you to commit."
+}

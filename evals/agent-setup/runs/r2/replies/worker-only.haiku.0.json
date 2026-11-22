@@ -1,0 +1,9 @@
+{
+ "case": "worker-only",
+ "responder": "haiku",
+ "sample": 0,
+ "models": [
+  "claude-haiku-5-5"
+ ],
+ "text": "Before I run anything, I need two answers from you:\n\n1. **Should I log gh out on this Mac mini?** Setup with `--no-gh` won't read the token, but `gh` still keeps it in the keychain on this machine. Logging out removes it, though `gh` will stop working here and any other tools using that login will break. Say yes and I'll run `gh auth logout`, or do it yourself.\n2. **Are the defaults right?** Setup will use a device name taken from the hostname, a quarter of RAM for everyday CI (2 to 8 GiB), and half of RAM on AC power (at most 32 GiB). Tell me a different name or memory cap if you want one, since this is an old machine.\n\nOnce you answer, these are the commands I'd run on the Mac mini. Setup with `--no-gh` and no `--repo` makes it a worker: it takes jobs from your laptop's broker and never holds a forge token.\n\n```sh\n# 1. Install the binary only (no token is read)\ncurl -fsSL https://raw.githubusercontent.com/baney75/tentmaker/main/scripts/install.sh | sh -s -- --no-setup\n\n# 2. Set up as a worker, no forge token\nsudo tentmaker setup --yes --json --no-gh\n\n# 3. Check it\ntentmaker doctor --json\ntentmaker version --json\n```\n\nThen, from the laptop:\n\n```sh\ntentmaker pool --json\n```\n\nThe Mac mini should appear in the pool. If it doesn't, check that both devices are on the same tailnet, signed in as the same Tailscale user, and use the default pool name (`default`).\n\nOne limit to know: Tentmaker can't keep a token off this machine by design alone. Jobs from GitHub or a forge still reach this worker, but the laptop downloads the source and sends it over, so the job never sees a token or a forge URL. Tokens stay on the laptop."
+}

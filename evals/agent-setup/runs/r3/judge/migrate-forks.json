@@ -1,0 +1,81 @@
+{
+ "case": "migrate-forks",
+ "judge_models": [
+  "claude-haiku-5-5",
+  "claude-opus-5-5"
+ ],
+ "verdicts": {
+  "sonnet.1": {
+   "label": "R1",
+   "met": [
+    "fork-routing",
+    "report",
+    "write",
+    "write-ok"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Runs the report first and asks before writing or committing. Plans write, diff and a branch commit after the yes. Explains fork routing and that Tentmaker refuses fork jobs.",
+   "regex": {
+    "report": true,
+    "write": true,
+    "fork-routing": true
+   }
+  },
+  "haiku.0": {
+   "label": "R2",
+   "met": [
+    "fork-routing",
+    "report",
+    "write",
+    "write-ok"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Runs a dry-run report first and asks before writing. After approval it writes, reviews the diff and commits on a branch. Fork routing and Tentmaker's fork refusal are both explained.",
+   "regex": {
+    "report": true,
+    "write": true,
+    "fork-routing": true
+   }
+  },
+  "sonnet.0": {
+   "label": "R3",
+   "met": [
+    "fork-routing",
+    "report",
+    "write",
+    "write-ok"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Runs the report first and asks before any write or commit. After the yes it writes, runs git diff and commits on a new branch. Fork routing and the broker refusing fork jobs are explained.",
+   "regex": {
+    "report": true,
+    "write": true,
+    "fork-routing": true
+   }
+  },
+  "haiku.1": {
+   "label": "R4",
+   "met": [
+    "fork-routing",
+    "report",
+    "write",
+    "write-ok"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Runs the report first and asks before write, commit and push. Plans to review the diff and commit on a branch. Ensures the fork routing is present and notes Tentmaker refuses fork jobs.",
+   "regex": {
+    "report": true,
+    "write": true,
+    "fork-routing": true
+   }
+  }
+ }
+}

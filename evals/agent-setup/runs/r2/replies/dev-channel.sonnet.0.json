@@ -1,0 +1,10 @@
+{
+ "case": "dev-channel",
+ "responder": "sonnet",
+ "sample": 0,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "I don't need to ask you anything first. This doesn't cost money, touch a public repo, give a device a token, or write your files. Passwordless sudo works, so I can run everything myself.\n\n1. Check the current state:\n```sh\ntentmaker version --json; tentmaker status --json\n```\n\n2. Save the dev channel. Setup keeps every other value you've already set. It restarts the service, but running jobs keep going.\n```sh\nsudo tentmaker setup --yes --json --channel dev\n```\nIt's done when it exits 0 and every entry in `steps` succeeded.\n\n3. Install the latest dev build:\n```sh\nsudo tentmaker update --json\n```\nThis verifies the sha256, swaps the binary in, restarts the service, and rolls back automatically if the service isn't healthy within 60 seconds. If anything looks wrong, `sudo tentmaker rollback` undoes it.\n\n4. Verify:\n```sh\ntentmaker version --json\ntentmaker doctor --json\n```\n`version` should show a dev build (like `0.1.1-dev.<timestamp>.<sha>`). `doctor` should exit 0. If it reports problems, I'll apply each fix and rerun it.\n\nI'm not using `sudo tentmaker update --channel dev` on its own. That would install one dev build but leave auto-updates on the saved stable channel, so the device would drift back."
+}

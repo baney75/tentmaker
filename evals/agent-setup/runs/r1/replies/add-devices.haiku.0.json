@@ -1,0 +1,9 @@
+{
+ "case": "add-devices",
+ "responder": "haiku",
+ "sample": 0,
+ "models": [
+  "claude-haiku-5-5"
+ ],
+ "text": "Before I run anything, I need a few answers. I haven't checked either machine, and this session reports `darwin`, not the Linux laptop you described, so I'll confirm which machine this is.\n\n**Questions first:**\n\n1. **Worker or broker?** I'd add both as workers: no forge token, no `--repo`. They take jobs from this machine and never hold your GitHub credentials. Should either one hold a token instead?\n2. **Budgets:** should I use the defaults (a quarter of RAM everyday, half when plugged in), or set limits? The homeserver may be always-on, so it may need a lower everyday cap.\n3. **Remote changes:** `devices add` SSHes into each machine and, as root, installs the binary and the system service. It needs Tailscale SSH and passwordless `sudo` on both. Is it OK to make those changes on both machines?\n4. **Hostnames:** `desktop` and `homeserver` are my guesses. Tell me if the tailnet names differ.\n\n**Commands I'd run once you confirm:**\n\n```sh\n# 1. Confirm this machine is set up and see the current pool\ntentmaker status --json\ntentmaker pool --json\n\n# 2. Confirm the tailnet names and that SSH reaches each machine\ntailscale status\ntailscale ssh desktop 'sudo -n true && echo ok'\ntailscale ssh homeserver 'sudo -n true && echo ok'\n\n# 3. Add each device as a worker (add --memory/--boost-memory if you want limits)\ntentmaker devices add desktop --json\ntentmaker devices add homeserver --json\n\n# 4. Verify both joined and the broker is healthy\ntentmaker pool --json\ntentmaker doctor --json\n```\n\nIf step 2 fails for a host, I'll stop there, because `devices add` can't finish without passwordless `sudo`. I'd tell you what to change on that machine (for example, a sudoers entry for your user) and wait for you to do it, rather than editing its sudo configuration myself."
+}

@@ -1,0 +1,10 @@
+{
+ "case": "pause-gaming",
+ "responder": "sonnet",
+ "sample": 0,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "No need to ask you anything first. Pausing is reversible and doesn't touch your files or tokens. I'm assuming about 6 hours covers your session, so tell me if you want a different length.\n\n```sh\nsudo tentmaker pause --for 6h --json gaming\n```\n\nThen check that it took effect:\n\n```sh\ntentmaker budget --json\n```\n\n- **Running jobs:** A pause stops new jobs from starting, but jobs already running will finish. If one is running now, it may still use CPU and memory for a few minutes.\n- **Ending the pause:** `sudo tentmaker resume` ends it early, for example when you're done playing. Otherwise it expires on its own after 6 hours.\n- **Future sessions:** Tentmaker can pause automatically whenever a game is running. That's the `[guards]` process list in the config file, and it needs a config edit and a service restart. I can walk you through it if you'd like."
+}

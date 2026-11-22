@@ -1,0 +1,10 @@
+{
+ "case": "migrate-forks",
+ "responder": "sonnet",
+ "sample": 0,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "I'll start with the read-only report, since `migrate --write` edits your files and needs your yes first.\n\n**Run now (no files change):**\n\n```sh\ncd ~/src/webapp          # my session's working directory isn't this checkout\ngit status --short       # confirm it's clean\ntentmaker migrate . --json\n```\n\nIf any jobs use `runs-on: macos-*`, I'll also run the same report with `--platform macos`:\n\n```sh\ntentmaker migrate . --platform macos --json\n```\n\nThe report lists which jobs would move. It leaves jobs alone if they deploy, publish, release or sign, use an environment, ask for write permissions, or read secrets. It also skips Linux jobs that use `sudo` and runner images Tentmaker doesn't stand in for. Migrated jobs get this `runs-on`, which sends fork PRs to GitHub-hosted runners:\n\n```yaml\nruns-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('[\"self-hosted\",\"tentmaker\",\"linux\"]') }}\n```\n\nChanged workflows also get a concurrency block that cancels a PR's older run. This routing is not the security boundary: Tentmaker itself never runs a fork's job, whatever the workflow says.\n\n**Questions for you before I write anything:**\n1. After I show you the report, may I run `migrate --write` on `acme/webapp`'s `.github/workflows`?\n2. May I create a branch and commit the change? I'd leave the push and PR to you unless you tell me otherwise.\n\n**If you say yes, I'd run:**\n\n```sh\ngit switch -c tentmaker-runners\ntentmaker migrate . --write --json\ngit diff\ngit add .github/workflows\ngit commit -m \"Run CI on Tentmaker runners; keep fork PRs on GitHub-hosted\"\n```\n\nI'll show you the diff and the list of skipped jobs. Those jobs will stay on GitHub-hosted runners unless you decide to change them yourself."
+}

@@ -1,0 +1,9 @@
+{
+ "case": "schedule-boost",
+ "responder": "haiku",
+ "sample": 0,
+ "models": [
+  "claude-haiku-5-5"
+ ],
+ "text": "Yes. Boost only applies when the machine is plugged in and has been idle for 10 minutes, which is why it rarely gets there. A schedule window set to `boost` doesn't wait for idle, so it can use the 12 GiB budget overnight on weekdays while the laptop stays on AC power.\n\n**Ask you first:**\n- Are 22:00 to 07:00 the right hours? Those are local times.\n- Does the laptop stay plugged in overnight? A boost window still needs AC power, so on battery it falls back to the everyday budget.\n- Is 12 GiB safe to use while you're asleep? Guards still apply: a job is paused if less than 2 GiB stays free for you.\n\n**Commands I'd run, once you confirm:**\n\n```sh\nsudo tentmaker schedule add --name nights --days mon-fri --from 22:00 --to 07:00 --profile boost --json\ntentmaker budget --json\n```\n\nThe first command adds the window. The second checks that it's listed and shows the current profile.\n\nI'd also check how a Friday night window is handled, since the window starts on Friday and runs past midnight. Confirm it with `tentmaker budget --json` after the change, or in the `schedule` output, and make sure the weekend end time behaves the way you expect.\n\nIf you'd rather not run this overnight, `sudo tentmaker schedule remove nights` undoes it, if that subcommand exists in your version. Check with `tentmaker schedule --help`."
+}

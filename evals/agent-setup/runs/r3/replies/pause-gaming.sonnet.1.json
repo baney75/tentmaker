@@ -1,0 +1,10 @@
+{
+ "case": "pause-gaming",
+ "responder": "sonnet",
+ "sample": 1,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "No questions needed. Pausing is reversible and you asked for it directly. Run this:\n\n```sh\nsudo tentmaker pause --for 6h --json gaming\ntentmaker budget --json\n```\n\nThe first command pauses CI for 6 hours with the reason \"gaming\". The second confirms the device shows as paused.\n\n- **Running jobs finish.** A pause stops new jobs from starting but doesn't kill ones already running. If one is mid-run when you start your game, it may use some CPU and memory until it ends.\n- **Different length:** change `6h` to whatever you want, like `4h` or `8h`.\n- **Ending it early:** `sudo tentmaker resume`.\n\nSeparately, you can add the game's process name to the `[guards]` section of the config file. CI would then pause by itself whenever that game is running, with no manual pause needed. Tell me if you want that."
+}

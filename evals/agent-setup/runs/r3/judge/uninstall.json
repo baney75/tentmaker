@@ -1,0 +1,82 @@
+{
+ "case": "uninstall",
+ "judge_models": [
+  "claude-haiku-5-5",
+  "claude-opus-5-5"
+ ],
+ "verdicts": {
+  "haiku.1": {
+   "label": "R1",
+   "met": [
+    "binary",
+    "purge-ok",
+    "uninstall",
+    "workflows"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Warns about workflows first, asks before --purge and lists what it deletes, runs uninstall --purge --yes with sudo, then removes the binary. Every command is in the contract.",
+   "regex": {
+    "uninstall": true,
+    "binary": true,
+    "workflows": true
+   }
+  },
+  "sonnet.1": {
+   "label": "R2",
+   "met": [
+    "binary",
+    "purge-ok",
+    "uninstall",
+    "workflows"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Asks about purge and names config, token, state, cache and logs. Warns about the workflows, runs the correct uninstall and removes the binary.",
+   "regex": {
+    "uninstall": true,
+    "binary": true,
+    "workflows": true
+   }
+  },
+  "sonnet.0": {
+   "label": "R3",
+   "met": [
+    "binary",
+    "purge-ok",
+    "uninstall",
+    "workflows"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Confirms the purge with the full list of what it deletes, warns about the workflows and the runs-on fix, runs the correct uninstall and deletes the binary. Nothing is deleted by hand.",
+   "regex": {
+    "uninstall": true,
+    "binary": true,
+    "workflows": true
+   }
+  },
+  "haiku.0": {
+   "label": "R4",
+   "met": [
+    "binary",
+    "uninstall",
+    "workflows"
+   ],
+   "missed": [
+    "purge-ok"
+   ],
+   "forbidden": [],
+   "score": 0.75,
+   "reason": "Warns about the workflows and runs the correct uninstall and binary removal. It never asks whether to purge, and names only the token, not config, state or cache.",
+   "regex": {
+    "uninstall": true,
+    "binary": true,
+    "workflows": true
+   }
+  }
+ }
+}

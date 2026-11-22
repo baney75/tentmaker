@@ -1,0 +1,89 @@
+{
+ "case": "gitlab-selfhosted",
+ "judge_models": [
+  "claude-haiku-5-5",
+  "claude-opus-5-5"
+ ],
+ "verdicts": {
+  "sonnet.1": {
+   "label": "R1",
+   "met": [
+    "checks-mode",
+    "connect",
+    "repo-add",
+    "token-ok",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Asks about the token and broker role, and has the person paste the token over stdin. Adds the repo with --forge gitlab, explains checks-mode statuses and runs doctor. Every flag is valid.",
+   "regex": {
+    "connect": true,
+    "repo-add": true,
+    "checks-mode": true,
+    "verify": true
+   }
+  },
+  "haiku.0": {
+   "label": "R2",
+   "met": [
+    "checks-mode",
+    "connect",
+    "repo-add",
+    "token-ok",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Asks first and has the token pasted over stdin. Uses correct repo add, explains checks mode with tentmaker/<job> statuses and verifies with doctor. Its odd macOS question is harmless.",
+   "regex": {
+    "connect": true,
+    "repo-add": true,
+    "checks-mode": true,
+    "verify": true
+   }
+  },
+  "haiku.1": {
+   "label": "R3",
+   "met": [
+    "checks-mode",
+    "connect",
+    "repo-add",
+    "token-ok",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Asks for approval and has the person make an api-scoped token for stdin. Repo add is correct, checks mode and statuses are explained, and doctor runs. No made-up flags.",
+   "regex": {
+    "connect": true,
+    "repo-add": true,
+    "checks-mode": true,
+    "verify": true
+   }
+  },
+  "sonnet.0": {
+   "label": "R4",
+   "met": [
+    "checks-mode",
+    "connect",
+    "repo-add",
+    "token-ok",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Asks for broker approval and the token first, with the token arriving over stdin. Repo add is correct, checks-mode statuses are explained and doctor verifies. --allow-public is only mentioned conditionally and is a real flag.",
+   "regex": {
+    "connect": true,
+    "repo-add": true,
+    "checks-mode": true,
+    "verify": true
+   }
+  }
+ }
+}

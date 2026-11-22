@@ -1,0 +1,3 @@
+go test fuzz v1
+[]byte("a:\naas  a:\n    runs-on: \"ubuntu-latest\" # a\n")
+byte('\x00')

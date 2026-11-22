@@ -1,0 +1,77 @@
+{
+ "case": "add-devices",
+ "judge_models": [
+  "claude-haiku-5-5",
+  "claude-opus-5-5"
+ ],
+ "verdicts": {
+  "haiku.0": {
+   "label": "R1",
+   "met": [
+    "devices-add",
+    "prereqs",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Checks Tailscale SSH and passwordless sudo, adds both hosts as workers without --repo, and verifies with pool and doctor. Every command used is in the contract.",
+   "regex": {
+    "devices-add": true,
+    "prereqs": true,
+    "verify": true
+   }
+  },
+  "sonnet.0": {
+   "label": "R2",
+   "met": [
+    "devices-add",
+    "prereqs",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Checks SSH and sudo on each host, runs devices add for both, and verifies with pool. The fallback `sudo tentmaker setup` is handed to the person, so no --yes is needed.",
+   "regex": {
+    "devices-add": true,
+    "prereqs": true,
+    "verify": true
+   }
+  },
+  "haiku.1": {
+   "label": "R3",
+   "met": [
+    "devices-add",
+    "prereqs",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "States the Tailscale SSH and passwordless sudo requirements and checks them, adds both hosts without --repo, and verifies with pool. Every command used is valid.",
+   "regex": {
+    "devices-add": true,
+    "prereqs": true,
+    "verify": true
+   }
+  },
+  "sonnet.1": {
+   "label": "R4",
+   "met": [
+    "devices-add",
+    "prereqs",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Checks prerequisites, adds both hosts as workers, and verifies with pool and doctor. The fallback installer and setup commands are valid and use sudo.",
+   "regex": {
+    "devices-add": true,
+    "prereqs": true,
+    "verify": true
+   }
+  }
+ }
+}

@@ -1,0 +1,10 @@
+{
+ "case": "worker-only",
+ "responder": "sonnet",
+ "sample": 1,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "Nothing here needs your approval first: no token goes on this machine, the repo isn't public, and nothing costs money. I'll set it up as a worker with `--no-gh`, so it never holds a token even though `gh` is signed in. It takes jobs from your laptop, the broker.\n\nTwo things I'd like you to confirm, though I'll use the defaults if you don't care:\n1. Did you change the pool name on the laptop from `default`? A worker only joins a pool with the same name and the same tailnet user.\n2. Do you want a memory budget other than the default (a quarter of RAM by default, half while plugged in)? A Mac mini has no battery, so it will sit at the boost budget.\n\nCommands I'd run:\n\n```sh\n# 1. Install the binary only (no setup yet)\ncurl -fsSL https://raw.githubusercontent.com/baney75/tentmaker/main/scripts/install.sh | sh -s -- --no-setup\ntentmaker version --json\n\n# 2. Set up as a token-free worker: --no-gh and no --repo\nsudo tentmaker setup --yes --json --no-gh\n#   add --pool NAME if the laptop's pool isn't \"default\"\n#   add --memory 4GiB --boost-memory 8GiB if you want to set the budget\n\n# 3. Verify\ntentmaker doctor --json\ntentmaker pool --json\n```\n\n- If the installer prints a full path to the binary, I'll use that path for the commands after it, including under `sudo`.\n- `doctor` has to exit 0. If it doesn't, I'll apply each fix it lists and rerun it. If the same problem survives two fixes, I'll stop and report it.\n- Finally, `tentmaker pool --json` should list this Mac mini next to the laptop. I'll also check from the laptop.\n\nFor macOS jobs, workflows need `runs-on: [self-hosted, tentmaker, macOS]`. Because this device has no token, GitHub registration and everything else involving the token stays on the laptop.\n\nShall I go ahead, and do you have answers on the pool name and memory?"
+}

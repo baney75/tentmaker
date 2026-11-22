@@ -1,0 +1,185 @@
+name: release
+
+# Two channels only:
+#   stable: a tag vX.Y.Z publishes a GitHub release (not a prerelease).
+#   dev:    every push to main rebuilds the rolling prerelease tagged "dev",
+#           version X.Y.Z-dev.<UTC yyyymmddHHMM>.<sha7>, where X.Y.Z is the
+#           patch after the newest stable tag (0.1.0 if none). The release
+#           name is the version; internal/update reads it from there.
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: read
+
+# One run per ref at a time. Never cancel a release halfway through.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    strategy:
+      fail-fast: true
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - run: go vet ./...
+      - run: go test ./...
+      - if: runner.os != 'Windows'
+        run: sh scripts/test-install.sh
+
+  stable:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: check the tag
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          if ! printf '%s\n' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::$TAG is not vX.Y.Z. Stable tags are plain versions; there are no rc or beta tags."
+            exit 1
+          fi
+      - name: build
+        env:
+          TAG: ${{ github.ref_name }}
+        run: scripts/build.sh "${TAG#v}"
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            dist/*.tar.gz
+            dist/*.zip
+      - name: release notes from the tag message
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          # actions/checkout can turn an annotated tag into a lightweight one; refetch it.
+          git fetch --force --no-tags origin "refs/tags/$TAG:refs/tags/$TAG"
+          if [ "$(git cat-file -t "$TAG")" = tag ]; then
+            git tag -l --format='%(contents:subject)%0a%0a%(contents:body)' "$TAG" > "$RUNNER_TEMP/notes.md"
+          fi
+          if [ ! -s "$RUNNER_TEMP/notes.md" ] || ! grep -q '[^[:space:]]' "$RUNNER_TEMP/notes.md"; then
+            echo "Tentmaker $TAG" > "$RUNNER_TEMP/notes.md"
+          fi
+          cat "$RUNNER_TEMP/notes.md"
+      - name: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            # A rerun: replace the assets, keep the release.
+            gh release upload "$TAG" dist/tentmaker_* dist/SHA256SUMS --clobber
+          else
+            gh release create "$TAG" dist/tentmaker_* dist/SHA256SUMS \
+              --verify-tag --title "Tentmaker $TAG" --notes-file "$RUNNER_TEMP/notes.md" --latest
+          fi
+
+  dev:
+    if: github.ref == 'refs/heads/main'
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Two dev releases never interleave. With cancel-in-progress false,
+    # GitHub lets the running dev release finish and cancels only a pending
+    # one: a newer push waits, and replaces any older push still waiting.
+    concurrency:
+      group: release-dev
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: version
+        id: version
+        run: |
+          latest=$(git tag -l 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1 || true)
+          if [ -z "$latest" ]; then
+            next=0.1.0
+          else
+            v=${latest#v}
+            major=${v%%.*}
+            rest=${v#*.}
+            minor=${rest%%.*}
+            patch=${rest#*.}
+            next="$major.$minor.$((patch + 1))"
+          fi
+          version="$next-dev.$(date -u +%Y%m%d%H%M).$(printf '%s' "$GITHUB_SHA" | cut -c1-7)"
+          echo "latest stable: ${latest:-none}; dev version: $version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: build
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: scripts/build.sh "$VERSION"
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            dist/*.tar.gz
+            dist/*.zip
+      - name: move the dev tag to this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/dev" >/dev/null 2>&1; then
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/dev" -f sha="$GITHUB_SHA" -F force=true >/dev/null
+          else
+            gh api -X POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref=refs/tags/dev -f sha="$GITHUB_SHA" >/dev/null
+          fi
+      - name: replace the dev release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          notes="Rolling dev build $VERSION from $GITHUB_SHA. Install: curl -fsSL https://raw.githubusercontent.com/$GITHUB_REPOSITORY/main/scripts/install.sh | sh -s -- --channel dev"
+          if gh release view dev >/dev/null 2>&1; then
+            gh release edit dev --title "$VERSION" --notes "$notes" --prerelease --latest=false
+            old=$(gh release view dev --json assets --jq '.assets[].name')
+            # Delete the old assets, then upload the new set. Until SHA256SUMS
+            # and the archives match again, installers refuse (fail closed).
+            for a in $old; do
+              gh release delete-asset dev "$a" --yes
+            done
+            gh release upload dev dist/tentmaker_* --clobber
+            gh release upload dev dist/SHA256SUMS --clobber
+          else
+            gh release create dev dist/tentmaker_* dist/SHA256SUMS \
+              --verify-tag --prerelease --latest=false --title "$VERSION" --notes "$notes"
+          fi

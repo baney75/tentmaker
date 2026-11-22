@@ -1,0 +1,10 @@
+{
+ "case": "doctor-low-disk",
+ "responder": "sonnet",
+ "sample": 1,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "Doctor shows one problem: the disk guard. The device has 11.4 GiB free at `/var/lib/tentmaker` and `min_free_disk` is 20 GiB, so it takes no new jobs. Everything else is fine. Run these on the Linux desktop. They only read, so nothing changes yet:\n\n```sh\ndf -h /var/lib/tentmaker\nsudo du -xh --max-depth=2 /var/lib/tentmaker 2>/dev/null | sort -h | tail -15\nsudo du -xh --max-depth=1 /var /home 2>/dev/null | sort -h | tail -10\njournalctl --disk-usage\nsudo -u tentmaker-runner podman system df\n```\n\nPaste the output and I'll say what's safe to remove. Before I delete anything, I need to know which of these you want:\n\n1. **Free space (preferred).** Candidates are leftover sandbox or cache data under `/var/lib/tentmaker`, unused podman images (`sudo -u tentmaker-runner podman system prune`), old journal logs (`sudo journalctl --vacuum-size=500M`), and your own large files. The prune and vacuum commands delete data, so I'll only run them with your yes. I'd also check that no job is running first (`tentmaker status --json`).\n2. **Lower the guard.** I'd rather not do this by default. The guard exists so CI doesn't fill the disk you use. Going from 20 GiB to about 10 GiB would let jobs start with 11.4 GiB free, but very low disk stops running jobs. If you want this, I'll first read `docs/config.md` for `guards.min_free_disk` and how the setting is reloaded. I don't know a CLI flag for it, so I won't guess one.\n\nAfter either fix, confirm:\n\n```sh\ntentmaker doctor --json\ntentmaker budget --json\n```\n\nIf doctor exits 0 and jobs still don't start, I'll check `tentmaker logs -n 200` next.\n\nWhich would you like, or should I wait for the `du` output?"
+}

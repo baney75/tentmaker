@@ -1,0 +1,3 @@
+go test fuzz v1
+[]byte("on: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n    timeout-minutes: 1e300\n    steps:\n      - run: echo hi\n")
+byte('\x00')

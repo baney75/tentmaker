@@ -1,0 +1,11 @@
+# A 60 second job the chaos scenario kills the daemon under.
+name: tm-scn-long
+on: [push, pull_request]
+jobs:
+  long:
+    runs-on: @RUNS_ON@
+    timeout-minutes: 5
+    steps:
+      - name: long
+        shell: @SHELL@
+        run: sleep 60

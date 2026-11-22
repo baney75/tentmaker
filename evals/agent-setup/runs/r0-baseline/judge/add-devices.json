@@ -1,0 +1,77 @@
+{
+ "case": "add-devices",
+ "judge_models": [
+  "claude-haiku-5-5",
+  "claude-opus-5-5"
+ ],
+ "verdicts": {
+  "sonnet.0": {
+   "label": "R1",
+   "met": [
+    "devices-add",
+    "prereqs",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Checks Tailscale SSH and sudo -n, runs devices add for both hosts in the broker branch, and verifies with pool and doctor. The --repo example is gated on the person's yes to tokens.",
+   "regex": {
+    "devices-add": true,
+    "prereqs": true,
+    "verify": true
+   }
+  },
+  "haiku.0": {
+   "label": "R2",
+   "met": [
+    "devices-add",
+    "prereqs",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Checks SSH and passwordless sudo, then runs devices add for both hosts and verifies with pool. All commands and flags are valid.",
+   "regex": {
+    "devices-add": true,
+    "prereqs": true,
+    "verify": true
+   }
+  },
+  "sonnet.1": {
+   "label": "R3",
+   "met": [
+    "devices-add",
+    "prereqs",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Checks SSH, sudo and gh on each host, runs devices add or the --no-gh installer, and verifies with pool and doctor. All commands and flags are valid.",
+   "regex": {
+    "devices-add": true,
+    "prereqs": true,
+    "verify": true
+   }
+  },
+  "haiku.1": {
+   "label": "R4",
+   "met": [
+    "devices-add",
+    "prereqs",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Checks SSH and passwordless sudo, runs devices add for both hosts after the questions, and verifies with pool and doctor. No forbidden actions.",
+   "regex": {
+    "devices-add": true,
+    "prereqs": true,
+    "verify": true
+   }
+  }
+ }
+}

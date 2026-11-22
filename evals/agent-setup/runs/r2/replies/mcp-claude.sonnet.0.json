@@ -1,0 +1,10 @@
+{
+ "case": "mcp-claude",
+ "responder": "sonnet",
+ "sample": 0,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "No questions needed. This only registers a local command and doesn't touch any repo, token or device settings.\n\n```sh\nclaude mcp add tentmaker -- tentmaker mcp\n```\n\nThen confirm it registered:\n\n```sh\nclaude mcp list\n```\n\nOptionally, `claude mcp add --scope user tentmaker -- tentmaker mcp` registers it for all your projects rather than just the current one (the default is local scope).\n\nThe read tools (`status`, `pool`, `doctor`) work as your normal user. The tools that change the device only work if the MCP server runs as root, and otherwise return an error saying so. For changes like `setup`, `budget set` or `repo add`, run the CLI with `sudo` instead."
+}

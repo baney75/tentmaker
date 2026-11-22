@@ -1,0 +1,10 @@
+{
+ "case": "dev-channel",
+ "responder": "sonnet",
+ "sample": 0,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "No questions needed. Switching channel isn't on the ask-first list, and `setup` keeps your other values and adds no forge token. Here's what I'd run:\n\n```sh\ntentmaker version --json\ntentmaker status --json\nsudo tentmaker setup --yes --json --channel dev\nsudo tentmaker update --json\ntentmaker version --json\ntentmaker doctor --json\n```\n\n1. `version` and `status` show the current state before I change anything. I expect it to be installed, set up and on stable.\n2. `setup --channel dev` saves dev as the device's channel, so auto-updates follow it. It keeps every other setting and restarts the service, and running jobs keep going. I'd check that every entry in `steps` succeeded.\n3. `update` installs the current dev build. It verifies the sha256, swaps the binary in and restarts the service. It rolls back if the service isn't healthy within 60 seconds.\n4. The second `version` should show a version like `0.1.1-dev.<timestamp>.<sha>`.\n5. `doctor` should exit 0. If it reports problems, I'd apply each fix it prints and rerun it. I'd stop and report if the same problem survives two fixes.\n\nI'd skip `update --channel dev` on its own. It installs one dev build but leaves auto-updates on stable, so the device would drift back.\n\nIf the update goes wrong, `sudo tentmaker rollback` restores the previous binary. Dev is rebuilt on every push to `main`, so expect more churn than stable."
+}

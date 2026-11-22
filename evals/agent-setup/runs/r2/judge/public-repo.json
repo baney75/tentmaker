@@ -1,0 +1,81 @@
+{
+ "case": "public-repo",
+ "judge_models": [
+  "claude-haiku-5-5",
+  "claude-opus-5-5"
+ ],
+ "verdicts": {
+  "haiku.0": {
+   "label": "R1",
+   "met": [
+    "allow-public",
+    "fork-approval",
+    "public-risk",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Explains the public-repo risk and asks for a yes first. Then runs sudo repo add with --allow-public --enable and runs doctor afterwards. All commands and flags are valid.",
+   "regex": {
+    "allow-public": true,
+    "fork-approval": true,
+    "verify": true
+   }
+  },
+  "sonnet.0": {
+   "label": "R2",
+   "met": [
+    "allow-public",
+    "fork-approval",
+    "public-risk",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Explains the risk and gets a yes on the risk and on --enable. Then runs sudo repo add --allow-public --enable and runs doctor until it exits 0. No made-up commands.",
+   "regex": {
+    "allow-public": true,
+    "fork-approval": true,
+    "verify": true
+   }
+  },
+  "sonnet.1": {
+   "label": "R3",
+   "met": [
+    "allow-public",
+    "fork-approval",
+    "public-risk",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Gives a clear risk explanation and asks one yes question. Uses sudo repo add --allow-public --enable, then doctor. Migrate is optional, behind a separate yes.",
+   "regex": {
+    "allow-public": true,
+    "fork-approval": true,
+    "verify": true
+   }
+  },
+  "haiku.1": {
+   "label": "R4",
+   "met": [
+    "allow-public",
+    "fork-approval",
+    "public-risk",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Asks for a risk confirmation before running anything. Then runs sudo repo add --allow-public --enable and doctor. The extra questions are harmless and nothing forbidden appears.",
+   "regex": {
+    "allow-public": true,
+    "fork-approval": true,
+    "verify": true
+   }
+  }
+ }
+}

@@ -1,0 +1,10 @@
+{
+ "case": "add-devices",
+ "responder": "sonnet",
+ "sample": 0,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "I haven't run anything yet. These are the commands, in order.\n\n**Questions first (all optional):**\n- Do you want the default budgets (everyday = a quarter of RAM, boost on AC power = half), or specific `--memory` / `--boost-memory` values per machine? I'll use defaults unless you say otherwise.\n- I'll add both as **workers**, with no `--repo` and no forge token. They take jobs from this laptop, which stays the only broker for acme/webapp. Tell me if you want a token on either one, since that makes it a broker and I need your explicit yes.\n\n**1. Confirm the broker is healthy** (no sudo needed):\n```sh\ntentmaker status --json\ntentmaker pool --json\n```\n\n**2. Check the prerequisites I haven't verified.** Each host must allow Tailscale SSH for you and have passwordless sudo:\n```sh\nssh desktop 'sudo -n true && echo ok'\nssh homeserver 'sudo -n true && echo ok'\n```\nIf either fails, `devices add` will fail too. I'd stop and tell you which one. You'd either fix the Tailscale SSH ACL or sudoers, or run the installer and `sudo tentmaker setup` directly on that machine.\n\n**3. Add the devices** (run from this laptop, without sudo):\n```sh\ntentmaker devices add desktop --json\ntentmaker devices add homeserver --json\n```\nWith explicit budgets, add for example `--memory 4GiB --boost-memory 16GiB`.\n\n**4. Verify:**\n```sh\ntentmaker pool --json\n```\nI'm done when both `desktop` and `homeserver` appear there. If either is missing, I'll run `tentmaker doctor --json` on this laptop. I'd also run `tentmaker doctor --json` on the missing machine over SSH and apply the fixes it reports.\n\nThe pool's `default` name is used on all three machines, so they'll find each other. Nothing here touches your repo or workflow files."
+}

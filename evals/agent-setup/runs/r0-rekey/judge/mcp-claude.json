@@ -1,0 +1,70 @@
+{
+ "case": "mcp-claude",
+ "judge_models": [
+  "claude-haiku-5-5",
+  "claude-opus-5-5"
+ ],
+ "verdicts": {
+  "sonnet.0": {
+   "label": "R1",
+   "met": [
+    "add",
+    "root-note"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Runs the correct add command and verifies it with claude mcp list. Covers read tools versus root-only mutating tools and points to sudo on the CLI. No invented commands.",
+   "regex": {
+    "add": true,
+    "root-note": true
+   }
+  },
+  "haiku.0": {
+   "label": "R2",
+   "met": [
+    "root-note"
+   ],
+   "missed": [
+    "add"
+   ],
+   "forbidden": [],
+   "score": 0.5,
+   "reason": "Shows the correct command but holds off running it until it gets answers to unneeded questions, so add is not met. The root note is complete.",
+   "regex": {
+    "add": true,
+    "root-note": true
+   }
+  },
+  "sonnet.1": {
+   "label": "R3",
+   "met": [
+    "add",
+    "root-note"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Runs the correct add command and gives a clear root note with a sudo CLI example. The pause --for flag is valid. Nothing forbidden.",
+   "regex": {
+    "add": true,
+    "root-note": true
+   }
+  },
+  "haiku.1": {
+   "label": "R4",
+   "met": [
+    "add",
+    "root-note"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Runs add with user scope and the full path, both allowed. The root note is correct. version --json is a valid command. Nothing forbidden.",
+   "regex": {
+    "add": true,
+    "root-note": true
+   }
+  }
+ }
+}

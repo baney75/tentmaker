@@ -1,0 +1,94 @@
+{
+ "case": "codeberg",
+ "judge_models": [
+  "claude-haiku-5-5",
+  "claude-opus-5-5"
+ ],
+ "verdicts": {
+  "haiku.1": {
+   "label": "R1",
+   "met": [
+    "forgejo-flags",
+    "handoff",
+    "install",
+    "token-ok",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Installs with --no-setup and hands over a correct sudo setup command (forgejo, Codeberg URL, --yes, --token-stdin). Asks about the token and gives its scopes. Plans to run doctor afterwards. No invented flags.",
+   "regex": {
+    "install": true,
+    "handoff": true,
+    "forgejo-flags": true,
+    "verify": true
+   }
+  },
+  "sonnet.0": {
+   "label": "R2",
+   "met": [
+    "forgejo-flags",
+    "handoff",
+    "install",
+    "token-ok",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [
+    {
+     "id": "made-up",
+     "evidence": "Add `--allow-public` only if you said yes to question 2."
+    }
+   ],
+   "score": 0.75,
+   "reason": "Install, handoff, setup flags, doctor and the token question are all correct. But it tells the person to add --allow-public to setup, and that is only a `repo add` flag.",
+   "regex": {
+    "install": true,
+    "handoff": true,
+    "forgejo-flags": true,
+    "verify": true
+   }
+  },
+  "haiku.0": {
+   "label": "R3",
+   "met": [
+    "forgejo-flags",
+    "handoff",
+    "install",
+    "token-ok",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Installs, hands over the correct setup command with --yes and --token-stdin, and asks for the token with its scopes and the Mac's consent. Runs doctor afterwards.",
+   "regex": {
+    "install": true,
+    "handoff": true,
+    "forgejo-flags": true,
+    "verify": true
+   }
+  },
+  "sonnet.1": {
+   "label": "R4",
+   "met": [
+    "forgejo-flags",
+    "handoff",
+    "install",
+    "token-ok",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Meets every required item: install, sudo handoff with correct forgejo flags and --yes, token consent with scopes, then doctor. No invented flags.",
+   "regex": {
+    "install": true,
+    "handoff": true,
+    "forgejo-flags": true,
+    "verify": true
+   }
+  }
+ }
+}

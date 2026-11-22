@@ -1,0 +1,11 @@
+# A 30 second job: busy-queue pushes eight of these at once.
+name: tm-scn-work
+on: [push, pull_request]
+jobs:
+  work:
+    runs-on: @RUNS_ON@
+    timeout-minutes: 5
+    steps:
+      - name: work
+        shell: @SHELL@
+        run: sleep 30

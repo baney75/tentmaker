@@ -1,0 +1,72 @@
+install.sh --help:
+
+Install Tentmaker on Linux or macOS.
+
+usage: install.sh [--channel stable|dev] [--version X.Y.Z] [--prefix DIR]
+                  [--no-setup] [--yes] [-- SETUP ARGS...]
+
+  --channel stable|dev   release channel (default stable)
+  --version X.Y.Z        a specific stable release
+  --prefix DIR           install directory (default /usr/local/bin, or
+                         ~/.local/bin without root)
+  --no-setup             only install the binary
+  --yes                  run 'sudo tentmaker setup --yes' with SETUP ARGS
+  -h, --help             show this help
+
+Example for agents:
+  curl -fsSL https://raw.githubusercontent.com/baney75/tentmaker/main/scripts/install.sh |
+    sh -s -- --yes -- --json --memory 4GiB --boost-memory 12GiB --repo owner/name
+
+Docs: https://github.com/baney75/tentmaker
+
+
+install.ps1 help:
+
+<#
+.SYNOPSIS
+  Install Tentmaker on Windows (PowerShell 5.1 and 7).
+
+.DESCRIPTION
+  Downloads the Tentmaker release for this CPU, refuses to install unless its
+  sha256 matches the release's SHA256SUMS, checks that it runs, moves it into
+  place, adds the install directory to PATH and, with -Yes, runs
+  `tentmaker setup --yes`. It never prompts.
+
+  One line, from an Administrator PowerShell:
+
+    irm https://raw.githubusercontent.com/baney75/tentmaker/main/scripts/install.ps1 | iex
+
+  Piped through iex the script can't take parameters, so it reads these
+  environment variables instead (set them first, in the same session):
+
+    $env:TENTMAKER_CHANNEL     = 'dev'       # stable (default) or dev
+    $env:TENTMAKER_VERSION     = '0.1.0'     # a specific stable release
+    $env:TENTMAKER_INSTALL_DIR = 'D:\Tools\Tentmaker'
+    $env:TENTMAKER_NO_SETUP    = '1'         # only install the binary
+    $env:TENTMAKER_YES         = '1'         # run tentmaker setup --yes
+    $env:TENTMAKER_SETUP_ARGS  = '--json --memory 4GiB --boost-memory 12GiB --repo owner/name'
+
+  TENTMAKER_SETUP_ARGS is split on spaces; an argument with a space in it
+  needs the parameter form below. Saved as a file, or as a script block, it
+  takes parameters:
+
+    .\install.ps1 -Channel dev -Yes -SetupArgs '--memory','4GiB'
+    & ([scriptblock]::Create((irm https://raw.githubusercontent.com/baney75/tentmaker/main/scripts/install.ps1))) -Channel dev -Yes
+
+  TENTMAKER_DOWNLOAD_BASE replaces https://github.com/baney75/tentmaker/releases
+  (a URL or a local directory with the same layout) for testing.
+
+.PARAMETER Channel
+  stable (default) or dev.
+.PARAMETER Version
+  A specific stable release, like 0.1.0.
+.PARAMETER InstallDir
+  Where tentmaker.exe goes. Default "$env:ProgramFiles\Tentmaker", which needs
+  Administrator.
+.PARAMETER NoSetup
+  Only install the binary.
+.PARAMETER Yes
+  Run `tentmaker setup --yes` after installing, with -SetupArgs.
+.PARAMETER SetupArgs
+  Extra arguments for `tentmaker setup`.
+#>

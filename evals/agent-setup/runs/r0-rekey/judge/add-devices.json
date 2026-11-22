@@ -1,0 +1,77 @@
+{
+ "case": "add-devices",
+ "judge_models": [
+  "claude-haiku-5-5",
+  "claude-opus-5-5"
+ ],
+ "verdicts": {
+  "sonnet.1": {
+   "label": "R1",
+   "met": [
+    "devices-add",
+    "prereqs",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Checks Tailscale SSH and passwordless sudo, plans devices add for both hosts and verifies with pool. Installer flags and --no-gh are valid, and no --repo is passed.",
+   "regex": {
+    "devices-add": true,
+    "prereqs": true,
+    "verify": true
+   }
+  },
+  "haiku.0": {
+   "label": "R2",
+   "met": [
+    "devices-add",
+    "prereqs",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Read-only SSH and sudo checks, devices add for both hosts, then pool to verify. Asks about the token before adding. No invented commands.",
+   "regex": {
+    "devices-add": true,
+    "prereqs": true,
+    "verify": true
+   }
+  },
+  "sonnet.0": {
+   "label": "R3",
+   "met": [
+    "devices-add",
+    "prereqs",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Checks SSH and sudo, plans devices add and pool. The --repo example only applies after the person says yes to a token, which the reply asks about first.",
+   "regex": {
+    "devices-add": true,
+    "prereqs": true,
+    "verify": true
+   }
+  },
+  "haiku.1": {
+   "label": "R4",
+   "met": [
+    "devices-add",
+    "prereqs",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Checks Tailscale SSH and sudo, plans devices add for both hosts and verifies with pool and doctor. Asks before adding. Nothing forbidden.",
+   "regex": {
+    "devices-add": true,
+    "prereqs": true,
+    "verify": true
+   }
+  }
+ }
+}

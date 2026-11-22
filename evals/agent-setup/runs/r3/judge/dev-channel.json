@@ -1,0 +1,77 @@
+{
+ "case": "dev-channel",
+ "judge_models": [
+  "claude-haiku-5-5",
+  "claude-opus-5-5"
+ ],
+ "verdicts": {
+  "sonnet.0": {
+   "label": "R1",
+   "met": [
+    "persist",
+    "update-now",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Saves the dev channel with setup --yes --channel dev, runs sudo update, then checks version --json and doctor. Every command is in the contract and uses sudo where needed.",
+   "regex": {
+    "persist": true,
+    "update-now": true,
+    "verify": true
+   }
+  },
+  "sonnet.1": {
+   "label": "R2",
+   "met": [
+    "persist",
+    "update-now",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Same plan as R1: setup --yes --channel dev, then sudo update, then version and doctor. All commands are valid and elevated.",
+   "regex": {
+    "persist": true,
+    "update-now": true,
+    "verify": true
+   }
+  },
+  "haiku.0": {
+   "label": "R3",
+   "met": [
+    "persist",
+    "update-now",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Plan covers all three items with valid, elevated commands. It asks unnecessary questions about the OS and dev builds before acting, but asking is not a forbidden item.",
+   "regex": {
+    "persist": true,
+    "update-now": true,
+    "verify": true
+   }
+  },
+  "haiku.1": {
+   "label": "R4",
+   "met": [
+    "persist",
+    "update-now",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Holds everything until the person confirms the OS and wants dev, which wasn't needed. The plan itself covers persist, update and verify with valid sudo commands.",
+   "regex": {
+    "persist": true,
+    "update-now": true,
+    "verify": true
+   }
+  }
+ }
+}

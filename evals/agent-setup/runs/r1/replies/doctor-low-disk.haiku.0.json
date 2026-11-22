@@ -1,0 +1,9 @@
+{
+ "case": "doctor-low-disk",
+ "responder": "haiku",
+ "sample": 0,
+ "models": [
+  "claude-haiku-5-5"
+ ],
+ "text": "The disk guard is blocking jobs: `/var/lib/tentmaker` has 11.4 GiB free and the guard requires 20 GiB. Nothing is broken, so start by finding out what is using the space. These commands only read:\n\n```sh\ndf -h /var/lib/tentmaker\nsudo du -xsh /var/lib/tentmaker/* 2>/dev/null | sort -h\nsudo grep -n -A3 '^\\[guards\\]' /etc/tentmaker/config.toml\ntentmaker budget --json\n```\n\nBefore I run anything that changes the machine, I need to know:\n\n1. **Can I delete anything?** The `du` output will show what's taking space. I'd like your OK for each path before I remove it. I won't clear anything under `/var/lib/tentmaker` without asking, since it may hold job state or caches you want.\n2. **Should I lower `guards.min_free_disk` instead?** That lets jobs run with less headroom. If a build fills the disk, the failure is worse than a skipped job. I'd only lower it if you tell me a number you're comfortable with, for example `10GiB`.\n3. **Is the 20 GiB floor a deliberate choice for this device?** If it is, freeing space is the better fix.\n\nOnce you answer, here's what I'd run:\n\n**If you approve cleanup:** delete the approved paths, then confirm the result:\n```sh\nsudo rm -rf -- /var/lib/tentmaker/<approved-path>\ndf -h /var/lib/tentmaker\n```\n\n**If you approve a lower floor:** edit `/etc/tentmaker/config.toml` to set `min_free_disk` under `[guards]` (for example `min_free_disk = \"10GiB\"`; check the key's exact format in docs/config.md), then:\n```sh\nsudo tentmaker doctor --json\nsudo systemctl restart tentmaker\ntentmaker doctor --json\n```\n\nI'd finish by checking that `doctor` exits 0 and `tentmaker budget --json` shows the device taking jobs again."
+}

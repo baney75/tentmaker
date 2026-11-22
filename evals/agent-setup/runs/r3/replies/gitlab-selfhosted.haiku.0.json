@@ -1,0 +1,9 @@
+{
+ "case": "gitlab-selfhosted",
+ "responder": "haiku",
+ "sample": 0,
+ "models": [
+  "claude-haiku-5-5"
+ ],
+ "text": "I can hook `group/app` up, but I need a GitLab token from you first, and this device will become a broker for that repo. It will check pushes to the default branch and merge requests from the repo's members, and it will hold the token.\n\n**Ask before I proceed**\n1. Is `group/app` private? If it's public, outside contributors' code can run here, so tell me and we'll look at the trust settings before we continue.\n2. Are you OK with this box holding a token for `group/app`, so it becomes a broker?\n\n**1. You create the token** at `https://gitlab.example.com/-/user_settings/personal_access_tokens` with scope `api`. Don't paste it into this chat.\n\n**2. You store the token** in your own terminal on this box. Paste it, press Enter, then press Ctrl-D:\n```sh\nsudo tentmaker connect gitlab --url https://gitlab.example.com --token-stdin --yes --json\n```\n\n**3. Then I run** (once you tell me step 2 succeeded):\n```sh\nsudo tentmaker repo add group/app --forge gitlab --json\ntentmaker repo list --json\ntentmaker doctor --json\n```\nChecks mode is the default for GitLab, so no `--mode` flag is needed. `doctor` should exit 0. If it doesn't, I'll apply each fix it prints and rerun it. If the same problem survives two fixes, I'll stop and report it to you.\n\n**4. Gating merges (optional, your call):** Tentmaker posts commit statuses named `tentmaker/<job name>`. To make them block merges, mark those statuses as required in the project's merge request settings on GitLab.\n\nTell me whether `group/app` is private and whether to go ahead with the token, and I'll run the rest."
+}

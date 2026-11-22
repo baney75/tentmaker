@@ -1,0 +1,118 @@
+{
+ "run": "runs/r3",
+ "docs": "the README.md, SKILL.md and CLI.md pinned in runs/r3/docs",
+ "responders_models": {
+  "haiku": "claude-haiku-5-5",
+  "sonnet": "claude-sonnet-5-5"
+ },
+ "judge": "opus",
+ "samples": 2,
+ "tolerance": 0.05,
+ "bar": {
+  "sonnet": {
+   "min_mean": 0.9,
+   "max_forbidden": 0
+  },
+  "haiku": {
+   "min_mean": 0.8
+  }
+ },
+ "responders": {
+  "haiku": {
+   "mean": 0.953,
+   "forbidden": 0,
+   "cases": {
+    "laptop-plugged-in": {
+     "mean": 1.0
+    },
+    "add-devices": {
+     "mean": 1.0
+    },
+    "public-repo": {
+     "mean": 1.0
+    },
+    "gitlab-selfhosted": {
+     "mean": 1.0
+    },
+    "codeberg": {
+     "mean": 0.9
+    },
+    "pause-gaming": {
+     "mean": 1.0
+    },
+    "schedule-boost": {
+     "mean": 1.0
+    },
+    "migrate-forks": {
+     "mean": 1.0
+    },
+    "worker-only": {
+     "mean": 1.0
+    },
+    "doctor-low-disk": {
+     "mean": 0.9
+    },
+    "dev-channel": {
+     "mean": 1.0
+    },
+    "uninstall": {
+     "mean": 0.875
+    },
+    "mcp-claude": {
+     "mean": 0.75
+    },
+    "windows-pc": {
+     "mean": 0.916
+    }
+   }
+  },
+  "sonnet": {
+   "mean": 1.0,
+   "forbidden": 0,
+   "cases": {
+    "laptop-plugged-in": {
+     "mean": 1.0
+    },
+    "add-devices": {
+     "mean": 1.0
+    },
+    "public-repo": {
+     "mean": 1.0
+    },
+    "gitlab-selfhosted": {
+     "mean": 1.0
+    },
+    "codeberg": {
+     "mean": 1.0
+    },
+    "pause-gaming": {
+     "mean": 1.0
+    },
+    "schedule-boost": {
+     "mean": 1.0
+    },
+    "migrate-forks": {
+     "mean": 1.0
+    },
+    "worker-only": {
+     "mean": 1.0
+    },
+    "doctor-low-disk": {
+     "mean": 1.0
+    },
+    "dev-channel": {
+     "mean": 1.0
+    },
+    "uninstall": {
+     "mean": 1.0
+    },
+    "mcp-claude": {
+     "mean": 1.0
+    },
+    "windows-pc": {
+     "mean": 1.0
+    }
+   }
+  }
+ }
+}

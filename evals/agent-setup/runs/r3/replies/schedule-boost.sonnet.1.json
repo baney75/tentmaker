@@ -1,0 +1,10 @@
+{
+ "case": "schedule-boost",
+ "responder": "sonnet",
+ "sample": 1,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "Yes. A schedule window set to boost gets the 12 GiB boost budget overnight without waiting for you to be idle. A boost window ignores `boost_needs_idle`, and it still needs AC power, which this laptop has. At the default 2 GiB per job, that's about 6 jobs at once instead of 2.\n\nHere is what I'd run:\n\n```sh\nsudo tentmaker schedule add --name weekday-nights --days mon-fri --from 22:00 --to 07:00 --profile boost --json\ntentmaker budget --json\n```\n\nThe second command checks the result. It will only show boost if you run it inside the window, so outside those hours it just confirms the schedule is saved.\n\nBefore I run it, two questions:\n1. Are 22:00 to 07:00 the right hours? I picked them as a typical overnight stretch.\n2. Do you want the Friday-night stretch into Saturday morning to count? I'm not sure whether `--days` applies to the day a window starts or to each hour. If you want weekends covered too, I can use `--days daily`. Otherwise I'll check how the Friday-night window behaves after adding it.\n\nThe schedule only changes the budget, and `sudo tentmaker schedule remove` or the config file can undo it. Once you confirm the hours, I'll run the commands."
+}

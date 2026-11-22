@@ -1,0 +1,89 @@
+{
+ "case": "laptop-plugged-in",
+ "judge_models": [
+  "claude-haiku-5-5",
+  "claude-opus-5-5"
+ ],
+ "verdicts": {
+  "haiku.1": {
+   "label": "R1",
+   "met": [
+    "budget",
+    "install",
+    "setup",
+    "token-ok",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Installs the binary with install.sh, asks before storing the gh token, then runs sudo setup --yes with --repo acme/webapp, 2GiB/16GiB, and runs doctor. Every flag is in the contract.",
+   "regex": {
+    "install": true,
+    "setup": true,
+    "budget": true,
+    "verify": true
+   }
+  },
+  "sonnet.1": {
+   "label": "R2",
+   "met": [
+    "budget",
+    "install",
+    "setup",
+    "token-ok",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Installs with install.sh, asks before storing the token, then runs sudo setup --yes with --repo and 4GiB/16GiB and runs doctor before calling it done. No made-up flags.",
+   "regex": {
+    "install": true,
+    "setup": true,
+    "budget": true,
+    "verify": true
+   }
+  },
+  "sonnet.0": {
+   "label": "R3",
+   "met": [
+    "budget",
+    "install",
+    "setup",
+    "token-ok",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Installs with install.sh, gets an OK for the token first, then runs sudo setup --yes with --repo and 4GiB everyday/16GiB boost, and runs doctor. All flags are valid.",
+   "regex": {
+    "install": true,
+    "setup": true,
+    "budget": true,
+    "verify": true
+   }
+  },
+  "haiku.0": {
+   "label": "R4",
+   "met": [
+    "budget",
+    "install",
+    "setup",
+    "token-ok",
+    "verify"
+   ],
+   "missed": [],
+   "forbidden": [],
+   "score": 1.0,
+   "reason": "Installs with install.sh, asks before storing the token, then runs sudo setup --yes with --repo and 2GiB/16GiB and runs doctor. Suggests editing the config file directly, which is not a forbidden item.",
+   "regex": {
+    "install": true,
+    "setup": true,
+    "budget": true,
+    "verify": true
+   }
+  }
+ }
+}

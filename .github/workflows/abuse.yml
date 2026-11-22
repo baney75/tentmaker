@@ -1,0 +1,781 @@
+# The abuse test: untrusted CI code attacks the device that runs it.
+#
+# Each job installs Tentmaker the way e2e.yml does (build, fake release,
+# real installer, setup), plants decoys the job must not reach (addresses in
+# the tailnet and LAN ranges, a listener on the mesh port 7433, a loopback
+# service), then runs tentmaker-abuse.yml in checks mode. Every attack prints
+# ATTACK <name> BLOCKED or SUCCEEDED; scripts/abuse/judge.py reads the check
+# logs the broker kept, adds what only the harness can see (leftover
+# processes, the daemon's health), writes metrics/abuse-<os>.json and fails
+# on any SUCCEEDED or missing line.
+name: abuse
+
+on:
+  push:
+    branches: [test/harden, main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  statuses: write
+  pull-requests: read
+
+concurrency:
+  group: abuse-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  TM_VERSION: 0.0.0-abuse.${{ github.run_number }}
+  TM_PORT: "8765"
+  TM_SHA: ${{ github.sha }}
+  TM_BRANCH: ${{ github.ref_name }}
+
+jobs:
+  linux:
+    name: abuse (ubuntu-latest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Tentmaker never reruns a context a commit already has a status for,
+      # and an earlier run may have tested TM_SHA. A new commit with its
+      # tree, on a throwaway branch, is one no run has seen. Commits made
+      # with GITHUB_TOKEN trigger no workflows.
+      - name: copy the head to a throwaway branch
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          tree=$(timeout 30 gh api "repos/$REPO/git/commits/$TM_SHA" --jq .tree.sha)
+          sha=$(timeout 30 gh api "repos/$REPO/git/commits" -f "tree=$tree" -f "parents[]=$TM_SHA" \
+            -f "message=tentmaker abuse $GITHUB_RUN_ID.$GITHUB_RUN_ATTEMPT ($RUNNER_OS) of $TM_SHA" --jq .sha)
+          [ -n "$sha" ] || { echo "::error::could not make the throwaway commit"; exit 1; }
+          branch="tm-abuse/$GITHUB_RUN_ID.$GITHUB_RUN_ATTEMPT/linux"
+          timeout 30 gh api "repos/$REPO/git/refs" -f "ref=refs/heads/$branch" -f "sha=$sha" >/dev/null
+          echo "TM_COPY_BRANCH=$branch" >>"$GITHUB_ENV"
+          echo "TM_COPY_SHA=$sha" >>"$GITHUB_ENV"
+          echo "testing $sha on $branch, a copy of $TM_SHA"
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+
+      - name: build the release archives
+        run: scripts/build.sh "$TM_VERSION"
+
+      - name: serve dist/ as a fake release
+        run: |
+          srv=$RUNNER_TEMP/srv
+          mkdir -p "$srv/latest/download"
+          cp dist/* "$srv/latest/download/"
+          cp scripts/install.sh "$srv/install.sh"
+          nohup python3 -m http.server --bind 127.0.0.1 --directory "$srv" "$TM_PORT" >"$RUNNER_TEMP/http.log" 2>&1 &
+          for _ in $(seq 1 50); do
+            curl -fsS --max-time 2 -o /dev/null "http://127.0.0.1:$TM_PORT/latest/download/SHA256SUMS" && exit 0
+            sleep 0.2
+          done
+          echo "::error::the release server did not start"; cat "$RUNNER_TEMP/http.log"; exit 1
+
+      - name: install with the one-liner
+        run: |
+          curl -fsSL --max-time 60 "http://127.0.0.1:$TM_PORT/install.sh" |
+            sudo env TENTMAKER_DOWNLOAD_BASE="http://127.0.0.1:$TM_PORT" sh
+          got=$(tentmaker version --json | jq -r .version)
+          test "$got" = "$TM_VERSION" || { echo "::error::installed $got, want $TM_VERSION"; exit 1; }
+
+      - name: close home directories
+        run: for h in /home/*; do sudo chmod o-rwx "$h"; done
+
+      # Each job gets a network namespace of its own with pasta as its
+      # uplink; setup refuses a host without it.
+      - name: install pasta
+        run: |
+          command -v pasta >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq passt; }
+          pasta --version | head -1
+          sysctl kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || true
+
+      # tailscaled, not logged in, so its local API socket is real. It uses
+      # userspace networking so the harness can stand in its own tailscale0.
+      - name: install tailscaled
+        run: |
+          curl -fsSL --max-time 120 https://tailscale.com/install.sh | sh
+          echo 'FLAGS="--tun=userspace-networking"' | sudo tee -a /etc/default/tailscaled >/dev/null
+          sudo systemctl restart tailscaled
+          for _ in $(seq 1 50); do test -S /run/tailscale/tailscaled.sock && break; sleep 0.2; done
+          ls -l /run/tailscale/
+          curl -fsS --max-time 5 -H 'Sec-Tailscale: localapi' --unix-socket /run/tailscale/tailscaled.sock \
+            http://local-tailscaled.sock/localapi/v0/status | jq -c '{BackendState, Version}'
+
+      # Stand-ins for another tailnet device, MagicDNS, a LAN device (its own
+      # network namespace, on-link IPv4 and global IPv6), a device behind a
+      # Tailscale subnet route (out through tailscale0), this host's own
+      # non-private addresses, the mesh API, a loopback service and a LAN
+      # multicast group. The runner user reaching each one proves the decoys
+      # work, so a blocked attack means the sandbox blocked it.
+      - name: plant decoys
+        run: |
+          sudo sysctl -qw net.ipv6.conf.all.disable_ipv6=0 net.ipv6.conf.default.disable_ipv6=0 || true
+          sudo ip link add tmdecoy type dummy
+          sudo sysctl -qw net.ipv6.conf.tmdecoy.disable_ipv6=0 || true
+          sudo ip link set tmdecoy up
+          for a in 100.64.77.1/32 100.100.100.100/32 10.77.0.1/32 192.0.2.77/32; do sudo ip addr add "$a" dev tmdecoy; done
+          for a in fd7a:115c:a1e0::77/128 2001:db8:77::1/128; do sudo ip -6 addr add "$a" dev tmdecoy nodad; done
+          meta=""
+          if ! curl -fsS -H Metadata:true --max-time 3 'http://169.254.169.254/metadata/instance?api-version=2021-02-01' >/dev/null 2>&1; then
+            echo "no instance metadata service here; planting a decoy at 169.254.169.254"
+            sudo ip addr add 169.254.169.254/32 dev tmdecoy
+            meta=169.254.169.254:80
+          fi
+          netdev() { # netdev NS HOSTIF HOSTADDRS... -- NSADDRS...: a device in its own namespace behind a veth
+            local ns=$1 hif=$2; shift 2
+            sudo ip netns add "$ns"
+            sudo ip link add "$hif" type veth peer name eth0 netns "$ns"
+            sudo sysctl -qw "net.ipv6.conf.$hif.disable_ipv6=0" || true
+            sudo ip netns exec "$ns" sysctl -qw net.ipv6.conf.all.disable_ipv6=0 net.ipv6.conf.default.disable_ipv6=0 || true
+            while [ "$1" != -- ]; do sudo ip addr add "$1" dev "$hif" nodad 2>/dev/null || sudo ip addr add "$1" dev "$hif"; shift; done
+            shift
+            sudo ip link set "$hif" up
+            sudo ip netns exec "$ns" ip link set lo up
+            sudo ip netns exec "$ns" ip link set eth0 up
+            for x in "$@"; do sudo ip netns exec "$ns" ip addr add "$x" dev eth0 nodad 2>/dev/null || sudo ip netns exec "$ns" ip addr add "$x" dev eth0; done
+          }
+          # The LAN: 10.78.0.0/24 and 2001:db8:78::/64 are on-link.
+          netdev tmlan tmlan0 10.78.0.2/24 2001:db8:78::2/64 -- 10.78.0.1/24 2001:db8:78::1/64
+          # pasta gives a job IPv6 only when the host has an IPv6 default
+          # route, and this runner has none, so every IPv6 attack would be
+          # blocked for free. Route IPv6 into the LAN (job-ipv6 checks it).
+          ip -6 route show default | grep -q . || sudo ip -6 route add default via 2001:db8:78::1 dev tmlan0
+          # A subnet route another tailnet device advertises: 10.99.0.0/24
+          # through tailscale0, as tailscaled routes it.
+          sudo ip link del tailscale0 2>/dev/null || true
+          netdev tmts tailscale0 100.64.99.2/32 -- 10.99.0.1/24
+          sudo ip route add 10.99.0.0/24 dev tailscale0
+          sudo ip netns exec tmts ip route add 100.64.99.2/32 dev eth0
+          sudo ip netns exec tmts ip route add default via 100.64.99.2 dev eth0 onlink
+          ip addr show tmdecoy; ip -6 route; ip route
+          sudo nohup python3 scripts/abuse/decoy.py 100.64.77.1:8080 10.77.0.1:8080 '[fd7a:115c:a1e0::77]:8080' \
+            100.100.100.100:80 udp:100.100.100.100:53 0.0.0.0:8767 '[::]:8767' \
+            0.0.0.0:7433 '[::]:7433' 127.0.0.1:8766 '[::1]:8766' mcast:239.77.77.77:7777 abstract:tentmaker-abuse-decoy ${meta} \
+            >"$RUNNER_TEMP/decoy.log" 2>&1 &
+          sudo ip netns exec tmlan nohup python3 scripts/abuse/decoy.py 10.78.0.1:8080 10.78.0.1:7433 '[2001:db8:78::1]:8080' >"$RUNNER_TEMP/decoy-lan.log" 2>&1 &
+          sudo ip netns exec tmts nohup python3 scripts/abuse/decoy.py 10.99.0.1:8080 >"$RUNNER_TEMP/decoy-ts.log" 2>&1 &
+          hostip=$(python3 -c 'import socket; s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.connect(("192.0.2.1", 53)); print(s.getsockname()[0])')
+          echo "host address: $hostip"
+          urls="http://100.64.77.1:8080/ http://[fd7a:115c:a1e0::77]:8080/ http://10.77.0.1:8080/ http://100.100.100.100/
+            http://192.0.2.77:8767/ http://[2001:db8:77::1]:8767/ http://$hostip:8767/ http://10.78.0.2:8767/ http://[2001:db8:78::2]:8767/ http://$hostip:7433/ http://100.64.77.1:7433/
+            http://[fd7a:115c:a1e0::77]:7433/ http://[::1]:7433/ http://127.0.0.1:7433/ http://127.0.0.1:8766/ http://[::1]:8766/ http://127.0.0.1:8767/ http://[::1]:8767/
+            http://10.78.0.1:8080/ http://[2001:db8:78::1]:8080/ http://10.99.0.1:8080/"
+          [ -n "$meta" ] && urls="$urls http://169.254.169.254/metadata/instance"
+          for u in $urls; do
+            ok=""
+            for _ in $(seq 1 50); do
+              if curl -gfsS --max-time 2 "$u" >/dev/null 2>&1; then ok=1; break; fi
+              sleep 0.2
+            done
+            test -n "$ok" || { echo "::error::decoy $u does not answer"; cat "$RUNNER_TEMP"/decoy*.log; exit 1; }
+            echo "decoy up: $u"
+          done
+          for u in "100.100.100.100 53" "239.77.77.77 7777"; do
+            python3 scripts/abuse/udpask.py $u || { echo "::error::udp decoy $u does not answer"; cat "$RUNNER_TEMP/decoy.log"; exit 1; }
+          done
+          curl -fsS --max-time 5 -H 'Sec-Tailscale: localapi' --unix-socket /run/tailscale/tailscaled.sock \
+            http://local-tailscaled.sock/localapi/v0/status >/dev/null || { echo "::error::tailscaled's socket does not answer"; exit 1; }
+          # A host service on an abstract Unix socket: any process in the
+          # host's network namespace reaches it, whatever its uid.
+          ok=""
+          for _ in $(seq 1 50); do
+            sudo -u nobody curl -fsS --max-time 2 --abstract-unix-socket tentmaker-abuse-decoy http://decoy/ >/dev/null 2>&1 && { ok=1; break; }
+            sleep 0.2
+          done
+          test -n "$ok" || { echo "::error::the abstract socket decoy does not answer"; cat "$RUNNER_TEMP/decoy.log"; exit 1; }
+          echo "decoy up: abstract:tentmaker-abuse-decoy"
+
+      - name: setup
+        id: setup
+        run: |
+          # This image's /etc/environment names the runner user's XDG dirs
+          # (/run/user/1001, /home/runner/.config); PAM hands them to every
+          # user manager, tentmaker-runner's too, and its podman.service then
+          # fails. A normal host sets neither there.
+          sudo sed -i '/^XDG_RUNTIME_DIR=/d; /^XDG_CONFIG_HOME=/d' /etc/environment
+          rc=0
+          sudo tentmaker setup --yes --json --no-mesh --no-gh --memory 2GiB --boost-memory 4GiB >"$RUNNER_TEMP/setup.json" || rc=$?
+          cat "$RUNNER_TEMP/setup.json"
+          test "$rc" = 0 || { echo "::error::setup exited $rc"; exit 1; }
+          jq -e '.ok == true and .service == "running"' "$RUNNER_TEMP/setup.json" >/dev/null || { echo "::error::setup failed"; exit 1; }
+          # Two 2-CPU slots, so the sibling runs while abuse looks for it.
+          sudo tentmaker budget set --boost-cpus 4 --json | jq -e '.ok == true' >/dev/null || { echo "::error::budget set failed"; exit 1; }
+          systemctl show -p MainPID -p NRestarts tentmaker | tee "$RUNNER_TEMP/daemon-before.txt"
+          sudo nft list table inet tentmaker || echo "(no nftables table inet tentmaker)"
+
+      # A prefix the LAN gains after setup (a new router advertisement). The
+      # rules setup loaded don't name it; Start must notice and reload.
+      - name: add an on-link IPv6 prefix after setup
+        run: |
+          sudo ip -6 addr add 2001:db8:79::2/64 dev tmlan0 nodad
+          sudo ip netns exec tmlan ip -6 addr add 2001:db8:79::1/64 dev eth0 nodad
+          sudo ip netns exec tmlan nohup python3 scripts/abuse/decoy.py '[2001:db8:79::1]:8080' >"$RUNNER_TEMP/decoy-lan2.log" 2>&1 &
+          for _ in $(seq 1 50); do curl -gfsS --max-time 2 'http://[2001:db8:79::1]:8080/' >/dev/null 2>&1 && exit 0; sleep 0.2; done
+          echo "::error::decoy [2001:db8:79::1]:8080 does not answer"; cat "$RUNNER_TEMP/decoy-lan2.log"; exit 1
+
+      - name: run the attacks through Tentmaker
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          start=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          printf %s "$GITHUB_TOKEN" | sudo tentmaker connect github --token-stdin --json | jq -e '.ok == true' >/dev/null || { echo "::error::connect failed"; exit 1; }
+          sudo tentmaker repo add "$REPO" --mode checks --allow-public --workflow .github/workflows/tentmaker-abuse.yml --branch "$TM_COPY_BRANCH" --json |
+            jq -e '.ok == true' >/dev/null || { echo "::error::repo add failed"; exit 1; }
+          jobs="abuse-sibling abuse abuse-oom abuse-pids"
+          deadline=$((SECONDS + 900))
+          while :; do
+            timeout 30 gh api "repos/$REPO/commits/$TM_COPY_SHA/statuses?per_page=100" >"$RUNNER_TEMP/all-statuses.json" || { sleep 10; continue; }
+            jq 'reduce (.[] | select(.context | startswith("tentmaker/"))) as $s ({}; if has($s.context) then . else .[$s.context] = {state: $s.state, description: $s.description, created_at: $s.created_at} end)' \
+              "$RUNNER_TEMP/all-statuses.json" >"$RUNNER_TEMP/statuses.json"
+            pending=""
+            for j in $jobs; do
+              st=$(jq -r --arg c "tentmaker/$j" '.[$c].state // "none"' "$RUNNER_TEMP/statuses.json")
+              created=$(jq -r --arg c "tentmaker/$j" '.[$c].created_at // ""' "$RUNNER_TEMP/statuses.json")
+              if [ -n "$created" ] && [[ "$created" < "$start" ]] && [ "$st" != pending ]; then
+                echo "::error::tentmaker/$j was set before this run; push a new commit"; exit 1
+              fi
+              case $st in success | failure | error) ;; *) pending="$pending $j:$st" ;; esac
+            done
+            echo "$(date -u +%T) waiting for:${pending:- nothing}"
+            [ -z "$pending" ] && break
+            if [ "$SECONDS" -ge "$deadline" ]; then echo "::error::the abuse jobs did not finish within 15 minutes:$pending"; break; fi
+            sleep 10
+          done
+          jq . "$RUNNER_TEMP/statuses.json"
+          mkdir -p "$RUNNER_TEMP/abuse-logs"
+          for j in $jobs; do
+            log="/var/lib/tentmaker/checks/${REPO/\//_}-${TM_COPY_SHA:0:12}-$j.log"
+            echo "== $log"
+            sudo cat "$log" | tee "$RUNNER_TEMP/abuse-logs/$j.log" || echo "(no log)"
+          done
+
+      # What only the harness can see: processes the job left, and whether
+      # the daemon kept running untouched.
+      - name: check leftovers and the daemon
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: |
+          h=$RUNNER_TEMP/harness.txt
+          : >"$h"
+          left=""
+          for _ in $(seq 1 45); do
+            left=$(pgrep -a -f tm-abuse-leftover || true)
+            [ -z "$left" ] && break
+            sleep 2
+          done
+          if [ -n "$left" ]; then
+            echo "ATTACK background-process SUCCEEDED still running: $(echo "$left" | tr '\n' ' ')" >>"$h"
+          else
+            echo "ATTACK background-process BLOCKED" >>"$h"
+          fi
+          systemctl show -p MainPID -p NRestarts tentmaker | tee "$RUNNER_TEMP/daemon-after.txt"
+          why=""
+          systemctl is-active --quiet tentmaker || why="$why service not active;"
+          cmp -s "$RUNNER_TEMP/daemon-before.txt" "$RUNNER_TEMP/daemon-after.txt" || why="$why the daemon restarted;"
+          tentmaker status --json >"$RUNNER_TEMP/status.json" || why="$why status failed;"
+          jq -e '.service == "running"' "$RUNNER_TEMP/status.json" >/dev/null || why="$why status says not running;"
+          jq -e '.paused == false' "$RUNNER_TEMP/status.json" >/dev/null || why="$why the daemon is paused;"
+          if [ -n "$why" ]; then echo "ATTACK daemon-healthy SUCCEEDED$why" >>"$h"; else echo "ATTACK daemon-healthy BLOCKED" >>"$h"; fi
+          cat "$h"
+
+      # Fail closed: with the rules gone the device must refuse a job and
+      # doctor must say why; then the boot unit puts them back. Harness
+      # checks print ATTACK lines too: BLOCKED means the device held.
+      - name: fail closed without the network rules
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          h=$RUNNER_TEMP/harness.txt
+          if sudo nft list table inet tentmaker >/dev/null 2>&1; then
+            sudo nft delete table inet tentmaker
+          else
+            uid=$(id -u tentmaker-runner)
+            for t in iptables ip6tables; do sudo "$t" -w 5 -D OUTPUT -m owner --uid-owner "$uid" -j TENTMAKER || true; done
+          fi
+          sudo tentmaker repo add "$REPO" --mode checks --allow-public --workflow .github/workflows/tentmaker-abuse.yml \
+            --workflow .github/workflows/tentmaker-abuse-closed.yml --branch "$TM_COPY_BRANCH" --json | jq -e '.ok == true' >/dev/null ||
+            { echo "::error::repo add failed"; exit 1; }
+          st=$(bash scripts/abuse/wait-status.sh "$REPO" "$TM_COPY_SHA" tentmaker/abuse-closed 300)
+          echo "status: $st"
+          state=$(jq -r .state <<<"$st")
+          desc=$(jq -r .description <<<"$st")
+          mkdir -p "$RUNNER_TEMP/abuse-logs"
+          sudo cat "/var/lib/tentmaker/checks/${REPO/\//_}-${TM_COPY_SHA:0:12}-abuse-closed.log" >"$RUNNER_TEMP/abuse-logs/abuse-closed.log" 2>/dev/null || true
+          cat "$RUNNER_TEMP/abuse-logs/abuse-closed.log"
+          if [ "$state" = success ] || [ "$state" = failure ] || grep -q 'ATTACK fail-closed SUCCEEDED' "$RUNNER_TEMP/abuse-logs/abuse-closed.log"; then
+            echo "ATTACK fail-closed SUCCEEDED the job ran without the rules ($state: $desc)" >>"$h"
+          elif [ "$state" = error ]; then
+            echo "ATTACK fail-closed BLOCKED refused ($desc)" >>"$h"
+          else
+            echo "::error::tentmaker/abuse-closed is $state after 5 minutes: the device neither ran nor refused it"
+          fi
+          sudo tentmaker doctor --json >"$RUNNER_TEMP/doctor-off.json" || true
+          netfail='[.checks[] | select(.status == "fail") | .what | select(test("network rules"))] | first // ""'
+          why=$(jq -r "$netfail" "$RUNNER_TEMP/doctor-off.json")
+          if [ -n "$why" ]; then
+            echo "ATTACK fail-closed-doctor BLOCKED doctor says: $why" >>"$h"
+          else
+            echo "ATTACK fail-closed-doctor SUCCEEDED doctor did not name the missing network rules" >>"$h"
+            jq . "$RUNNER_TEMP/doctor-off.json"
+          fi
+          sudo systemctl restart tentmaker-net.service
+          sudo tentmaker doctor --json >"$RUNNER_TEMP/doctor-on.json" || true
+          left=$(jq -r "$netfail" "$RUNNER_TEMP/doctor-on.json")
+          if [ -z "$left" ] && sudo nft list table inet tentmaker >/dev/null 2>&1; then
+            echo "ATTACK fail-closed-restore BLOCKED tentmaker-net.service loaded the rules again" >>"$h"
+          else
+            echo "ATTACK fail-closed-restore SUCCEEDED the rules did not come back: $left" >>"$h"
+          fi
+          tail -3 "$h"
+
+      # allow_lan opens the physical LAN only: the tailnet, a Tailscale
+      # subnet route and this host stay shut.
+      - name: allow_lan opens the LAN, not the tailnet
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          sudo python3 - /etc/tentmaker/config.toml <<'PY'
+          import re, sys
+          p = sys.argv[1]
+          s = open(p).read()
+          if re.search(r"(?m)^\s*allow_lan\s*=", s):
+              s = re.sub(r"(?m)^(\s*allow_lan\s*=\s*).*$", r"\g<1>true", s)
+          elif re.search(r"(?m)^\[guards\]\s*$", s):
+              s = re.sub(r"(?m)^\[guards\]\s*$", "[guards]\nallow_lan = true", s, count=1)
+          else:
+              s += "\n[guards]\nallow_lan = true\n"
+          open(p, "w").write(s)
+          PY
+          sudo grep -n -A3 '^\[guards\]' /etc/tentmaker/config.toml
+          sudo tentmaker setup --yes --json --no-mesh --no-gh --memory 2GiB --boost-memory 4GiB >"$RUNNER_TEMP/setup-lan.json" || true
+          jq -e '.ok == true' "$RUNNER_TEMP/setup-lan.json" >/dev/null || { cat "$RUNNER_TEMP/setup-lan.json"; echo "::error::setup with allow_lan failed"; exit 1; }
+          sudo systemctl restart tentmaker
+          sudo nft list table inet tentmaker || true
+          sudo tentmaker repo add "$REPO" --mode checks --allow-public --workflow .github/workflows/tentmaker-abuse.yml \
+            --workflow .github/workflows/tentmaker-abuse-closed.yml --workflow .github/workflows/tentmaker-abuse-lan.yml \
+            --branch "$TM_COPY_BRANCH" --json | jq -e '.ok == true' >/dev/null || { echo "::error::repo add failed"; exit 1; }
+          st=$(bash scripts/abuse/wait-status.sh "$REPO" "$TM_COPY_SHA" tentmaker/abuse-lan 600)
+          echo "status: $st"
+          jq -c '{"tentmaker/abuse-lan": .}' <<<"$st" >"$RUNNER_TEMP/statuses-lan.json"
+          sudo cat "/var/lib/tentmaker/checks/${REPO/\//_}-${TM_COPY_SHA:0:12}-abuse-lan.log" | tee "$RUNNER_TEMP/abuse-logs/abuse-lan.log" || echo "(no log)"
+
+      - name: judge
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: |
+          python3 scripts/abuse/judge.py --os linux --logs "$RUNNER_TEMP/abuse-logs" --statuses "$RUNNER_TEMP/statuses.json" \
+            --harness "$RUNNER_TEMP/harness.txt" --lan-statuses "$RUNNER_TEMP/statuses-lan.json" --out metrics/abuse-linux.json
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ !cancelled() }}
+        with:
+          name: abuse-linux
+          path: metrics/abuse-linux.json
+          if-no-files-found: warn
+
+      - name: dump on failure
+        if: failure()
+        run: |
+          echo "== status"; tentmaker status --json || true
+          echo "== daemon log"; sudo journalctl -u tentmaker --no-pager -n 300 || true
+          echo "== job units"; sudo journalctl --no-pager -n 200 -u 'tentmaker-job-*' || true
+          echo "== job namespaces"; sudo journalctl --no-pager -n 100 -u 'tentmaker-netns-*' -u 'tentmaker-uplink-*' || true
+          echo "== podman's namespace"; sudo journalctl --no-pager -n 60 -u tentmaker-podnet.service -u tentmaker-podnet-uplink.service || true
+          echo "== nft"; sudo nft list ruleset 2>/dev/null | head -200 || true
+          echo "== decoys"; cat "$RUNNER_TEMP"/decoy*.log || true
+          echo "== routes"; ip route; ip -6 route
+          echo "== podman service"
+          u=$(id -u tentmaker-runner 2>/dev/null) && {
+            sudo systemctl status "user@$u.service" --no-pager -n 0 || true
+            sudo systemctl --user -M tentmaker-runner@ status podman.socket podman.service --no-pager -n 30 || true
+            sudo ls -la "/run/user/$u" "/run/user/$u/podman" || true
+            sudo ss -xlp | grep -i podman || true
+            sudo journalctl --no-pager -n 40 _UID="$u" _SYSTEMD_USER_UNIT=podman.service || true
+            sudo systemctl --user -M tentmaker-runner@ show-environment | grep -E '^XDG_' || true
+            grep -n XDG_ /etc/environment || true
+            sudo journalctl --no-pager -n 20 -u tentmaker-podns.service || true
+          }
+
+      - name: uninstall --purge
+        if: ${{ !cancelled() && steps.setup.outcome != 'skipped' }}
+        run: |
+          sudo tentmaker uninstall --purge --yes --json | tee "$RUNNER_TEMP/uninstall.json"
+          jq -e '.ok == true and .purged == true' "$RUNNER_TEMP/uninstall.json" >/dev/null || { echo "::error::uninstall did not finish"; exit 1; }
+          left=""
+          if sudo nft list table inet tentmaker >/dev/null 2>&1; then left="$left nft-table"; fi
+          if sudo iptables -S 2>/dev/null | grep -qi tentmaker; then left="$left iptables"; fi
+          if sudo ip6tables -S 2>/dev/null | grep -qi tentmaker; then left="$left ip6tables"; fi
+          for p in /etc/systemd/system/tentmaker-net.service /etc/systemd/system/tentmaker.service /usr/local/lib/tentmaker; do
+            if sudo test -e "$p"; then left="$left $p"; fi
+          done
+          if [ -n "$left" ]; then echo "::error::left after uninstall --purge:$left"; exit 1; fi
+
+      - name: delete the throwaway branch
+        if: always() && env.TM_COPY_BRANCH != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: timeout 30 gh api -X DELETE "repos/$REPO/git/refs/heads/$TM_COPY_BRANCH" >/dev/null || echo "::warning::could not delete $TM_COPY_BRANCH"
+
+  windows:
+    name: abuse (windows-latest)
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Tentmaker never reruns a context a commit already has a status for,
+      # and an earlier run may have tested TM_SHA. A new commit with its
+      # tree, on a throwaway branch, is one no run has seen. Commits made
+      # with GITHUB_TOKEN trigger no workflows.
+      - name: copy the head to a throwaway branch
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          tree=$(timeout 30 gh api "repos/$REPO/git/commits/$TM_SHA" --jq .tree.sha)
+          sha=$(timeout 30 gh api "repos/$REPO/git/commits" -f "tree=$tree" -f "parents[]=$TM_SHA" \
+            -f "message=tentmaker abuse $GITHUB_RUN_ID.$GITHUB_RUN_ATTEMPT ($RUNNER_OS) of $TM_SHA" --jq .sha)
+          [ -n "$sha" ] || { echo "::error::could not make the throwaway commit"; exit 1; }
+          branch="tm-abuse/$GITHUB_RUN_ID.$GITHUB_RUN_ATTEMPT/windows"
+          timeout 30 gh api "repos/$REPO/git/refs" -f "ref=refs/heads/$branch" -f "sha=$sha" >/dev/null
+          echo "TM_COPY_BRANCH=$branch" >>"$GITHUB_ENV"
+          echo "TM_COPY_SHA=$sha" >>"$GITHUB_ENV"
+          echo "testing $sha on $branch, a copy of $TM_SHA"
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+
+      - name: build the release archives
+        shell: bash
+        run: |
+          if ! command -v zip >/dev/null; then
+            timeout 300 /c/msys64/usr/bin/pacman.exe -S --noconfirm --needed zip >/dev/null
+            export PATH="$PATH:/c/msys64/usr/bin"
+          fi
+          scripts/build.sh "$TM_VERSION"
+
+      - name: serve dist/ as a fake release and install with the one-liner
+        run: |
+          $srv = Join-Path $env:RUNNER_TEMP 'srv'
+          New-Item -ItemType Directory -Force -Path "$srv\latest\download" | Out-Null
+          Copy-Item dist\* "$srv\latest\download\"
+          Copy-Item scripts\install.ps1 "$srv\install.ps1"
+          $server = Start-Process -PassThru -FilePath python -ArgumentList @('-m', 'http.server', '--bind', '127.0.0.1', '--directory', $srv, $env:TM_PORT) -WindowStyle Hidden `
+            -RedirectStandardOutput "$env:RUNNER_TEMP\http.out" -RedirectStandardError "$env:RUNNER_TEMP\http.err"
+          $up = $false
+          for ($i = 0; $i -lt 50 -and -not $up; $i++) {
+            try { Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 "http://127.0.0.1:$env:TM_PORT/latest/download/SHA256SUMS" | Out-Null; $up = $true } catch { Start-Sleep -Milliseconds 200 }
+          }
+          if (-not $up) { Write-Output "::error::the release server did not start"; exit 1 }
+          $env:TENTMAKER_DOWNLOAD_BASE = "http://127.0.0.1:$env:TM_PORT"
+          irm -TimeoutSec 60 "http://127.0.0.1:$env:TM_PORT/install.ps1" | iex
+          Stop-Process -Id $server.Id -ErrorAction SilentlyContinue
+          Add-Content -Path $env:GITHUB_PATH -Value (Join-Path $env:ProgramFiles 'Tentmaker')
+
+      # tailscaled, not logged in, so its local API pipe is real.
+      - name: install tailscaled
+        run: |
+          $msi = Join-Path $env:RUNNER_TEMP 'tailscale.msi'
+          Invoke-WebRequest -UseBasicParsing -TimeoutSec 180 -OutFile $msi 'https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi'
+          $p = Start-Process msiexec.exe -Wait -PassThru -ArgumentList '/i', $msi, '/quiet', '/norestart', 'TS_NOLAUNCH=true'
+          if ($p.ExitCode -ne 0) { Write-Output "::error::the Tailscale installer exited $($p.ExitCode)"; exit 1 }
+          Get-Service Tailscale | Format-Table Name, Status
+          $up = $false
+          for ($i = 0; $i -lt 60 -and -not $up; $i++) {
+            $up = [bool]([System.IO.Directory]::GetFiles('\\.\pipe\') | Where-Object { $_ -like '*Tailscale*tailscaled*' })
+            if (-not $up) { Start-Sleep -Milliseconds 500 }
+          }
+          if (-not $up) { Write-Output "::error::tailscaled's pipe did not appear"; exit 1 }
+          try { Invoke-WebRequest -UseBasicParsing -TimeoutSec 15 https://api.github.com/zen | Out-Null; Write-Output "still online" }
+          catch { Write-Output "::error::installing Tailscale cut the runner off: $_"; exit 1 }
+
+      # Stand-ins for another tailnet device, MagicDNS, a LAN device, this
+      # host's own non-private addresses, the mesh API, a loopback service
+      # and a LAN multicast group, served by a SYSTEM task so they outlive
+      # the step.
+      - name: plant decoys
+        timeout-minutes: 6
+        run: |
+          Get-NetFirewallProfile | Format-Table Name, Enabled, DefaultOutboundAction, DefaultInboundAction
+          $if = (Get-NetRoute -DestinationPrefix '0.0.0.0/0' | Sort-Object RouteMetric | Select-Object -First 1).InterfaceIndex
+          $alias = (Get-NetAdapter -InterfaceIndex $if).Name
+          Get-NetIPInterface -InterfaceIndex $if | Format-Table AddressFamily, Dhcp, ConnectionState
+          # A static address on a DHCP interface turns DHCP off and drops the
+          # lease and the default route (the runner then loses GitHub), unless
+          # DHCP and static addresses may coexist.
+          netsh interface ipv4 set interface interface="$alias" dhcpstaticipcoexistence=enabled
+          if ($LASTEXITCODE -ne 0) { Write-Output "::error::this Windows can't keep DHCP next to static addresses"; exit 1 }
+          # A new address stays Tentative (not bindable) until duplicate
+          # address detection ends; the decoys need them at once.
+          foreach ($fam in @('IPv4', 'IPv6')) { Set-NetIPInterface -InterfaceIndex $if -AddressFamily $fam -DadTransmits 0 }
+          netsh interface ipv4 add address name="$alias" address=100.64.77.1 mask=255.255.255.255 skipassource=true
+          foreach ($a in @('10.77.0.1', '100.100.100.100', '192.0.2.77')) {
+            netsh interface ipv4 add address name="$alias" address=$a mask=255.255.255.255 skipassource=true
+          }
+          foreach ($a in @('fd7a:115c:a1e0::77', '2001:db8:77::1')) {
+            netsh interface ipv6 add address interface="$alias" address="$a/128" skipassource=true
+          }
+          $meta = ''
+          try { Invoke-WebRequest -UseBasicParsing -TimeoutSec 3 -Headers @{ Metadata = 'true' } 'http://169.254.169.254/metadata/instance?api-version=2021-02-01' | Out-Null }
+          catch {
+            Write-Output 'no instance metadata service here; planting a decoy at 169.254.169.254'
+            netsh interface ipv4 add address name="$alias" address=169.254.169.254 mask=255.255.255.255 skipassource=true
+            $meta = '169.254.169.254:80'
+          }
+          Get-NetIPInterface -InterfaceIndex $if | Format-Table AddressFamily, Dhcp, ConnectionState
+          for ($i = 0; $i -lt 60 -and (Get-NetIPAddress -InterfaceIndex $if | Where-Object AddressState -eq 'Tentative'); $i++) { Start-Sleep 1 }
+          Get-NetIPAddress -InterfaceIndex $if | Format-Table IPAddress, PrefixLength, PrefixOrigin, SkipAsSource, AddressState
+          try { Invoke-WebRequest -UseBasicParsing -TimeoutSec 15 https://api.github.com/zen | Out-Null; Write-Output "still online" }
+          catch { Write-Output "::error::the decoy addresses cut the runner off: $_"; exit 1 }
+          $py = (Get-Command python).Source
+          $decoy = (Resolve-Path scripts\abuse\decoy.py).Path
+          $log = Join-Path $env:RUNNER_TEMP 'decoy.log'
+          $specs = "100.64.77.1:8080 10.77.0.1:8080 [fd7a:115c:a1e0::77]:8080 100.100.100.100:80 udp:100.100.100.100:53 0.0.0.0:8767 [::]:8767 0.0.0.0:7433 [::]:7433 127.0.0.1:8766 [::1]:8766 mcast:239.77.77.77:7777 $meta"
+          $arg = "/c `"`"$py`" `"$decoy`" $specs > `"$log`" 2>&1`""
+          $act = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\cmd.exe" -Argument $arg
+          Register-ScheduledTask -TaskName tmdecoy -Action $act -User SYSTEM -RunLevel Highest -Force | Out-Null
+          Start-ScheduledTask -TaskName tmdecoy
+          $s = New-Object System.Net.Sockets.Socket([System.Net.Sockets.AddressFamily]::InterNetwork, [System.Net.Sockets.SocketType]::Dgram, [System.Net.Sockets.ProtocolType]::Udp)
+          $s.Connect('192.0.2.1', 53); $hostip = $s.LocalEndPoint.Address.ToString(); $s.Close()
+          Write-Output "host address: $hostip"
+          $urls = @('http://100.64.77.1:8080/', 'http://[fd7a:115c:a1e0::77]:8080/', 'http://10.77.0.1:8080/', 'http://100.100.100.100/',
+            'http://192.0.2.77:8767/', 'http://[2001:db8:77::1]:8767/', "http://${hostip}:8767/", "http://${hostip}:7433/", 'http://100.64.77.1:7433/',
+            'http://[fd7a:115c:a1e0::77]:7433/', 'http://[::1]:7433/', 'http://127.0.0.1:7433/', 'http://127.0.0.1:8766/', 'http://[::1]:8766/', 'http://127.0.0.1:8767/', 'http://[::1]:8767/')
+          if ($meta) { $urls += 'http://169.254.169.254/metadata/instance' }
+          foreach ($u in $urls) {
+            $ok = $false
+            for ($i = 0; $i -lt 30 -and -not $ok; $i++) {
+              try { Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 $u | Out-Null; $ok = $true } catch { Start-Sleep -Milliseconds 500 }
+            }
+            if (-not $ok) { Write-Output "::error::decoy $u does not answer"; Get-Content $log -ErrorAction SilentlyContinue; exit 1 }
+            Write-Output "decoy up: $u"
+          }
+          foreach ($u in @(@('100.100.100.100', '53'), @('239.77.77.77', '7777'))) {
+            python scripts\abuse\udpask.py $u[0] $u[1]
+            if ($LASTEXITCODE -ne 0) { Write-Output "::error::udp decoy $($u -join ':') does not answer"; Get-Content $log -ErrorAction SilentlyContinue; exit 1 }
+          }
+
+      - name: setup
+        id: setup
+        run: |
+          $out = (tentmaker setup --yes --json --no-mesh --no-gh --memory 2GiB --boost-memory 4GiB) -join "`n"
+          $rc = $LASTEXITCODE
+          Write-Output $out
+          if ($rc -ne 0) { Write-Output "::error::setup exited $rc"; exit 1 }
+          $v = $out | ConvertFrom-Json
+          if (-not $v.ok -or $v.service -ne 'running') { Write-Output "::error::setup failed"; exit 1 }
+          # Two 2-CPU slots, so the sibling runs while abuse looks for it.
+          $b = (tentmaker budget set --boost-cpus 4 --json) -join "`n" | ConvertFrom-Json
+          if (-not $b.ok) { Write-Output "::error::budget set failed"; exit 1 }
+          $svcPid = (Get-CimInstance Win32_Service -Filter "Name='Tentmaker'").ProcessId
+          Set-Content -Path "$env:RUNNER_TEMP\daemon-before.txt" -Value $svcPid
+          Write-Output "daemon pid $svcPid"
+          Get-NetFirewallRule -Group Tentmaker -ErrorAction SilentlyContinue | Format-Table Name, DisplayName, Action, Enabled
+
+      - name: run the attacks through Tentmaker
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          $start = [DateTime]::UtcNow
+          $c = ($env:GITHUB_TOKEN | tentmaker connect github --token-stdin --json) -join "`n"
+          if (-not ($c | ConvertFrom-Json).ok) { Write-Output "::error::connect failed"; exit 1 }
+          $r = (tentmaker repo add $env:REPO --mode checks --allow-public --workflow .github/workflows/tentmaker-abuse.yml --branch $env:TM_COPY_BRANCH --json) -join "`n"
+          if (-not ($r | ConvertFrom-Json).ok) { Write-Output "::error::repo add failed: $r"; exit 1 }
+          $jobs = @('abuse-sibling-windows', 'abuse-windows', 'abuse-oom-windows', 'abuse-pids-windows')
+          $headers = @{ Authorization = "Bearer $env:GITHUB_TOKEN"; Accept = 'application/vnd.github+json'; 'User-Agent' = 'tentmaker-abuse' }
+          $deadline = [DateTime]::UtcNow.AddMinutes(15)
+          $statuses = @{}
+          while ($true) {
+            try {
+              $all = Invoke-RestMethod -TimeoutSec 30 -Headers $headers "https://api.github.com/repos/$env:REPO/commits/$env:TM_COPY_SHA/statuses?per_page=100"
+            } catch { Start-Sleep -Seconds 10; continue }
+            $statuses = @{}
+            foreach ($s in $all) {
+              if ($s.context.StartsWith('tentmaker/') -and -not $statuses.ContainsKey($s.context)) {
+                $statuses[$s.context] = [ordered]@{ state = $s.state; description = $s.description; created_at = ([DateTime]$s.created_at).ToUniversalTime() }
+              }
+            }
+            $pending = @()
+            foreach ($j in $jobs) {
+              $s = $statuses["tentmaker/$j"]
+              if ($s -and $s.state -ne 'pending' -and $s.created_at -lt $start.AddSeconds(-5)) { Write-Output "::error::tentmaker/$j was set before this run; push a new commit"; exit 1 }
+              if (-not $s -or $s.state -eq 'pending') { $pending += $j }
+            }
+            Write-Output "$([DateTime]::UtcNow.ToString('HH:mm:ss')) waiting for: $($pending -join ' ')"
+            if ($pending.Count -eq 0) { break }
+            if ([DateTime]::UtcNow -gt $deadline) { Write-Output "::error::the abuse jobs did not finish within 15 minutes: $($pending -join ' ')"; break }
+            Start-Sleep -Seconds 10
+          }
+          $out = @{}
+          foreach ($k in $statuses.Keys) { $out[$k] = @{ state = $statuses[$k].state; description = $statuses[$k].description } }
+          $out | ConvertTo-Json | Set-Content -Path "$env:RUNNER_TEMP\statuses.json"
+          Get-Content "$env:RUNNER_TEMP\statuses.json"
+          $dir = New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\abuse-logs"
+          foreach ($j in $jobs) {
+            $log = "$env:ProgramData\Tentmaker\state\checks\$($env:REPO -replace '/', '_')-$($env:TM_COPY_SHA.Substring(0, 12))-$j.log"
+            Write-Output "== $log"
+            if (Test-Path $log) { Copy-Item $log (Join-Path $dir "$j.log"); Get-Content $log } else { Write-Output '(no log)' }
+          }
+
+      - name: check leftovers and the daemon
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: |
+          $h = "$env:RUNNER_TEMP\harness.txt"
+          $left = @()
+          for ($i = 0; $i -lt 60; $i++) {
+            $left = @(Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*tm-abuse-leftover*' -and $_.ProcessId -ne $PID })
+            if ($left.Count -eq 0) { break }
+            Start-Sleep -Seconds 2
+          }
+          if ($left.Count -gt 0) {
+            Add-Content $h "ATTACK background-process SUCCEEDED still running: $(($left | ForEach-Object { "$($_.ProcessId) $($_.CommandLine)" }) -join '; ')"
+          } else { Add-Content $h 'ATTACK background-process BLOCKED' }
+          $why = ''
+          $svc = Get-Service Tentmaker
+          if ($svc.Status -ne 'Running') { $why += " service is $($svc.Status);" }
+          $before = (Get-Content "$env:RUNNER_TEMP\daemon-before.txt").Trim()
+          $now = (Get-CimInstance Win32_Service -Filter "Name='Tentmaker'").ProcessId
+          if ("$now" -ne $before) { $why += " the daemon restarted ($before -> $now);" }
+          $st = (tentmaker status --json) -join "`n" | ConvertFrom-Json
+          if ($st.service -ne 'running') { $why += ' status says not running;' }
+          if ($st.paused) { $why += ' the daemon is paused;' }
+          if ($why) { Add-Content $h "ATTACK daemon-healthy SUCCEEDED$why" } else { Add-Content $h 'ATTACK daemon-healthy BLOCKED' }
+          Get-Content $h
+
+      # Fail closed: with the rules gone the device must refuse a job and
+      # doctor must say why; then setup puts them back. Harness checks print
+      # ATTACK lines too: BLOCKED means the device held.
+      - name: fail closed without the network rules
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          $h = "$env:RUNNER_TEMP\harness.txt"
+          Get-NetFirewallRule -Group Tentmaker -ErrorAction SilentlyContinue | Remove-NetFirewallRule
+          $r = (tentmaker repo add $env:REPO --mode checks --allow-public --workflow .github/workflows/tentmaker-abuse.yml `
+            --workflow .github/workflows/tentmaker-abuse-closed.yml --branch $env:TM_COPY_BRANCH --json) -join "`n"
+          if (-not ($r | ConvertFrom-Json).ok) { Write-Output "::error::repo add failed: $r"; exit 1 }
+          $st = (bash scripts/abuse/wait-status.sh $env:REPO $env:TM_COPY_SHA tentmaker/abuse-closed-windows 300) | ConvertFrom-Json
+          Write-Output "status: $($st.state) $($st.description)"
+          $dir = New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\abuse-logs"
+          $log = "$env:ProgramData\Tentmaker\state\checks\$($env:REPO -replace '/', '_')-$($env:TM_COPY_SHA.Substring(0, 12))-abuse-closed-windows.log"
+          $text = ''
+          if (Test-Path $log) { Copy-Item $log (Join-Path $dir 'abuse-closed-windows.log'); $text = Get-Content -Raw $log; Write-Output $text }
+          if ($st.state -in @('success', 'failure') -or $text -match 'ATTACK fail-closed SUCCEEDED') {
+            Add-Content $h "ATTACK fail-closed SUCCEEDED the job ran without the rules ($($st.state): $($st.description))"
+          } elseif ($st.state -eq 'error') {
+            Add-Content $h "ATTACK fail-closed BLOCKED refused ($($st.description))"
+          } else { Write-Output "::error::tentmaker/abuse-closed-windows is $($st.state) after 5 minutes: the device neither ran nor refused it" }
+          function NetFail($d) { @($d.checks | Where-Object { $_.status -eq 'fail' -and $_.what -match 'network rules' } | ForEach-Object { $_.what }) | Select-Object -First 1 }
+          $off = (tentmaker doctor --json) -join "`n" | ConvertFrom-Json
+          $why = NetFail $off
+          if ($why) { Add-Content $h "ATTACK fail-closed-doctor BLOCKED doctor says: $why" }
+          else { Add-Content $h 'ATTACK fail-closed-doctor SUCCEEDED doctor did not name the missing network rules'; $off | ConvertTo-Json -Depth 5 }
+          $out = (tentmaker setup --yes --json --no-mesh --no-gh --memory 2GiB --boost-memory 4GiB) -join "`n"
+          $on = (tentmaker doctor --json) -join "`n" | ConvertFrom-Json
+          $left = NetFail $on
+          if (-not $left -and (Get-NetFirewallRule -Group Tentmaker -ErrorAction SilentlyContinue)) { Add-Content $h 'ATTACK fail-closed-restore BLOCKED setup loaded the rules again' }
+          else { Add-Content $h "ATTACK fail-closed-restore SUCCEEDED the rules did not come back: $left"; Write-Output $out }
+          # Doctor exits non-zero while any check fails, and this harness has
+          # no mesh and no forge token. The ATTACK lines carry the verdict, so
+          # name the other checks and don't let doctor's exit code fail the step.
+          $on.checks | Where-Object { $_.status -eq 'fail' } | ForEach-Object { Write-Output "doctor after setup: $($_.what)" }
+          Get-Content $h -Tail 3
+          $global:LASTEXITCODE = 0
+
+      # allow_lan opens the LAN only: the tailnet and this host stay shut.
+      - name: allow_lan opens the LAN, not the tailnet
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          $cfg = "$env:ProgramData\Tentmaker\config.toml"
+          $s = Get-Content -Raw $cfg
+          if ($s -match '(?m)^\s*allow_lan\s*=') { $s = $s -replace '(?m)^(\s*allow_lan\s*=\s*).*$', '${1}true' }
+          elseif ($s -match '(?m)^\[guards\]\s*$') { $s = $s -replace '(?m)^\[guards\]\s*$', "[guards]`nallow_lan = true" }
+          else { $s += "`n[guards]`nallow_lan = true`n" }
+          [System.IO.File]::WriteAllText($cfg, $s)
+          Select-String -Path $cfg -Pattern 'allow_lan'
+          $out = (tentmaker setup --yes --json --no-mesh --no-gh --memory 2GiB --boost-memory 4GiB) -join "`n"
+          if (-not ($out | ConvertFrom-Json).ok) { Write-Output $out; Write-Output "::error::setup with allow_lan failed"; exit 1 }
+          Restart-Service Tentmaker
+          $d = (Get-NetFirewallRule -Group Tentmaker | Select-Object -First 1).Description
+          Write-Output "rules: $d"
+          if ($d -notmatch 'allow_lan=true') { Write-Output "::error::the loaded rules do not say allow_lan=true, so this step proves nothing"; exit 1 }
+          $r = (tentmaker repo add $env:REPO --mode checks --allow-public --workflow .github/workflows/tentmaker-abuse.yml `
+            --workflow .github/workflows/tentmaker-abuse-closed.yml --workflow .github/workflows/tentmaker-abuse-lan.yml --branch $env:TM_COPY_BRANCH --json) -join "`n"
+          if (-not ($r | ConvertFrom-Json).ok) { Write-Output "::error::repo add failed: $r"; exit 1 }
+          $st = (bash scripts/abuse/wait-status.sh $env:REPO $env:TM_COPY_SHA tentmaker/abuse-lan-windows 600) | ConvertFrom-Json
+          Write-Output "status: $($st.state) $($st.description)"
+          @{ 'tentmaker/abuse-lan-windows' = @{ state = $st.state; description = $st.description } } | ConvertTo-Json | Set-Content "$env:RUNNER_TEMP\statuses-lan.json"
+          $log = "$env:ProgramData\Tentmaker\state\checks\$($env:REPO -replace '/', '_')-$($env:TM_COPY_SHA.Substring(0, 12))-abuse-lan-windows.log"
+          if (Test-Path $log) { Copy-Item $log "$env:RUNNER_TEMP\abuse-logs\abuse-lan-windows.log"; Get-Content $log } else { Write-Output '(no log)' }
+
+      - name: judge
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: |
+          python scripts/abuse/judge.py --os windows --logs "$env:RUNNER_TEMP\abuse-logs" --statuses "$env:RUNNER_TEMP\statuses.json" `
+            --harness "$env:RUNNER_TEMP\harness.txt" --lan-statuses "$env:RUNNER_TEMP\statuses-lan.json" --out metrics/abuse-windows.json
+          exit $LASTEXITCODE
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ !cancelled() }}
+        with:
+          name: abuse-windows
+          path: metrics/abuse-windows.json
+          if-no-files-found: warn
+
+      - name: dump on failure
+        if: failure()
+        run: |
+          $ErrorActionPreference = 'Continue'
+          Write-Output "== status"; try { tentmaker status --json } catch { Write-Output $_ }
+          Write-Output "== daemon log"; Get-Content -Tail 300 "$env:ProgramData\Tentmaker\logs\tentmaker.log" -ErrorAction SilentlyContinue
+          Write-Output "== firewall"; Get-NetFirewallRule -Group Tentmaker -ErrorAction SilentlyContinue | Format-List Name, DisplayName, Action, Direction, Enabled
+          Write-Output "== decoys"; Get-Content "$env:RUNNER_TEMP\decoy.log" -ErrorAction SilentlyContinue
+          exit 0
+
+      - name: uninstall --purge
+        if: ${{ !cancelled() && steps.setup.outcome != 'skipped' }}
+        run: |
+          $out = (tentmaker uninstall --purge --yes --json) -join "`n"; Write-Output $out
+          $v = $out | ConvertFrom-Json
+          if (-not ($v.ok -and $v.purged)) { Write-Output "::error::uninstall did not finish"; exit 1 }
+          $left = @()
+          if (Get-NetFirewallRule -Group Tentmaker -ErrorAction SilentlyContinue) { $left += 'firewall rules' }
+          if (Get-Service Tentmaker -ErrorAction SilentlyContinue) { $left += 'service' }
+          if (Get-LocalUser tentmaker-runner -ErrorAction SilentlyContinue) { $left += 'user:tentmaker-runner' }
+          if ($left.Count -gt 0) { Write-Output "::error::left after uninstall --purge: $($left -join ', ')"; exit 1 }
+
+      - name: delete the throwaway branch
+        if: always() && env.TM_COPY_BRANCH != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: timeout 30 gh api -X DELETE "repos/$REPO/git/refs/heads/$TM_COPY_BRANCH" >/dev/null || echo "::warning::could not delete $TM_COPY_BRANCH"

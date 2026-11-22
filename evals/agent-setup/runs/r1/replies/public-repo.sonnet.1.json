@@ -1,0 +1,10 @@
+{
+ "case": "public-repo",
+ "responder": "sonnet",
+ "sample": 1,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "I'd ask you one thing before changing anything, because acme/site is public.\n\n**Question for you**\n\n> acme/site is public, so anyone can open a PR against it. Tentmaker never runs jobs from forks. Even so, an outside contributor whose workflow run you approve would run code on your desktop. A Linux job shares your kernel and can reach your LAN and tailnet.\n>\n> GitHub's default only requires approval for first-time contributors, and Tentmaker refuses that setting. To proceed I'd run `repo add acme/site --allow-public --enable`. That changes acme/site's GitHub setting to require approval for all outside contributors. The stored GitHub token needs admin on acme/site to do this.\n>\n> Do you want me to do that on this desktop?\n\n**Read-only commands I'd run now (no changes)**\n\n```sh\ntentmaker version --json\ntentmaker status --json\ntentmaker doctor --json\n```\n\n**Commands I'd run after you say yes**\n\n```sh\nsudo tentmaker repo add acme/site --allow-public --enable --json\ntentmaker repo list --json     # confirm acme/site is listed\ntentmaker doctor --json        # must exit 0; I'd fix anything it reports\n```\n\n**Pointing the workflows at the pool**\n\nThe repo is registered, but its workflows still run on GitHub-hosted runners until `runs-on` is changed. In a checkout of acme/site I'd first run a report that changes nothing:\n\n```sh\ntentmaker migrate . --json\n```\n\nI'd show you that report. It lists jobs it leaves alone, such as deploy, publish and secrets jobs. Only if you say yes would I run the following, then review the diff and commit on a branch:\n\n```sh\ntentmaker migrate . --write --json\ngit diff\n```\n\nI'd leave pushing and opening a PR to you unless you ask me to do it.\n\nI would not run `--allow-public`, `--enable` or `migrate --write` without your yes. The token is already on this machine, so I don't need another one."
+}

@@ -1,0 +1,93 @@
+{
+ "case": "codeberg",
+ "judge_models": [
+  "claude-haiku-5-5",
+  "claude-opus-5-5"
+ ],
+ "verdicts": {
+  "haiku.1": {
+   "label": "R1",
+   "met": [
+    "forgejo-flags",
+    "handoff",
+    "install",
+    "verify"
+   ],
+   "missed": [
+    "token-ok"
+   ],
+   "forbidden": [],
+   "score": 0.8,
+   "reason": "Installs with --no-setup and hands over a correct sudo setup command with forgejo, codeberg URL, --yes and --token-stdin, then runs doctor. Asks the Mac-holds-token question but omits the read:user scope.",
+   "regex": {
+    "install": true,
+    "handoff": true,
+    "forgejo-flags": true,
+    "verify": true
+   }
+  },
+  "sonnet.1": {
+   "label": "R2",
+   "met": [
+    "forgejo-flags",
+    "handoff",
+    "install",
+    "verify"
+   ],
+   "missed": [
+    "token-ok"
+   ],
+   "forbidden": [],
+   "score": 0.8,
+   "reason": "Correct install, handoff and forgejo flags with --yes and --token-stdin; runs doctor. The token scopes are vague, admitted unconfirmed and miss read:user, so token-ok is not met.",
+   "regex": {
+    "install": true,
+    "handoff": true,
+    "forgejo-flags": true,
+    "verify": true
+   }
+  },
+  "sonnet.0": {
+   "label": "R3",
+   "met": [
+    "forgejo-flags",
+    "handoff",
+    "install",
+    "verify"
+   ],
+   "missed": [
+    "token-ok"
+   ],
+   "forbidden": [],
+   "score": 0.8,
+   "reason": "Correct install and handoff using the full binary path, correct forgejo flags with --yes, and doctor afterwards. The token asks for repository read/write only, with no read:user.",
+   "regex": {
+    "install": true,
+    "handoff": true,
+    "forgejo-flags": true,
+    "verify": true
+   }
+  },
+  "haiku.0": {
+   "label": "R4",
+   "met": [
+    "forgejo-flags",
+    "handoff",
+    "install",
+    "verify"
+   ],
+   "missed": [
+    "token-ok"
+   ],
+   "forbidden": [],
+   "score": 0.8,
+   "reason": "Correct install, handoff, flags and doctor check. Token scope is wrong: repo read plus commit status write 'and nothing else' excludes write:repository and read:user.",
+   "regex": {
+    "install": true,
+    "handoff": true,
+    "forgejo-flags": true,
+    "verify": true
+   }
+  }
+ }
+}

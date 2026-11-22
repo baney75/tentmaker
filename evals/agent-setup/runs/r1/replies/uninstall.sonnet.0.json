@@ -1,0 +1,10 @@
+{
+ "case": "uninstall",
+ "responder": "sonnet",
+ "sample": 0,
+ "models": [
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5"
+ ],
+ "text": "I'll hold off on the destructive steps until you confirm. First I'd run two read-only checks:\n\n```sh\ntentmaker status --json\ntentmaker repo list --json\n```\n\n**Questions before I remove anything:**\n\n1. **Purge:** `uninstall --purge` deletes this laptop's Tentmaker config, the stored forge token for acme/webapp, state, cache and logs, and it can't be undone. Do you want that, or should I leave the config in place with a plain `uninstall`?\n2. **acme/webapp workflows:** this laptop is the only device serving acme/webapp, and its workflows use `runs-on: [self-hosted, tentmaker, ...]`. Once I remove Tentmaker, those jobs will wait forever for a runner. Do you want to change `runs-on` back to a hosted runner first? That would mean editing the files in `.github/workflows`, committing on a branch, and merging it, and I'd need your yes and the checkout's location. Or are you happy to fix those yourself afterwards?\n3. **Running jobs:** is it fine to remove it now, even if a job is mid-run? Otherwise I'll check `tentmaker status` and wait for it to finish.\n\n**Once you say yes, these are the commands I'd run:**\n\n```sh\nsudo tentmaker uninstall --purge --yes --json\nsudo rm /usr/local/bin/tentmaker\n```\n\nPurge removes the service (`dev.tentmaker.daemon`), the Tart VM sandboxes, and the config, secrets, state, cache and logs. The binary is the one thing it leaves behind, which is why the `rm` follows. I'd delete nothing else by hand.\n\nAfterwards I'd check that `command -v tentmaker` finds nothing and that `/Library/LaunchDaemons/dev.tentmaker.daemon.plist` is gone."
+}

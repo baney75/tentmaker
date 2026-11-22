@@ -1,0 +1,11 @@
+# One short job: the quickstart, chaos and upgrade scenarios' check.
+name: tm-scn-quick
+on: [push, pull_request]
+jobs:
+  hello:
+    runs-on: @RUNS_ON@
+    timeout-minutes: 5
+    steps:
+      - name: say hello
+        shell: @SHELL@
+        run: echo hello from tentmaker

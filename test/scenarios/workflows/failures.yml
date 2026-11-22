@@ -1,0 +1,46 @@
+# Each way a job can go wrong. The failures scenario checks the status and
+# kept log of each.
+name: tm-scn-failures
+on: [push, pull_request]
+jobs:
+  fails:
+    runs-on: @RUNS_ON@
+    timeout-minutes: 5
+    steps:
+      - name: fine
+        shell: @SHELL@
+        run: echo fine
+      - name: boom
+        shell: @SHELL@
+        run: exit 3
+      - name: never
+        shell: @SHELL@
+        run: echo this step must not run
+  tolerant:
+    runs-on: @RUNS_ON@
+    timeout-minutes: 5
+    steps:
+      - name: flaky
+        continue-on-error: true
+        shell: @SHELL@
+        run: exit 1
+      - name: after
+        shell: @SHELL@
+        run: echo after the flaky step
+  slow:
+    runs-on: @RUNS_ON@
+    timeout-minutes: 1
+    steps:
+      - name: nap
+        shell: @SHELL@
+        run: sleep 90
+  db:
+    runs-on: @RUNS_ON@
+    timeout-minutes: 5
+    services:
+      postgres:
+        image: postgres:16
+    steps:
+      - name: query
+        shell: @SHELL@
+        run: echo checks mode must not run this
