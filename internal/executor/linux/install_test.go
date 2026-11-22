@@ -68,9 +68,12 @@ func TestInstall(t *testing.T) {
 	v := newEnv(t)
 	v.hostFixture(t)
 	ctx := context.Background()
+	root := filepath.Join(v.dir, "state", "linux")
+	// An older setup's environment.d file.
+	must(t, os.MkdirAll(filepath.Join(root, ".config", "environment.d"), 0o755))
+	must(t, os.WriteFile(filepath.Join(root, ".config", "environment.d", "10-tentmaker.conf"), []byte("XDG_CONFIG_HOME=x\n"), 0o644))
 	must(t, Install(ctx, v.o))
 	cmds := strings.Join(v.f.commands(), "\n")
-	root := filepath.Join(v.dir, "state", "linux")
 	for _, s := range []string{
 		"podman --version",
 		"useradd --home-dir " + root + " --no-create-home --shell /usr/sbin/nologin --user-group tentmaker-runner",
@@ -129,14 +132,22 @@ func TestInstall(t *testing.T) {
 	if read(filepath.Join(v.dir, "systemd", "user@1234.service.d", "50-tentmaker.conf")) != userManagerDropIn {
 		t.Error("manager drop-in")
 	}
-	if !strings.Contains(read(filepath.Join(root, ".config", "environment.d", "10-tentmaker.conf")), "XDG_CONFIG_HOME="+root+"/.config") {
-		t.Error("environment.d")
+	// The runner's manager environment names its own config and runtime
+	// dirs, in a file that sorts after /etc/environment's
+	// 99-environment.conf, which may name another user's.
+	envd := read(filepath.Join(root, ".config", "environment.d", "zz-tentmaker.conf"))
+	if !strings.Contains(envd, "\nXDG_CONFIG_HOME="+root+"/.config\n") ||
+		!strings.Contains(envd, "\nXDG_RUNTIME_DIR="+filepath.Join(v.dir, "run-user", "1234")+"\n") {
+		t.Errorf("environment.d:\n%s", envd)
+	}
+	if "zz-tentmaker.conf" < "99-environment.conf" || "zz-tentmaker.conf" < "990-snapd.conf" {
+		t.Error("the environment.d file sorts before a vendor one")
+	}
+	if _, err := os.Stat(filepath.Join(root, ".config", "environment.d", "10-tentmaker.conf")); !os.IsNotExist(err) {
+		t.Error("the old environment.d file survived setup")
 	}
 	if !strings.Contains(read(filepath.Join(root, ".config", "containers", "containers.conf")), `cgroup_manager = "cgroupfs"`) {
 		t.Error("containers.conf does not pick the cgroupfs manager")
-	}
-	if got := read(filepath.Join(root, ".config", "systemd", "user", "podman.service.d", "50-tentmaker.conf")); !strings.Contains(got, "\nEnvironment=XDG_RUNTIME_DIR="+filepath.Join(v.dir, "run-user", "1234")+"\n") {
-		t.Errorf("podman.service drop-in does not pin the runner's runtime dir:\n%s", got)
 	}
 	if l, _ := os.Readlink(filepath.Join(root, ".config", "systemd", "user", "sockets.target.wants", "podman.socket")); l != "/usr/lib/systemd/user/podman.socket" {
 		t.Errorf("podman.socket link %q", l)

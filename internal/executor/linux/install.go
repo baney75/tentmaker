@@ -357,20 +357,21 @@ func Install(ctx context.Context, o Options) error {
 	if err := writeRoot(h, filepath.Join(dropDir, "50-tentmaker.conf"), []byte(userManagerDropIn), 0o644); err != nil {
 		return err
 	}
-	// Rootless podman refuses a ~/.config it doesn't own unless
-	// XDG_CONFIG_HOME names it; this sets it for the runner's manager.
-	envd := "# Written by tentmaker setup.\nXDG_CONFIG_HOME=" + filepath.Join(e.root, ".config") + "\n"
-	if err := writeRoot(h, filepath.Join(e.root, ".config", "environment.d", "10-tentmaker.conf"), []byte(envd), 0o644); err != nil {
+	// The runner's manager environment: rootless podman refuses a ~/.config
+	// it doesn't own unless XDG_CONFIG_HOME names it, and the runtime dir
+	// is the runner's own. systemd's environment.d generator also reads
+	// /etc/environment (99-environment.conf), which on some hosts names
+	// another user's XDG_CONFIG_HOME and XDG_RUNTIME_DIR; podman's service
+	// then fails to start. Later files win, and "zz" sorts after every
+	// numbered one.
+	envDir := filepath.Join(e.root, ".config", "environment.d")
+	if err := os.Remove(filepath.Join(envDir, "10-tentmaker.conf")); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	if err := writeRoot(h, e.managerEnvFile(), []byte(managerEnvText(filepath.Join(e.root, ".config"), e.runtimeDir(uid))), 0o644); err != nil {
 		return err
 	}
 	if err := writeRoot(h, e.podmanConf(), []byte(podmanConfText), 0o644); err != nil {
-		return err
-	}
-	// The manager's environment also takes /etc/environment (systemd's
-	// environment.d generator), which on some hosts names another user's
-	// XDG_RUNTIME_DIR; podman's service then fails to start. A unit's own
-	// Environment= wins over the manager's.
-	if err := writeRoot(h, e.podmanServiceDropIn(), []byte(podmanServiceDropInText(e.runtimeDir(uid))), 0o644); err != nil {
 		return err
 	}
 	link := filepath.Join(e.root, ".config", "systemd", "user", "sockets.target.wants", "podman.socket")
@@ -591,13 +592,11 @@ func rmIfExists(p string) error {
 	return nil
 }
 
-// podmanServiceDropIn pins podman.service's runtime dir to the runner's.
-func (e *Executor) podmanServiceDropIn() string {
-	return filepath.Join(e.root, ".config", "systemd", "user", "podman.service.d", "50-tentmaker.conf")
+// managerEnvFile is the runner's environment.d file.
+func (e *Executor) managerEnvFile() string {
+	return filepath.Join(e.root, ".config", "environment.d", "zz-tentmaker.conf")
 }
 
-func podmanServiceDropInText(runtimeDir string) string {
-	return "# Written by tentmaker setup. podman's service uses the runner's own\n" +
-		"# runtime dir, whatever the manager's environment says.\n" +
-		"[Service]\nEnvironment=XDG_RUNTIME_DIR=" + runtimeDir + "\n"
+func managerEnvText(configHome, runtimeDir string) string {
+	return "# Written by tentmaker setup.\nXDG_CONFIG_HOME=" + configHome + "\nXDG_RUNTIME_DIR=" + runtimeDir + "\n"
 }
