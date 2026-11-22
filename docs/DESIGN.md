@@ -1037,7 +1037,7 @@ section is rewritten.
 - The Actions cache names its caller by connection (the job's pasta uplink unit) instead of a
   secret in the job's environment. A capability in `.env` would be readable by every step and
   every action, and would have to be kept out of logs the runner writes; the uplink unit is
-  something another user cannot forge. The `sig` capability in returned URLs still binds a URL to one
+  something a step cannot forge. The `sig` capability in returned URLs still binds a URL to one
   job's grant, so a URL that leaks to another job or outlives its job is 404.
   The uplink unit names a job of the device, not which one: jobs share the runner uid (see Hold).
 - The control API names its caller instead of trusting the network (fence verification, item

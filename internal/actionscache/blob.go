@@ -176,7 +176,6 @@ func budgetOf(st Store) int64 {
 // errFull refuses a write past the budget, until eviction lands.
 var errFull = errors.New(denied + "the repo's Actions cache is at its budget")
 
-// bytes is the size of the index's entries.
 func (x *index) bytes() (n int64) {
 	for _, e := range x.Entries {
 		n += e.Size
