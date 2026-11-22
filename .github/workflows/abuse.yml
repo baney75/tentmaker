@@ -7,7 +7,8 @@
 # ATTACK <name> BLOCKED or SUCCEEDED; scripts/abuse/judge.py reads the check
 # logs the broker kept, adds what only the harness can see (leftover
 # processes, the daemon's health), writes metrics/abuse-<os>.json and fails
-# on any SUCCEEDED or missing line.
+# on any SUCCEEDED or missing line. Like e2e.yml, every repo add names an
+# author with no PRs, so these devices stay off other PRs' heads.
 name: abuse
 
 on:
@@ -231,7 +232,7 @@ jobs:
         run: |
           start=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           printf %s "$GITHUB_TOKEN" | sudo tentmaker connect github --token-stdin --json | jq -e '.ok == true' >/dev/null || { echo "::error::connect failed"; exit 1; }
-          sudo tentmaker repo add "$REPO" --mode checks --allow-public --workflow .github/workflows/tentmaker-abuse.yml --branch "$TM_COPY_BRANCH" --json |
+          sudo tentmaker repo add "$REPO" --mode checks --allow-public --workflow .github/workflows/tentmaker-abuse.yml --branch "$TM_COPY_BRANCH" --author tentmaker-e2e-nobody --json |
             jq -e '.ok == true' >/dev/null || { echo "::error::repo add failed"; exit 1; }
           jobs="abuse-sibling abuse abuse-oom abuse-pids"
           deadline=$((SECONDS + 900))
@@ -306,7 +307,7 @@ jobs:
             for t in iptables ip6tables; do sudo "$t" -w 5 -D OUTPUT -m owner --uid-owner "$uid" -j TENTMAKER || true; done
           fi
           sudo tentmaker repo add "$REPO" --mode checks --allow-public --workflow .github/workflows/tentmaker-abuse.yml \
-            --workflow .github/workflows/tentmaker-abuse-closed.yml --branch "$TM_COPY_BRANCH" --json | jq -e '.ok == true' >/dev/null ||
+            --workflow .github/workflows/tentmaker-abuse-closed.yml --branch "$TM_COPY_BRANCH" --author tentmaker-e2e-nobody --json | jq -e '.ok == true' >/dev/null ||
             { echo "::error::repo add failed"; exit 1; }
           st=$(bash scripts/abuse/wait-status.sh "$REPO" "$TM_COPY_SHA" tentmaker/abuse-closed 300)
           echo "status: $st"
@@ -368,7 +369,7 @@ jobs:
           sudo nft list table inet tentmaker || true
           sudo tentmaker repo add "$REPO" --mode checks --allow-public --workflow .github/workflows/tentmaker-abuse.yml \
             --workflow .github/workflows/tentmaker-abuse-closed.yml --workflow .github/workflows/tentmaker-abuse-lan.yml \
-            --branch "$TM_COPY_BRANCH" --json | jq -e '.ok == true' >/dev/null || { echo "::error::repo add failed"; exit 1; }
+            --branch "$TM_COPY_BRANCH" --author tentmaker-e2e-nobody --json | jq -e '.ok == true' >/dev/null || { echo "::error::repo add failed"; exit 1; }
           st=$(bash scripts/abuse/wait-status.sh "$REPO" "$TM_COPY_SHA" tentmaker/abuse-lan 600)
           echo "status: $st"
           jq -c '{"tentmaker/abuse-lan": .}' <<<"$st" >"$RUNNER_TEMP/statuses-lan.json"
@@ -602,7 +603,7 @@ jobs:
           $start = [DateTime]::UtcNow
           $c = ($env:GITHUB_TOKEN | tentmaker connect github --token-stdin --json) -join "`n"
           if (-not ($c | ConvertFrom-Json).ok) { Write-Output "::error::connect failed"; exit 1 }
-          $r = (tentmaker repo add $env:REPO --mode checks --allow-public --workflow .github/workflows/tentmaker-abuse.yml --branch $env:TM_COPY_BRANCH --json) -join "`n"
+          $r = (tentmaker repo add $env:REPO --mode checks --allow-public --workflow .github/workflows/tentmaker-abuse.yml --branch $env:TM_COPY_BRANCH --author tentmaker-e2e-nobody --json) -join "`n"
           if (-not ($r | ConvertFrom-Json).ok) { Write-Output "::error::repo add failed: $r"; exit 1 }
           $jobs = @('abuse-sibling-windows', 'abuse-windows', 'abuse-oom-windows', 'abuse-pids-windows')
           $headers = @{ Authorization = "Bearer $env:GITHUB_TOKEN"; Accept = 'application/vnd.github+json'; 'User-Agent' = 'tentmaker-abuse' }
@@ -677,7 +678,7 @@ jobs:
           $h = "$env:RUNNER_TEMP\harness.txt"
           Get-NetFirewallRule -Group Tentmaker -ErrorAction SilentlyContinue | Remove-NetFirewallRule
           $r = (tentmaker repo add $env:REPO --mode checks --allow-public --workflow .github/workflows/tentmaker-abuse.yml `
-            --workflow .github/workflows/tentmaker-abuse-closed.yml --branch $env:TM_COPY_BRANCH --json) -join "`n"
+            --workflow .github/workflows/tentmaker-abuse-closed.yml --branch $env:TM_COPY_BRANCH --author tentmaker-e2e-nobody --json) -join "`n"
           if (-not ($r | ConvertFrom-Json).ok) { Write-Output "::error::repo add failed: $r"; exit 1 }
           $st = (bash scripts/abuse/wait-status.sh $env:REPO $env:TM_COPY_SHA tentmaker/abuse-closed-windows 300) | ConvertFrom-Json
           Write-Output "status: $($st.state) $($st.description)"
@@ -728,7 +729,7 @@ jobs:
           Write-Output "rules: $d"
           if ($d -notmatch 'allow_lan=true') { Write-Output "::error::the loaded rules do not say allow_lan=true, so this step proves nothing"; exit 1 }
           $r = (tentmaker repo add $env:REPO --mode checks --allow-public --workflow .github/workflows/tentmaker-abuse.yml `
-            --workflow .github/workflows/tentmaker-abuse-closed.yml --workflow .github/workflows/tentmaker-abuse-lan.yml --branch $env:TM_COPY_BRANCH --json) -join "`n"
+            --workflow .github/workflows/tentmaker-abuse-closed.yml --workflow .github/workflows/tentmaker-abuse-lan.yml --branch $env:TM_COPY_BRANCH --author tentmaker-e2e-nobody --json) -join "`n"
           if (-not ($r | ConvertFrom-Json).ok) { Write-Output "::error::repo add failed: $r"; exit 1 }
           $st = (bash scripts/abuse/wait-status.sh $env:REPO $env:TM_COPY_SHA tentmaker/abuse-lan-windows 600) | ConvertFrom-Json
           Write-Output "status: $($st.state) $($st.description)"
