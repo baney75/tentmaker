@@ -288,3 +288,48 @@ func must2(b *testing.B, err error) {
 		b.Fatal(err)
 	}
 }
+
+// Jobs of one repo start together and race for slots; each job name gets
+// back the slot its last run used, whatever order they start in.
+func TestSlotAffinityByJobName(t *testing.T) {
+	v := newEnv(t)
+	v.installed(t)
+	ctx := context.Background()
+	key, _ := repocache.Key(core.CacheRepo{Forge: "github", Repo: "acme/app"})
+	slot := func(n string) string { return filepath.Join(v.e.jobsDir(), key[:12]+"-"+n) }
+	job := func(name, j string) core.ExecSpec {
+		s := cachedSpec(name, core.KindCheck, "acme/app")
+		s.Cache.Job = j
+		return s
+	}
+	clean := func(names ...string) {
+		v.f.respond = showResponder("inactive", "not-found", false)
+		for _, n := range names {
+			must(t, v.e.Clean(ctx, n))
+		}
+		v.f.respond = nil
+	}
+	must(t, v.e.Start(ctx, job("chk-a1", "test")))
+	must(t, v.e.Start(ctx, job("chk-b1", "build")))
+	if v.e.jobDir("chk-a1") != slot("0") || v.e.jobDir("chk-b1") != slot("1") {
+		t.Fatalf("first run: %s %s", v.e.jobDir("chk-a1"), v.e.jobDir("chk-b1"))
+	}
+	clean("chk-a1", "chk-b1")
+	// The other order next time: each still gets its own folder back.
+	must(t, v.e.Start(ctx, job("chk-b2", "build")))
+	must(t, v.e.Start(ctx, job("chk-a2", "test")))
+	if v.e.jobDir("chk-a2") != slot("0") || v.e.jobDir("chk-b2") != slot("1") {
+		t.Fatalf("second run: test in %s, build in %s", v.e.jobDir("chk-a2"), v.e.jobDir("chk-b2"))
+	}
+	clean("chk-a2", "chk-b2")
+	// A new job name takes a folder no other job last used.
+	must(t, v.e.Start(ctx, job("chk-c1", "lint")))
+	if v.e.jobDir("chk-c1") != slot("2") {
+		t.Fatalf("new job got %s, want %s", v.e.jobDir("chk-c1"), slot("2"))
+	}
+	// A preference whose slot is busy falls back to a free one.
+	must(t, v.e.Start(ctx, job("chk-c2", "lint")))
+	if d := v.e.jobDir("chk-c2"); d == slot("2") || d == v.e.jobDir("chk-c1") {
+		t.Fatalf("two jobs share %s", d)
+	}
+}

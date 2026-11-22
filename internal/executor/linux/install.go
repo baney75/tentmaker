@@ -276,6 +276,7 @@ func Install(ctx context.Context, o Options) error {
 		{e.priv, 0o700, 0, 0},
 		{e.secretDir(), 0o700, 0, 0},
 		{e.slotsDir(), 0o700, 0, 0},
+		{e.affinityDir(), 0o700, 0, 0},
 		{e.cacheMount(), 0o755, 0, 0},
 		{e.p.Lib, 0o755, 0, 0},
 		{e.shimDir(), 0o755, 0, 0},
@@ -541,6 +542,7 @@ func Uninstall(ctx context.Context, o Options, purge bool) error {
 	}
 	note(os.RemoveAll(e.secretDir()))
 	note(os.RemoveAll(e.slotsDir()))
+	note(os.RemoveAll(e.affinityDir()))
 	if purge {
 		if uerr == nil {
 			h.Run(ctx, Cmd{Path: "loginctl", Args: []string{"disable-linger", User}})

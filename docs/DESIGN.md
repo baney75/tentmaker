@@ -144,6 +144,7 @@ type Options struct {
     Log     *slog.Logger
 }
 func New(o Options) *Client
+func (c *Client) CheapPolls() bool   // core.CheapPoller: limit unknown, past its reset, or a quarter (at least 400) left
 func (c *Client) SetForkApproval(ctx context.Context, repo string) error       // require approval for all outside contributors (public) / disable fork PR workflows (private)
 func (c *Client) SetReadOnlyToken(ctx context.Context, repo string) error      // default GITHUB_TOKEN read-only
 func MigrateWorkflow(src []byte, platform string) (out []byte, report []string, changed bool, err error)
@@ -172,7 +173,8 @@ setup`), idempotent and safe to rerun.
 
 - **linux-podman** (port of `fleet-ci-job`, `install.sh`): user `tentmaker-runner` with no sudo
   and no docker group; a root-owned runner template (actions/runner pinned version and sha256);
-  per job a fresh copy, own HOME, a transient systemd unit in `tentmaker.slice` with `MemoryMax`
+  per job a fresh copy (`externals` a symlink and `bin/` hard links to the template, never
+  chowned; top-level files and any file the CI user could write are copied), own HOME, a transient systemd unit in `tentmaker.slice` with `MemoryMax`
   = job memory, `CPUQuota` = job CPUs, Nice 10, idle IO; rootless podman socket for container
   jobs with `DOCKER_HOST`; the slice's own `MemoryMax`/`CPUQuota` = the pool limit
   (`SetPoolLimit`); `Reset` restarts the runner user's manager and wipes containers. Platforms:
@@ -192,6 +194,39 @@ setup`), idempotent and safe to rerun.
   `CreateProcessAsUser`/`LogonUser` inside a Job Object with `JOB_OBJECT_LIMIT_JOB_MEMORY`,
   CPU rate control and `KILL_ON_JOB_CLOSE`. Platforms: `windows/<arch>`. Linux jobs on Windows
   (WSL2) are roadmap, not v1.
+
+**Repo caches (Linux, `internal/repocache`, `internal/executor/linux/cache.go`).** A job whose
+`ExecSpec.Cache` names a repo gets that repo's persistent cache and a stable folder; a job without
+one runs cold at `jobs/<name>` as before.
+
+- Store: `<cache_dir>/repos/<key>/`, where key is the first 128 bits of the SHA-256 of the
+  lowercased forge and repo, so names never nest. `repos/` is the daemon's (root) with mode 0700,
+  checked on every use (a root owned by anyone else is refused); a repo's folder belongs to the CI
+  user. `index.json` (written with `config.WriteAtomic`) keeps each repo's size and last use.
+- Mount: the job's unit gets `BindPaths=<store>/<key>:<state>/linux/repo-cache`, so only its own
+  mount namespace sees it, and `GOCACHE`, `GOMODCACHE`, `RUNNER_TOOL_CACHE`,
+  `AGENT_TOOLSDIRECTORY`, `npm_config_cache`, `PIP_CACHE_DIR`, `CARGO_HOME` and `XDG_CACHE_HOME`
+  point below that one fixed path. On the host `repo-cache` is an empty root-owned folder.
+  Container steps run in podman.service's mount namespace and don't see the bind.
+- Slots: the job folder is `jobs/<key[:12]>-<n>`: the slot the same job name (`CacheRepo.Job`)
+  used last time when it is free (jobs of a commit start together and would race for slot 0;
+  `<state>/linux-private/slot-affinity/` remembers), else the lowest free one no other job of the
+  repo last used, else the lowest free one. Go
+  keys build cache entries by source folder and test results by the env tests read (`TMPDIR`,
+  `HOME`), so a new folder per job rebuilt the repo's own packages every time (measured: `go test
+  -race` of this repo, 0.3 s at the same folder, 48 s at a new one). The runner name to slot record
+  is `<state>/linux-private/slots/<name>.json` (root only), written before the folder exists and
+  removed after it is gone; `List` reports jobs by name, and a slot folder no record claims by its
+  own name so it gets cleaned. `Reset` drops every slot and keeps the caches.
+- Cap: `cache_max` (default 10 GiB, 0 turns caches off). After each job's `Clean` the store
+  measures that repo and deletes whole repos, least recently used first, until the total fits; a
+  repo with a slot record is never deleted, and when slot records can't be read nothing is.
+- A cache that can't be prepared leaves the job cold (a warning), never failed.
+- Who gets one: see `WorkOffer.Cache` under Dispatch. The cache is per repo, not per branch: any
+  job of the repo may write what a later job of it reads.
+- macOS (tart) jobs get no cache yet: the executor has no folder share into a guest; `tart run
+  --dir` is the next step. Windows jobs get none: every job runs as the same user with no mount
+  namespace, so one repo's cache folder can't be kept from another repo's job.
 
 **Network isolation.** Install fences the runner user off and every `Start` checks the fence
 first; no rules means no job (fail closed). A Linux job also gets a network namespace of its own
@@ -338,6 +373,7 @@ type BrokerOptions struct {
     StateDir string
     Log     *slog.Logger
     Now     func() time.Time
+    OnWork  func()                           // after a poll finds work; the daemon kicks its worker
 }
 func NewBroker(o BrokerOptions) *Broker      // implements core.WorkSource
 func (b *Broker) Run(ctx context.Context) error   // poll loop: queued jobs cache, runner monitoring
@@ -356,12 +392,18 @@ type WorkerOptions struct {
 func NewWorker(o WorkerOptions) *Worker
 func (w *Worker) Run(ctx context.Context) error   // tick loop
 func (w *Worker) Tick(ctx context.Context) error
+func (w *Worker) Kick()                           // tick now, not at the next second; never blocks
 func (w *Worker) Status() WorkerStatus
 func (w *Worker) Pause(reason string); func (w *Worker) Resume()
 func (w *Worker) Shutdown(ctx context.Context)    // drain idle, leave busy ones running
 ```
 
-Broker: polls queued jobs per repo with backoff (5 s up to 30 s, x1.5 when idle), keeps a cache;
+Broker: polls queued jobs per repo, keeps a cache. A forge that implements `core.CheapPoller` and
+says `CheapPolls()` (GitHub: every poll is an ETag GET whose 304 costs no primary rate limit, and
+a quarter of the limit, at least 400 requests, is left) is polled every 2 s, or 500 ms per configured repo when that is
+more, to stay under GitHub's secondary limit of 900 requests a minute. Any other forge, a failed
+poll and a refused repo back off (5 s up to 30 s, x1.5 when idle). The broker ticks every second
+and a repo is due 100 ms early, so a 2 s poll doesn't slip to 3 s.
 on `Work`, matches queued jobs (oldest first) to the request: a job matches when it asks for
 `tentmaker` and every label it asks for is in the worker's labels for one of its platforms;
 refuses forks, denied repos (`deny_repo_patterns`), public repos without `allow_public`, and runs
@@ -388,7 +430,14 @@ quarantines its device. Tests run every runner-mode case again against `fakeforg
 since the default fake reports `JobID` and once hid that every real GitHub job was stopped or
 quarantined its device (review r1 partA first-F1, sol-F1).
 
-Worker: each tick (2 s) reads `Budget.Decide`, applies `SetPoolLimit`, reports `Running` and
+`WorkOffer.Cache` is the broker's word that the job may use its repo's persistent cache. Check
+jobs get it: the broker picks the commit and skips forks. A runner job gets it only when the repo
+is private and its fork PR workflows are off (`RepoInfo.ForkPolicy == "off"`, read at most an hour
+ago): a JIT runner takes whichever queued job matches its labels, so the granted job's own
+`FromFork` proves nothing about the job it runs. The worker sets `ExecSpec.Cache` (forge and repo)
+only from an offer with the flag and a job that isn't from a fork; an older broker never sets it.
+
+Worker: each tick (1 s, or at once after `Kick`) reads `Budget.Decide`, applies `SetPoolLimit`, reports `Running` and
 `Ended`, asks sources for `Free` offers, starts each with the matching executor, honors `Stop`,
 evicts on `Evict`, resets the executor when nothing runs and the node is dirty, persists
 `state.json` atomically, and on start reconciles: anything `List` shows that state doesn't know
@@ -642,7 +691,7 @@ section is rewritten.
 - VM images are package constants; `Options.Images` overrides them.
 - macOS guests are optional. darwin `Install` pulls the Linux image whenever it fits (one job's room plus the image), and the macOS image only when free disk covers everything plus a job, or with `setup --macos-guests` (`Options.MacOSGuests`: skips the job margin, but the image itself still has to fit). It records what it pulled in `<state>/macos-tart/guests.json`; the executor offers only those platforms (all pinned ones when the file is missing). When not even the Linux image fits, Install downloads nothing and returns nil, so setup exits 0 and installs the service; `Preflight` then reports the missing image as a problem, and `forHost` keeps the executor on Apple silicon so doctor can say so. An executor's optional `Notes(ctx) []core.Problem` shows in doctor as warnings: "macOS guests are off: the macOS image needs N GiB, M GiB free; run sudo tentmaker setup --macos-guests when you have room".
 - Linux `Reset` wipes podman images unless `KeepImages`.
-- No cache promotion between jobs in v1.
+- Linux jobs keep a cache per repo between jobs (Repo caches above); macOS and Windows jobs start cold. `cache_max` caps those caches, not all of `cache_dir`.
 - The JIT config reaches the runner as `ACTIONS_RUNNER_INPUT_JITCONFIG`, set inside the sandbox by the job script from its stdin hand-off (the runner reads and clears it); never in the daemon's environment or argv.
 - `SetPoolLimit` is a no-op on macOS and Windows.
 - Linux and Windows keep a copy of the tentmaker binary for check jobs. Setup writes it, and each check `Start` compares it with `Binary(platform)` (size, then sha256; equal pairs are remembered by size and mtime) and replaces it atomically when they differ, so an update never leaves check jobs on the old binary. Linux writes it root-owned 0755; Windows renames the old exe aside first (a running check may hold it) and deletes it once free. (internal/executor/guestbin)

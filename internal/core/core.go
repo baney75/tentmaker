@@ -175,9 +175,13 @@ type ExecSpec struct {
 
 // CacheRepo names one repo's persistent cache: the forge's name in the
 // config and the repo's owner/name. A job only ever sees its own repo's.
+// Job, the job's name, only steers which of the repo's job folders it gets
+// (the one its last run used, so path-keyed caches hit); it never picks
+// the cache.
 type CacheRepo struct {
 	Forge string `json:"forge"`
 	Repo  string `json:"repo"`
+	Job   string `json:"job,omitempty"`
 }
 
 // IsZero reports whether no cache is named.

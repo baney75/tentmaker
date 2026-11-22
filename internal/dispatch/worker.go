@@ -1328,5 +1328,5 @@ func offerCache(off core.WorkOffer) core.CacheRepo {
 	if !off.Cache || off.Job.FromFork || off.Job.Forge == "" || off.Job.Repo == "" {
 		return core.CacheRepo{}
 	}
-	return core.CacheRepo{Forge: off.Job.Forge, Repo: off.Job.Repo}
+	return core.CacheRepo{Forge: off.Job.Forge, Repo: off.Job.Repo, Job: off.Job.Name}
 }

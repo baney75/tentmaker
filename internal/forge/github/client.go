@@ -44,9 +44,11 @@ const (
 	InProgressRecheck = 15 * time.Second
 	// RateFloor: below this many remaining requests, wait for the reset.
 	RateFloor = 200
-	// CheapPollFloor: below this many remaining requests, CheapPolls is
-	// false and the broker polls at its slow, backed-off pace again.
-	CheapPollFloor = 1000
+	// CheapPollMin: CheapPolls is false below this many remaining
+	// requests, or below a quarter of the limit when that is more (1250 of
+	// a token's 5000, 400 of a workflow GITHUB_TOKEN's 1000); the broker
+	// then polls at its slow, backed-off pace again.
+	CheapPollMin = 2 * RateFloor
 	// Tries is how many times a request is sent before giving up.
 	Tries = 3
 	// GrantTTL is how long Tentmaker treats a JIT config as usable.
@@ -86,6 +88,7 @@ type Client struct {
 	runJobs  map[int64]runJobsEntry
 	rateLeft int // -1 = unknown
 	rateSet  time.Time
+	rateMax  int // X-RateLimit-Limit; 0 = unknown
 }
 
 type etagEntry struct {
@@ -272,11 +275,19 @@ func (c *Client) waitForRate(ctx context.Context) error {
 // GET, and a 304 doesn't count against the primary rate limit, so polling
 // unchanged repos is free while plenty of the limit is left. It is true
 // while the limit is unknown (no response yet), the last reading is at or
-// above CheapPollFloor, or that reading's reset time has passed.
+// above cheapFloor, or that reading's reset time has passed.
 func (c *Client) CheapPolls() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.rateLeft < 0 || c.rateLeft >= CheapPollFloor || !c.now().Before(c.rateSet)
+	return c.rateLeft < 0 || c.rateLeft >= cheapFloor(c.rateMax) || !c.now().Before(c.rateSet)
+}
+
+// cheapFloor is CheapPollMin or a quarter of limit, whichever is more.
+func cheapFloor(limit int) int {
+	if limit/4 > CheapPollMin {
+		return limit / 4
+	}
+	return CheapPollMin
 }
 
 func (c *Client) noteRate(h http.Header) {
@@ -289,9 +300,11 @@ func (c *Client) noteRate(h http.Header) {
 		return
 	}
 	reset, _ := strconv.ParseInt(h.Get("X-RateLimit-Reset"), 10, 64)
+	limit, _ := strconv.Atoi(h.Get("X-RateLimit-Limit"))
 	c.mu.Lock()
 	c.rateLeft = n
 	c.rateSet = time.Unix(reset, 0)
+	c.rateMax = limit
 	c.mu.Unlock()
 }
 

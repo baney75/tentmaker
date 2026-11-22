@@ -45,7 +45,11 @@ type slotRec struct {
 	Key   string `json:"key"`
 }
 
-func (e *Executor) slotsDir() string            { return filepath.Join(e.priv, "slots") }
+func (e *Executor) slotsDir() string    { return filepath.Join(e.priv, "slots") }
+func (e *Executor) affinityDir() string { return filepath.Join(e.priv, "slot-affinity") }
+func (e *Executor) affinityPath(key string) string {
+	return filepath.Join(e.affinityDir(), key[:12]+".json")
+}
 func (e *Executor) slotPath(name string) string { return filepath.Join(e.slotsDir(), name+".json") }
 
 // cacheMount is where a job sees its repo's cache. On the host it is an
@@ -101,8 +105,11 @@ func (e *Executor) slots() (map[string]slotRec, error) {
 	return out, nil
 }
 
-// claimSlot records a slot for job name and returns it. The record exists
-// before the folder, so the folder is never one List can't account for.
+// claimSlot records a slot for job name and returns it: the slot c.Job's
+// last run used when it is free (jobs of one repo start at the same time,
+// and Go's cache only hits at the same folder), else the lowest free one.
+// The record exists before the folder, so the folder is never one List
+// can't account for.
 func (e *Executor) claimSlot(name string, c core.CacheRepo) (slotRec, error) {
 	key, err := repocache.Key(c)
 	if err != nil {
@@ -121,22 +128,75 @@ func (e *Executor) claimSlot(name string, c core.CacheRepo) (slotRec, error) {
 	for _, r := range held {
 		taken[r.Slot] = true
 	}
-	for n := 0; n <= maxSlotIndex; n++ {
-		s := key[:12] + "-" + strconv.Itoa(n)
+	free := func(s string) bool {
 		if taken[s] {
-			continue
+			return false
 		}
-		if _, err := os.Lstat(filepath.Join(e.jobsDir(), s)); err == nil {
-			continue // a leftover folder no record names; Reset or Clean removes it
-		}
-		r := slotRec{Slot: s, Forge: c.Forge, Repo: c.Repo, Key: key}
-		data, _ := json.Marshal(r)
-		if err := config.WriteAtomic(e.slotPath(name), data, 0o600); err != nil {
-			return slotRec{}, err
-		}
-		return r, nil
+		_, err := os.Lstat(filepath.Join(e.jobsDir(), s))
+		return err != nil // a leftover folder no record names; Reset or Clean removes it
 	}
-	return slotRec{}, fmt.Errorf("no free job folder for %s", c.Repo)
+	aff := e.affinity(key)
+	pick := ""
+	if s, ok := aff[c.Job]; ok && c.Job != "" && strings.HasPrefix(s, key[:12]+"-") && slotRe.MatchString(s) && free(s) {
+		pick = s
+	}
+	// The lowest free slot no other job of the repo last used, then any.
+	last := map[string]bool{}
+	for _, s := range aff {
+		last[s] = true
+	}
+	for pass := 0; pick == "" && pass < 2; pass++ {
+		for n := 0; n <= maxSlotIndex; n++ {
+			s := key[:12] + "-" + strconv.Itoa(n)
+			if free(s) && (pass == 1 || !last[s]) {
+				pick = s
+				break
+			}
+		}
+	}
+	if pick == "" {
+		return slotRec{}, fmt.Errorf("no free job folder for %s", c.Repo)
+	}
+	r := slotRec{Slot: pick, Forge: c.Forge, Repo: c.Repo, Key: key}
+	data, _ := json.Marshal(r)
+	if err := config.WriteAtomic(e.slotPath(name), data, 0o600); err != nil {
+		return slotRec{}, err
+	}
+	if c.Job != "" && aff[c.Job] != pick {
+		aff[c.Job] = pick
+		e.saveAffinity(key, aff)
+	}
+	return r, nil
+}
+
+// affinity maps a repo's job names to the slot each last used. It is only
+// a preference, so a missing or bad file reads as empty.
+func (e *Executor) affinity(key string) map[string]string {
+	out := map[string]string{}
+	data, err := os.ReadFile(e.affinityPath(key))
+	if err != nil || json.Unmarshal(data, &out) != nil {
+		return map[string]string{}
+	}
+	return out
+}
+
+// maxAffinity bounds the job names kept per repo.
+const maxAffinity = 64
+
+func (e *Executor) saveAffinity(key string, aff map[string]string) {
+	if len(aff) > maxAffinity {
+		return // a repo with this many job names gets no new preferences
+	}
+	data, err := json.Marshal(aff)
+	if err != nil {
+		return
+	}
+	if err := os.MkdirAll(e.affinityDir(), 0o700); err != nil {
+		return
+	}
+	if err := config.WriteAtomic(e.affinityPath(key), data, 0o600); err != nil {
+		e.log.Warn("slot preference not saved", "error", err)
+	}
 }
 
 func (e *Executor) dropSlot(name string) { os.Remove(e.slotPath(name)) }

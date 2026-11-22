@@ -113,7 +113,7 @@ func TestOffersMarkCacheSafeJobsOnly(t *testing.T) {
 			t.Fatalf("starts = %v", names)
 		}
 		spec, _ := w.ex.Spec(names[0])
-		if spec.Cache != (core.CacheRepo{Forge: "github", Repo: repoSite}) {
+		if spec.Cache != (core.CacheRepo{Forge: "github", Repo: repoSite, Job: "test"}) {
 			t.Fatalf("check job cache = %+v", spec.Cache)
 		}
 	})
