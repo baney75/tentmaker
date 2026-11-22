@@ -136,7 +136,17 @@ func (OSHost) Stream(ctx context.Context, c Cmd, stdin io.Reader, stdout io.Writ
 		cmd.Env = baseEnv
 	}
 	cmd.Dir = "/"
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdin, stdout, stdout
+	cmd.Stdout, cmd.Stderr = stdout, stdout
+	if stdin != nil {
+		// Copy stdin ourselves: exec's own copy would keep Wait waiting on a
+		// stdin (a debug shell's connection) that never ends after the
+		// process exits. Wait closes w, which ends this copy's next write.
+		w, err := cmd.StdinPipe()
+		if err != nil {
+			return -1, err
+		}
+		go func() { io.Copy(w, stdin); w.Close() }()
+	}
 	cmd.WaitDelay = 5 * time.Second
 	err = cmd.Run()
 	code := -1

@@ -163,3 +163,18 @@ func TestDebugRefuses(t *testing.T) {
 		t.Fatal("a shell without a timeout ran")
 	}
 }
+
+// A shell that exits while its stdin (the debug connection) is still open
+// ends at once and cleanly, not after WaitDelay with an error.
+func TestStreamEndsWithOpenStdin(t *testing.T) {
+	if _, err := os.Stat("/bin/sh"); err != nil {
+		t.Skip("no /bin/sh")
+	}
+	r, w := io.Pipe()
+	defer w.Close()
+	start := time.Now()
+	code, err := OSHost{}.Stream(context.Background(), Cmd{Path: "/bin/sh", Args: []string{"-c", "exit 0"}, Timeout: time.Minute}, r, io.Discard)
+	if err != nil || code != 0 || time.Since(start) > 3*time.Second {
+		t.Fatalf("code %d err %v after %s", code, err, time.Since(start))
+	}
+}
