@@ -77,14 +77,10 @@ sample() {
 	measure_s "status_${round}_$rep" "${st:-none}"
 }
 
-# reset_caches: the next cold run starts with no repo cache, no job slots
-# (a restart drops them) and no container images.
+# reset_caches: the next cold run starts with no repo cache, and no job
+# slots or podman images (the daemon's reset at start drops both).
 reset_caches() {
-	local uid
 	sleep 5 # the ended job's cleanup
-	uid=$(id -u tentmaker-runner)
-	timeout 120 sudo docker -H "unix:///run/user/$uid/podman/podman.sock" system prune -a -f >/dev/null 2>&1 ||
-		log "could not prune the runner's podman images"
 	timeout 120 sudo systemctl stop tentmaker
 	sudo find /var/cache/tentmaker/repos -mindepth 1 -delete 2>/dev/null || true
 	timeout 120 sudo systemctl start tentmaker

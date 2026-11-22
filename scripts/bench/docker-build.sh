@@ -1,16 +1,20 @@
 #!/usr/bin/env bash
 # docker-build.sh: the Docker workload. Builds test/bench/Dockerfile (a
-# pinned two-stage build of tentmaker itself) from the repo root.
+# pinned two-stage build of tentmaker itself) from the repo root, runs the
+# image once and removes it.
 #
-# GitHub's runners build with BuildKit. Under Tentmaker the docker CLI talks
-# to rootless podman, which has no BuildKit endpoint, so the classic builder
-# API is used (podman builds it with buildah). Tentmaker keeps no layer cache
-# between jobs yet; this number is the baseline for that work.
+# GitHub's runners build with docker and BuildKit. Under Tentmaker the job
+# builds with its own rootless podman CLI (buildah): the docker CLI there
+# goes through the runner's podman socket, which a checks-mode job could not
+# reach in the first bench runs. Neither side keeps a layer cache between
+# jobs; this number is the baseline for one.
 set -euo pipefail
+tag=localhost/tm-bench:${GITHUB_SHA:-local}
+engine=docker
 if [ "${TENTMAKER:-}" = 1 ]; then
-	export DOCKER_BUILDKIT=0
+	engine=podman
 fi
-tag=tm-bench:${GITHUB_SHA:-local}
-docker build --pull -f test/bench/Dockerfile -t "$tag" .
-docker run --rm "$tag" version
-docker image rm "$tag" >/dev/null
+"$engine" --version
+"$engine" build --pull -f test/bench/Dockerfile -t "$tag" .
+"$engine" run --rm "$tag" version
+"$engine" image rm "$tag" >/dev/null
