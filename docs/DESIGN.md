@@ -587,13 +587,15 @@ are rediscovered every 30 s; a peer failing 3 calls in a row is skipped for a mi
   a folder or binary the elevated user owns fails the walk. Before setup makes the service's folder
   and copy, `binsafe.OwnNewFiles` sets its token's default owner to Administrators, so nothing it
   creates is ever owned by the user (setting the owner after the create would leave a moment in
-  which it is); without elevation setup makes no copy. `install.ps1`, run as Administrator into a
+  which it is); without elevation setup makes no copy. `update` and `rollback` do the same before
+  they write the new binary or the `.prev` copy; before, an elevated `update` left them owned by
+  the user and the next `rollback` refused them. `install.ps1`, run as Administrator into a
   system folder, gives the binary to Administrators, and a folder named `Tentmaker` (the default
   `%ProgramFiles%\Tentmaker`) gets Administrators as owner and a protected DACL (SYSTEM and
   Administrators full, Users read and execute), because the inherited CREATOR OWNER entry of
-  Program Files would name the user. When that folder was owned by anyone else before, the
-  installer deletes `tentmaker.exe.prev`, the copy rollback would run, which that owner could
-  have planted. Before, every Windows install failed setup with "owned by S-1-5-21-..., not
+  Program Files would name the user. When that folder, or `tentmaker.exe.prev` itself, was owned
+  by anyone else before, the installer deletes `tentmaker.exe.prev`, the copy rollback would
+  run, which that owner could have planted. Before, every Windows install failed setup with "owned by S-1-5-21-..., not
   SYSTEM or Administrators".
 - `setup --json` reports `binary`, the path the service runs. After a copy it is not the binary
   on PATH, and `update` and `rollback` change only it.

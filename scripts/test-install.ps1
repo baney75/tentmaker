@@ -106,6 +106,9 @@ try {
         try {
             New-Item -ItemType Directory -Path $sys -Force | Out-Null
             Set-Content -LiteralPath (Join-Path $sys 'tentmaker.exe.prev') -Value 'planted'
+            foreach ($p in @($sys, (Join-Path $sys 'tentmaker.exe.prev'))) {
+                Write-Host "     before: $p is owned by $((Get-Acl -LiteralPath $p).GetOwner([Security.Principal.SecurityIdentifier]).Value)"
+            }
             & $installer -InstallDir $sys -NoSetup
             $me = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
             foreach ($p in @($sys, (Join-Path $sys 'tentmaker.exe'))) {

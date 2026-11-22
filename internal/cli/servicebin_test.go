@@ -256,3 +256,33 @@ func TestSetupRefusesCopyWhenItCannotOwnIt(t *testing.T) {
 		t.Errorf("service installed: %+v", f.svc.spec)
 	}
 }
+
+// update and rollback write the new binary and the .prev copy as root. On
+// Windows those files would be owned by the elevated user, and the next
+// rollback refused them (the upgrade scenario's rollback failed on exactly
+// this), so both make Administrators the owner before they write anything.
+func TestUpdateAndRollbackOwnNewFilesFirst(t *testing.T) {
+	f := newFixture(t)
+	f.writeExe("tm")
+	f.setUp()
+	f.up.newer = true
+	f.svc.installed = false
+	owned := false
+	f.env.OwnNewFiles = func() error { owned = true; return nil }
+	f.up.onApply = func() {
+		if !owned {
+			t.Error("update applied before OwnNewFiles")
+		}
+	}
+	if code := f.run("", "update", "--json"); code != ExitOK || len(f.up.appliedTo) != 1 {
+		t.Fatalf("update: exit %d applied to %v\n%s", code, f.up.appliedTo, f.stdout)
+	}
+	owned = false
+	f.env.OwnNewFiles = func() error { return errors.New("not elevated") }
+	if code := f.run("", "rollback", "--json"); code == ExitOK || len(f.up.rollbackTo) != 0 {
+		t.Fatalf("rollback without OwnNewFiles: exit %d to %v", code, f.up.rollbackTo)
+	}
+	if code := f.run("", "update", "--json"); code == ExitOK || len(f.up.appliedTo) != 1 {
+		t.Fatalf("update without OwnNewFiles: exit %d applied to %v", code, f.up.appliedTo)
+	}
+}

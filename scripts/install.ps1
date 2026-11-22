@@ -194,13 +194,16 @@ function Install-Tentmaker {
             $was = (Get-Acl -LiteralPath $InstallDir).GetOwner([Security.Principal.SecurityIdentifier]).Value
             Icacls $InstallDir '/setowner' '*S-1-5-32-544'
             Icacls $InstallDir '/inheritance:r' '/grant:r' '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' '*S-1-5-32-545:(OI)(CI)RX'
-            if (@('S-1-5-18', 'S-1-5-32-544') -notcontains $was) {
-                # Until now its owner could plant files here; the rollback
-                # copy is the one the service would run.
-                $prev = "$target.prev"
-                if (Test-Path -LiteralPath $prev) {
+            # The rollback copy is one the service would run. Delete it when
+            # its owner, or until now the folder's, could have changed it
+            # (an elevated `tentmaker update` used to leave it owned by the user).
+            $prev = "$target.prev"
+            if (Test-Path -LiteralPath $prev) {
+                $prevOwner = (Get-Acl -LiteralPath $prev).GetOwner([Security.Principal.SecurityIdentifier]).Value
+                $trusted = @('S-1-5-18', 'S-1-5-32-544')
+                if ($trusted -notcontains $was -or $trusted -notcontains $prevOwner) {
                     Remove-Item -LiteralPath $prev -Force
-                    Say "removed $prev, which $was could have changed"
+                    Say "removed $prev, which $prevOwner could have changed"
                 }
             }
         }
