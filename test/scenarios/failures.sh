@@ -46,10 +46,40 @@ fi
 check "slow ends in failure ($st)" test "${st%% *}" = failure
 check "slow says it timed out ($st)" grep -q "timed out at step nap" <<<"$st"
 sleep 15
+# Podman's network namespace is one per device, shared by every job's
+# containers (docs/DESIGN.md, linux executor): its holder, its pasta uplink
+# and the unit holding podman's pause process run as the runner from setup
+# on, so they are not left over from a job. They are told apart by their
+# unit's cgroup, never by name: a job's leak can run `sleep infinity` too.
+DEVICE_UNITS="tentmaker-podnet.service tentmaker-podnet-uplink.service tentmaker-podns.service"
+# device_unit PID: the per-device unit PID runs in, or nothing.
+device_unit() {
+	local cg u
+	cg=$(sed -n 's/^0:://p' "/proc/$1/cgroup" 2>/dev/null) || return 0
+	for u in $DEVICE_UNITS; do
+		case "$cg/" in */"$u"/*) printf '%s' "$u" ;; esac
+	done
+}
+# runner_leftovers: the runner's processes outside the per-device units. The
+# runner user's own service manager, its session bus (setup waits for that
+# bus) and podman's socket service are not job processes either.
+runner_leftovers() {
+	local pid args u
+	ps -u tentmaker-runner -o pid=,args= 2>/dev/null |
+		grep -Ev 'systemd --user|\(sd-pam\)|dbus-daemon --session|dbus-broker|podman system service|catatonit' |
+		while read -r pid args; do
+			u=$(device_unit "$pid")
+			if [ -n "$u" ]; then
+				printf '%s %s (%s)\n' "$pid" "$args" "$u" >>"$W/device-procs"
+				continue
+			fi
+			printf '%7s %s\n' "$pid" "$args"
+		done
+}
 if [ "$OS" = linux ]; then
-	# The runner user's own service manager, its session bus (setup waits
-	# for that bus) and podman's socket service are not job processes.
-	left=$(ps -u tentmaker-runner -o pid=,args= 2>/dev/null | grep -Ev 'systemd --user|\(sd-pam\)|dbus-daemon --session|dbus-broker|podman system service|catatonit' || true)
+	: >"$W/device-procs"
+	left=$(runner_leftovers)
+	measure_s device_processes "$(cat "$W/device-procs")"
 	units=$(systemctl list-units --no-legend --state=active 'tentmaker-job*' 2>/dev/null || true)
 else
 	left=$(ps1 Runner-Procs)
@@ -58,6 +88,16 @@ fi
 measure_s leftover_processes "$left"
 check "no process left for the runner user after the timeout ($left)" test -z "$left"
 check "no job unit left active ($units)" test -z "$units"
+if [ "$OS" = linux ]; then
+	# The exclusion must not hide a real leak: a runner process with the
+	# holder's very argv, in the same slice, but in a unit of its own.
+	sudo systemd-run --quiet --uid=tentmaker-runner --unit=tm-scn-leak.service --slice=tentmaker.slice sleep infinity
+	sleep 1
+	: >"$W/device-procs"
+	planted=$(runner_leftovers)
+	sudo systemctl stop tm-scn-leak.service || true
+	check "a planted leak in the same slice is still reported ($planted)" grep -q 'sleep infinity' <<<"$planted"
+fi
 
 # db: planned out. By now the other three are done, so the broker has seen
 # this commit many times.

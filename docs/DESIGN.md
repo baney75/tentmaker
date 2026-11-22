@@ -244,7 +244,10 @@ physical LAN only, never what the tailnet routes.
   reach. A host-network container can then reach no host service's abstract Unix socket and
   listen on none of the host's addresses. This namespace is one per device, not one per job: the
   containers every job starts through the service share it (and its loopback), as they share
-  the service. A job's own `podman` CLI keeps the job's namespace. `Reset` fails unless the pause
+  the service. Its three units run as the runner from `Install` on, between jobs too, so they
+  are not a job's leftovers; the failures scenario tells them apart by unit cgroup, never by
+  argv (`sleep infinity` is also what a leak looks like). A job's own `podman` CLI keeps the
+  job's namespace. `Reset` fails unless the pause
   process and the user manager are both outside the host's network namespace
   (`/proc/<pid>/ns/net` differs from the daemon's), then checks the mounts through `podman
   unshare` and fails on any difference. Doctor (`Preflight`) reports either one in the host's
