@@ -42,6 +42,8 @@ const (
 	// stack or output), in bytes.
 	MaxMessage = 1 << 10
 	MaxDetail  = 4 << 10
+	// MaxName caps a case's suite, name and file, in bytes.
+	MaxName = 512
 	// testsFileMax caps a stored tests file when it is read back.
 	testsFileMax = 8 << 20
 )
@@ -182,6 +184,7 @@ func (r TestResults) Capped() TestResults {
 	for _, c := range r.Cases {
 		c.Message = capText(c.Message, MaxMessage)
 		c.Detail = capText(c.Detail, MaxDetail)
+		c.Suite, c.Name, c.File = capText(c.Suite, MaxName), capText(c.Name, MaxName), capText(c.File, MaxName)
 		if c.Status == TestFailed {
 			failed = append(failed, c)
 		} else {

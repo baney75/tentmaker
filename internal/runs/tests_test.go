@@ -64,6 +64,14 @@ func TestMergePrefersJUnit(t *testing.T) {
 	}
 }
 
+func TestCappedNames(t *testing.T) {
+	long := strings.Repeat("n", 200<<10)
+	c := TestResults{Cases: []TestCase{{Suite: long, Name: long, File: long, Status: TestFailed}}}.Capped().Cases[0]
+	if len(c.Suite) > MaxName || len(c.Name) > MaxName || len(c.File) > MaxName {
+		t.Fatalf("suite %d, name %d, file %d bytes", len(c.Suite), len(c.Name), len(c.File))
+	}
+}
+
 func TestFlakySameCommit(t *testing.T) {
 	recs := []Record{
 		tested("tm-box-1", "abcdef1234", "refs/heads/main", Failure, 1, 3, "pkg.TestNet"),
