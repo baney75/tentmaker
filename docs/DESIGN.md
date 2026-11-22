@@ -64,6 +64,9 @@ internal/executor/windows/ dedicated local user, Job Object limits, fresh dir pe
 internal/executor/fake/   in-memory core.Executor for tests
 internal/dispatch/        Broker (forge side) and Worker (device side)
 internal/mesh/            tailnet peer API: discovery, WhoIs auth, remote WorkSource, claims
+internal/runs/            run history: records, log tails, redaction, stats, wait
+internal/alerts/          webhooks on failure, recovery and slow jobs
+internal/executor/joblog/ reads a job's log from its job folder without following the job's links
 internal/service/         install the daemon as a systemd / launchd / Windows service
 internal/update/          stable/dev channels, verified self-update with rollback
 internal/httpsafe/        redirect policy that keeps credential headers on their origin
@@ -643,8 +646,14 @@ or this device's own name, is nobody's. The work and archive handlers pass the c
 the broker (`core.WithCallerNode`), which serves a grant's reports and archive only to the node it
 was granted to; `core.ErrOtherNode` from `Work` is a 403. So a node that announces the name of a
 device that dropped out of discovery inherits none of its grants. Claim and release bodies name the
-grantee, not the caller, so they are not bound. Bodies are JSON, capped at 1 MiB, 10 s
-timeouts, except the archive stream (10 min, 2 GiB). Peers
+grantee, not the caller, so they are not bound. Run history endpoints (`Options.Runs`, a `RunsSource`; absent when nil): `GET /v1/runs` (runs.Query
+as URL parameters -> runs.Answer, this device's records, running jobs and, on a broker, the jobs it
+holds queued), `GET /v1/runs/log?id=&max=` (runs.LogAnswer, 404 when the device doesn't have the
+job) and `POST /v1/rerun {device, repo, run_id}` (only a broker answers; the token never leaves
+it). `Node.PoolRuns`, `PoolRunLog` and `PoolRerun` ask this device and every peer, merge, and
+report a peer that failed in `Answer.Errors`. Answers are capped at 8 MiB (runs) and 2 MiB (logs).
+Bodies are JSON, capped at 1 MiB, 10 s
+timeouts, except the archive stream (10 min, 2 GiB) and the run history answers. Peers
 are rediscovered every 30 s; a peer failing 3 calls in a row is skipped for a minute.
 
 ## Updates and channels (internal/update, scripts/)
@@ -731,13 +740,105 @@ irm https://raw.githubusercontent.com/baney75/tentmaker/main/scripts/install.ps1
 Then `sudo tentmaker setup` (wizard), or for agents:
 `sudo tentmaker setup --yes --json --memory 4GiB --boost-memory 12GiB --repo owner/name`.
 
+## Run history and alerts (internal/runs, internal/alerts)
+
+```go
+// core
+type JobLog struct { Data []byte; Size int64 }
+type Usage struct { PeakMemoryBytes int64; CPUSeconds float64; CacheBytes int64 }
+type JobInspector interface {                 // an Executor that can show a job
+    JobLog(ctx context.Context, name string, max int64) (JobLog, error)
+    JobUsage(ctx context.Context, name string) (Usage, error)
+}
+type Rerunner interface { RerunFailed(ctx context.Context, repo string, runID int64) error }
+type JobReport struct { Conclusion, FailedStep string; Log []byte; LogErr error }
+type JobReporter interface {                  // a Forge that reports a finished job (GitHub)
+    JobReport(ctx context.Context, repo string, jobID, maxLog int64) (JobReport, error)
+}
+
+// dispatch
+type RunRecorder interface { JobEnded(rec runs.Record, log []byte) }  // WorkerOptions.Runs
+type ReportRecorder interface { ForgeReport(rep runs.ForgeReport) }    // BrokerOptions.Reports
+func (w *Worker) RunningRecords() []runs.Record
+func (w *Worker) JobLog(ctx context.Context, name string, max int64) (core.JobLog, bool, error)
+func (b *Broker) Queued(repo, sha string, runID int64) []string
+
+// runs
+type Record struct { ID, Kind, Forge, Repo, Workflow, Job string; JobID, RunID int64; RunURL, Ref,
+    SHA, Device, Executor, Platform string; Slot int; QueuedAt, StartedAt, EndedAt time.Time;
+    Conclusion, FailedStep, Note string; PeakMemoryBytes int64; CPUSeconds float64;
+    CacheBytes int64; HasLog bool; LogSource string }  // LogSource: "forge" or "runner-diag"
+type ForgeReport struct { ID, Device, Forge, Repo, Job string; JobID, RunID int64; RunURL string;
+    EndedAt time.Time; Conclusion, FailedStep string; Log []byte }
+type Query struct { Repo, SHA, ID string; RunID int64; Failed bool; Since time.Time; Limit int }
+func Open(dir string, max int) *Store         // Add, List, Log, Err
+func Redact(data []byte, extra ...[]byte) []byte
+func Stats(recs []Record, since, now time.Time) Report
+func Wait(ctx context.Context, look func(context.Context) (Snapshot, error), o WaitOptions) (WaitResult, error)
+
+// alerts
+func New(o Options) *Notifier                 // Run, JobEnded, Test, Counts, Enabled
+```
+
+- A record is the job on the device that ran it. Its `ID` is the runner name the device gave the
+  job (`core.NamePattern`), so it is unique in the pool and safe in a path. The worker builds it
+  when a job ends, before `Clean`: the executor's `JobLog` and `JobUsage` are read while the job
+  folder and cgroup still exist. Usage is also sampled every 5 s while the job runs and the
+  highest reading of each number kept, because a cgroup is gone once its unit exits.
+- A runner job's conclusion, failed step and log come from the forge. The runner's `_diag` logs
+  hold only trace lines: actions/runner writes step output to `_diag/pages` and deletes the pages
+  once it uploads them. So when a runner job ends identified, its broker, which holds the forge
+  token, reads the job (`GET /repos/{repo}/actions/jobs/{id}`: conclusion, and the first step
+  whose conclusion is `failure` or `timed_out`) and its log (`.../jobs/{id}/logs`, a redirect to a
+  signed URL fetched without the token, at most 64 MiB read, the last 512 KiB kept). It tries
+  every 10 s, 12 times, while the job is not completed or the read fails, and 3 times while the
+  log is not up yet. This works for every executor, the darwin one too, which can show no log.
+- The worker writes the record first, from the executor's diag log (`Job result` lines and the
+  failed step, `LogSource` `runner-diag`; `unknown` where the executor has no log). The broker's
+  result then replaces the conclusion and failed step, and, when the log was read, the log tail
+  (`LogSource` `forge`); a conclusion that changes fires the alerts then. A result that comes
+  before the worker's record waits in memory for it. For a job that ran on a peer, the broker
+  keeps a copy of the record (`LogSource` `forge`, its device the peer's) with the forge log;
+  `runs.Merge` puts the copy's conclusion on the peer's record and `PoolRunLog` prefers a `forge`
+  log to a `runner-diag` one. If the forge can't be read, the record keeps the diag conclusion
+  and tail and says `runner-diag`. A check job's conclusion comes from its check result. A job
+  Tentmaker stopped (budget, guards, shutdown) is `cancelled` with the reason in `Note`.
+- The store is `<state>/runs`: `index.json` with the last `history_max` records (default 2000)
+  and one log file per job, the last 512 KiB, redacted before it is written. Every file goes
+  through `config.WriteAtomic`, mode 0600 root. The oldest records and their logs go first.
+- Redaction replaces GitHub and GitLab tokens, JWTs, a JIT config line and any base64 run of 120
+  or more characters (a JIT config), `Authorization` and `Private-Token` values, passwords in
+  URLs, AWS key ids and Slack and Discord webhook paths with `***`, plus any exact secret bytes
+  the caller passes. The runner masks the secrets it knows before it writes a log; these catch
+  the rest. A live job's log passes through `Redact` whenever it is served.
+- Job logs are readable by any local user except the CI user (GET /v1/runs/log on the control
+  API), like status and pool. Decision: an agent's MCP server runs as the user, and making it
+  root to read a redacted tail would be worse than the tail itself.
+- `wait_for_run` settles when it has seen at least one record, every record has ended and no
+  broker holds a job queued for the commit, all for 20 s, because a job that needs another one
+  queues only after it ends. A runner record that ended `unknown` without a forge result counts
+  as not ended for `runs.ForgeGrace` (2 minutes), so the broker's result can land. A look that
+  fails is retried at the next poll. `Broker.Queued`
+  returns nothing unless a sha or a run id narrows it.
+- Stats: p50 and p95 by nearest rank over ended jobs in the window. The saving is each job's
+  minutes rounded up, as GitHub bills, times `runs.HostedRate` for the job's OS, and every answer
+  says it is an estimate and when the rates were checked.
+- Alerts run on the device that ran the job, and on the broker for a peer's job whose forge
+  result changed its conclusion, so a pool with alerts on both may send one twice. `JobEnded` never blocks: a full queue (64) drops
+  the alert and counts it, with one warning a minute. Each send has a 10 s timeout, each alert a
+  15 minute cooldown per repo and job, and `recovered` compares with the last conclusion of the
+  same repo and job on this device (cancelled and unknown don't reset it). Errors name only the
+  webhook's host, because Slack and Discord URLs are credentials; `url_secret` keeps them in the
+  secret store.
+
 ## Testing
 
 - `go vet ./...` and `go test ./...` pass on Linux, macOS and Windows.
 - Cross-compile check: `GOOS=linux,darwin,windows` x `GOARCH=amd64,arm64` all build.
 - No test touches the real host: OS calls go through small interfaces with fakes. Tests that
   need root, podman, tart or a real tailnet are behind the `live` build tag.
-- Fakes: `forge/fake`, `executor/fake`, a fake `Tailscale`, a fake power source.
+- Fakes: `forge/fake` (`Reruns`, `MRerunFailed`), `executor/fake` (`SetLog`, `SetUsage`), a fake
+  `Tailscale`, a fake power source.
 
 ## Decisions made while building (v0.1)
 

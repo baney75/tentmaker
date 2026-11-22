@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"time"
 )
 
 // ProtocolVersion is the MCP revision this server speaks.
@@ -38,6 +39,15 @@ type Controller interface {
 	MigrateWorkflows(ctx context.Context, repoPath, platform string, write bool) (any, error)
 	InstallOnDevice(ctx context.Context, host, channel, memory, boostMemory string) (any, error)
 	Update(ctx context.Context, channel string) (any, error)
+
+	// Run history across the pool.
+	Runs(ctx context.Context, repo, sha string, failed bool, limit int) (any, error)
+	Logs(ctx context.Context, jobID string, lines int) (any, error)
+	Rerun(ctx context.Context, target string) (any, error)
+	Stats(ctx context.Context, since, repo string) (any, error)
+	// WaitForRun blocks until every Tentmaker job for repo at sha (or for
+	// the run at runURL) has ended, or timeout passes.
+	WaitForRun(ctx context.Context, repo, sha, runURL string, timeout time.Duration) (any, error)
 }
 
 // JSON-RPC error codes.

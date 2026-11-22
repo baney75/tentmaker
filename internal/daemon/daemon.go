@@ -282,6 +282,7 @@ type Daemon struct {
 	worker     *dispatch.Worker
 	broker     *dispatch.Broker
 	node       *mesh.Node
+	hist       *history
 	execs      []core.Executor
 	forges     Forges
 	problems   map[string][]core.Problem // by component
@@ -574,6 +575,7 @@ func (d *Daemon) apply(cfg config.Config) {
 				Log:          log,
 				Now:          d.o.Now,
 				OnWork:       d.kickWorker,
+				Reports:      historyProxy{d},
 			})
 			bc = startComp(d.runCtx, log, "broker", b.Run)
 			log.Info("broker started", "forges", forges.Tokens, "repos", len(cfg.Repos))
@@ -586,6 +588,18 @@ func (d *Daemon) apply(cfg config.Config) {
 		d.mu.Lock()
 		d.forges = forges
 		d.mu.Unlock()
+	}
+
+	// Run history and alerts.
+	hkey := keyOf(cfg.Device, cfg.StateDir, cfg.HistoryMax, cfg.Alerts)
+	if hkey != d.keys["history"] {
+		h := d.newHistory(cfg, log)
+		d.mu.Lock()
+		old := d.hist
+		d.hist = h
+		d.mu.Unlock()
+		old.close()
+		d.keys["history"] = hkey
 	}
 
 	// Mesh node.
@@ -607,6 +621,7 @@ func (d *Daemon) apply(cfg config.Config) {
 				Device: cfg.Device, Pool: cfg.Mesh.Pool, Port: cfg.Mesh.Port, Members: cfg.Mesh.Members,
 				Tailscale: d.o.Tailscale, Broker: src, Version: d.o.Version,
 				Status: func() any { return d.Status(context.Background()) },
+				Runs:   runsSource{d},
 				Log:    log,
 			})
 			nc := startComp(d.runCtx, log, "mesh", n.Run)
@@ -649,6 +664,7 @@ func (d *Daemon) apply(cfg config.Config) {
 			Log:       log,
 			Now:       d.o.Now,
 			RelayAddr: d.RelayAddress,
+			Runs:      historyProxy{d},
 		})
 		wc := startComp(d.runCtx, log, "worker", w.Run)
 		d.mu.Lock()

@@ -193,6 +193,9 @@ func NewServer(h Handler, token string, ident Identify, log *slog.Logger) *Serve
 	s.mux.HandleFunc("POST /v1/reload", s.auth(func(w http.ResponseWriter, r *http.Request) {
 		s.reply(w, nil, h.Reload(r.Context()))
 	}))
+	if rh, ok := h.(RunsHandler); ok {
+		s.addRuns(rh)
+	}
 	if po, ok := h.(PROpener); ok {
 		s.mux.HandleFunc("POST /v1/pr", s.auth(func(w http.ResponseWriter, r *http.Request) {
 			var req core.PullRequest

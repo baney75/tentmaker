@@ -1,15 +1,20 @@
 package github
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/baney75/tentmaker/internal/core"
+	"github.com/baney75/tentmaker/internal/httpsafe"
 )
 
 type apiRepoRef struct {
@@ -41,6 +46,14 @@ type apiJob struct {
 	CreatedAt  string   `json:"created_at"`
 	RunnerID   int64    `json:"runner_id"`
 	RunnerName string   `json:"runner_name"`
+	HeadSHA    string   `json:"head_sha"`
+	HTMLURL    string   `json:"html_url"`
+	Workflow   string   `json:"workflow_name"`
+	StartedAt  string   `json:"started_at"`
+	Steps      []struct {
+		Name       string `json:"name"`
+		Conclusion string `json:"conclusion"`
+	} `json:"steps"`
 }
 
 type apiRepo struct {
@@ -94,7 +107,16 @@ func toJob(repo string, run apiRun, j apiJob) core.Job {
 		CreatedAt:  created,
 		RunnerID:   j.RunnerID,
 		RunnerName: j.RunnerName,
+		HeadSHA:    firstNonEmpty(j.HeadSHA, run.HeadSHA),
+		HTMLURL:    j.HTMLURL,
 	}
+}
+
+func firstNonEmpty(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
 }
 
 // listRuns lists every run of repo with status, all pages, conditionally.
@@ -439,6 +461,18 @@ func (c *Client) DeleteRunner(ctx context.Context, repo string, runnerID int64) 
 	return err
 }
 
+// RerunFailed reruns the failed and cancelled jobs of a finished run
+// (core.Rerunner). GitHub answers 201; a run still in progress is a 403
+// with its reason.
+func (c *Client) RerunFailed(ctx context.Context, repo string, runID int64) error {
+	rp, err := repoPath(repo)
+	if err != nil {
+		return err
+	}
+	_, err = c.send(ctx, http.MethodPost, fmt.Sprintf("%s/actions/runs/%d/rerun-failed-jobs", rp, runID), nil, http.StatusCreated)
+	return err
+}
+
 // CancelRun cancels a workflow run. A run that already finished (409) is
 // fine.
 func (c *Client) CancelRun(ctx context.Context, repo string, runID int64) error {
@@ -448,4 +482,94 @@ func (c *Client) CancelRun(ctx context.Context, repo string, runID int64) error 
 	}
 	_, err = c.send(ctx, http.MethodPost, fmt.Sprintf("%s/actions/runs/%d/cancel", rp, runID), nil, http.StatusAccepted, http.StatusConflict)
 	return err
+}
+
+// maxJobLog caps how much of a job log is read; only the last maxLog bytes
+// are kept.
+const maxJobLog = 64 << 20
+
+// JobReport reads a finished job's conclusion, its first failed step and
+// the tail of its log (core.JobReporter). The log endpoint redirects to a
+// signed URL, which is fetched without the token. A job not completed yet
+// has Conclusion "".
+func (c *Client) JobReport(ctx context.Context, repo string, jobID, maxLog int64) (core.JobReport, error) {
+	rp, err := repoPath(repo)
+	if err != nil {
+		return core.JobReport{}, err
+	}
+	var j apiJob
+	if err := c.getJSON(ctx, fmt.Sprintf("%s/actions/jobs/%d", rp, jobID), false, &j); err != nil {
+		return core.JobReport{}, err
+	}
+	if j.Status != "completed" {
+		return core.JobReport{}, nil
+	}
+	rep := core.JobReport{Conclusion: j.Conclusion, HeadSHA: j.HeadSHA, Workflow: j.Workflow}
+	if t, err := time.Parse(time.RFC3339, j.StartedAt); err == nil {
+		rep.StartedAt = t
+	}
+	for _, s := range j.Steps {
+		if s.Conclusion == "failure" || s.Conclusion == "timed_out" {
+			rep.FailedStep = s.Name
+			break
+		}
+	}
+	rep.Log, rep.LogErr = c.jobLog(ctx, fmt.Sprintf("%s/actions/jobs/%d/logs", rp, jobID), maxLog)
+	return rep, nil
+}
+
+func (c *Client) jobLog(ctx context.Context, p string, maxLog int64) ([]byte, error) {
+	res, err := c.do(ctx, request{method: http.MethodGet, path: p, noRedirect: true})
+	if err != nil {
+		return nil, err
+	}
+	if res.status == http.StatusOK {
+		return tailBytes(bytes.NewReader(res.body), maxLog)
+	}
+	loc, err := url.Parse(res.header.Get("Location"))
+	if res.status < 300 || res.status >= 400 || err != nil || loc.Host == "" ||
+		(loc.Scheme != "https" && !(loc.Scheme == "http" && strings.HasPrefix(c.base, "http://"))) {
+		return nil, fmt.Errorf("github: GET %s: no log redirect (status %d)", p, res.status)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, loc.String(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("github: job log: %s", c.redact(err.Error()))
+	}
+	req.Header.Set("User-Agent", userAgent)
+	hc := httpsafe.Guard(c.http)
+	if hc.Timeout == 0 {
+		hc.Timeout = HTTPTimeout
+	}
+	lr, err := hc.Do(req)
+	if err != nil {
+		return nil, errors.New("github: job log: fetch failed") // the URL is signed; keep it out
+	}
+	defer lr.Body.Close()
+	if lr.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("github: job log: status %d", lr.StatusCode)
+	}
+	return tailBytes(io.LimitReader(lr.Body, maxJobLog), maxLog)
+}
+
+// tailBytes reads r and keeps its last n bytes.
+func tailBytes(r io.Reader, n int64) ([]byte, error) {
+	buf := make([]byte, 0, min(n, 1<<20)*2)
+	chunk := make([]byte, 64<<10)
+	for {
+		k, err := r.Read(chunk)
+		buf = append(buf, chunk[:k]...)
+		if int64(len(buf)) > 2*n {
+			buf = append(buf[:0], buf[int64(len(buf))-n:]...)
+		}
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, errors.New("github: job log: read failed")
+		}
+	}
+	if int64(len(buf)) > n {
+		buf = buf[int64(len(buf))-n:]
+	}
+	return buf, nil
 }

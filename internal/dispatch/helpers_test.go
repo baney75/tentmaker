@@ -209,6 +209,8 @@ type wrig struct {
 	dir     string
 	sources []core.WorkSource
 	silent  bool
+	// runs, when set before the worker is built, keeps its run history.
+	runs RunRecorder
 	// async leaves the worker's Starts running after a tick; by default
 	// the rig waits for them, so a tick's starts are done when it returns.
 	async bool
@@ -315,6 +317,7 @@ func (r *rig) newWorker(wr *wrig) *Worker {
 		StateDir:  wr.dir,
 		Log:       r.log.With("worker", wr.name),
 		Now:       r.clk.Now,
+		Runs:      wr.runs,
 	})
 }
 

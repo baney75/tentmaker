@@ -37,7 +37,15 @@ tentmaker migrate --pr [PATH] [--platform linux|macos|windows] [--all]
 tentmaker pause [--for DURATION] [REASON...]
 tentmaker resume
 tentmaker doctor [--json]
-tentmaker logs [-f] [-n LINES]
+tentmaker logs [-f] [-n LINES]   The service's own log.
+tentmaker logs JOB-ID [--follow] [-n LINES]
+                                  One job's redacted log tail, from whichever device ran it.
+tentmaker runs [--repo R] [--sha SHA] [--failed] [-n 20] [--json]
+                                  The pool's run history, newest first, running jobs included.
+tentmaker rerun JOB-ID|RUN-URL    Rerun the run's failed jobs through the forge (needs root).
+tentmaker stats [--since 7d] [--repo R] [--json]
+                                  Queue wait and duration p50/p95, minutes, estimated saving.
+tentmaker alerts test             Send a test message to every [[alerts]] webhook (needs root).
 tentmaker update [--channel stable|dev] [--check]
 tentmaker rollback
 tentmaker uninstall [--purge] [--yes]
@@ -49,9 +57,41 @@ tentmaker check-run --out DIR     Run inside a sandbox: CheckBundle JSON on stdi
 ```
 
 Commands that change the device (setup, budget set, schedule add/remove, repo add/remove,
-connect, pause, resume, update, rollback, uninstall) need root or Administrator and exit 3
-with the exact command to rerun (`sudo tentmaker ...`, or "open PowerShell as
-Administrator"). status, pool, budget, repo list, doctor, logs, version and migrate do not.
+connect, pause, resume, update, rollback, uninstall, rerun, alerts test) need root or
+Administrator and exit 3 with the exact command to rerun (`sudo tentmaker ...`, or "open
+PowerShell as Administrator"). status, pool, budget, repo list, doctor, logs, runs, stats,
+version and migrate do not.
+
+## Run history: runs, logs, rerun, stats
+
+Every device keeps one record per job it ran in `<state>/runs` (the last `history_max`,
+default 2000) and a redacted log tail of up to 512 KiB per job. With the mesh on, `runs`,
+`logs JOB-ID`, `rerun` and `stats` ask every device in the pool and merge the answers; a device
+that doesn't answer is listed under `errors` (`not counted:` in text), never silently dropped.
+Without the service, `runs` and `logs` read this device's own history and say so.
+
+- `runs --json` prints `{"service", "records": [Record], "queued": [...], "errors": [...]}`. A
+  Record has `id` (the job id, the runner name, like `tm-box-1a2b3c`), `repo`, `workflow`,
+  `job`, `run_id`, `run_url`, `sha`, `device`, `platform`, `queued_at`, `started_at`,
+  `ended_at`, `conclusion` (`success`, `failure`, `cancelled`, `error`, `unknown`, `running`),
+  `failed_step`, `note`, `peak_memory_bytes`, `cpu_seconds`, `cache_bytes` and `has_log`.
+  `-n` is 1 to 5000.
+- `logs JOB-ID` prints the tail as it is; `-n` keeps the last lines; `--follow` (or `-f`)
+  polls every second until the job ends. `--json` prints `{"id", "device", "running",
+  "lines"}`. The tail is redacted: tokens, JIT configs, bearer and basic credentials and
+  URLs with passwords are replaced with `***` before the device stores or serves it. Any
+  local user but the CI user reads job logs, so an agent's MCP server needs no root.
+- `rerun` takes a job id or a run URL (`https://github.com/OWNER/NAME/actions/runs/ID`) and
+  asks the broker that serves the repo to rerun the run's failed jobs. The forge token stays
+  on the broker. Checks-mode jobs have no forge run and are refused with a fix.
+- `stats --json` prints `{"since", "until", "repos": [...], "total", "estimate"}`, each repo
+  with `jobs`, `failed`, `failure_rate`, `queue_wait_p50_s`, `queue_wait_p95_s`,
+  `duration_p50_s`, `duration_p95_s`, `minutes`, `billed_minutes` and
+  `estimated_saving_usd`. The saving is billed minutes (each job rounded up, as GitHub bills)
+  at GitHub-hosted per-minute rates, labeled as an estimate. `--since` takes `h` and `d`
+  windows up to 3650 days.
+- `alerts test` sends one test message through every alert and prints how each went; it exits
+  1 when any failed. Errors name the webhook's host only, never its URL.
 
 ## status
 
@@ -191,7 +231,10 @@ caller it can't name, and everyone but root and SYSTEM when the runner's ids can
 other local user reads GET /v1/status and /v1/pool. GET /v1/doctor makes the daemon call the
 forges, so it needs the token or an admin caller (root, SYSTEM or an elevated Administrator); a
 `tentmaker doctor` that can't use it runs doctor locally. Run as a user, that local doctor skips the
-sandbox checks, which read state only root can read, and says to run `sudo tentmaker doctor`. POST /v1/pause {reason, for_s},
+sandbox checks, which read state only root can read, and says to run `sudo tentmaker doctor`. GET /v1/runs (the runs.Query
+fields as URL parameters: repo, sha, id, run_id, failed, since, limit) answers runs.Answer;
+GET /v1/runs/log?id=ID&max=BYTES answers runs.LogAnswer and is open to local users but the CI
+user. POST /v1/rerun {repo, run_id} and POST /v1/alerts/test need the token. POST /v1/pause {reason, for_s},
 /v1/resume, /v1/reload and /v1/pr need the token in `Authorization: Bearer`, read from
 `<state>/control.token` (32 random bytes hex, mode 0600 root, or SYSTEM+Administrators on
 Windows), created by the daemon at start. The client sends the token on GETs too when it can
@@ -228,3 +271,5 @@ there.
 `tentmaker mcp` serves internal/mcp with a Controller backed by the same code as the CLI.
 Register it with: `claude mcp add tentmaker -- tentmaker mcp`. Mutating tools need the
 MCP server process to run as root/Administrator; otherwise they return an error saying so.
+The run history tools are `runs`, `logs`, `rerun` (mutating), `stats` and `wait_for_run`;
+docs/agents.md has their arguments and the agent loop.

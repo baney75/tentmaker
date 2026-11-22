@@ -239,7 +239,42 @@ Tentmaker also serves an MCP server. Register it with Claude Code:
 claude mcp add tentmaker -- tentmaker mcp
 ```
 
-Its read tools (`status`, `pool`, `doctor`) work as any user. Tools that change the device need the MCP server to run as root or Administrator, and return an error that says so otherwise. See [docs/agents.md](docs/agents.md).
+Its read tools (`status`, `pool`, `doctor`, `runs`, `logs`, `stats`, `wait_for_run`) work as any user. Tools that change the device need the MCP server to run as root or Administrator, and return an error that says so otherwise. See [docs/agents.md](docs/agents.md).
+
+## Watch your CI
+
+Every device keeps a record of each job it ran: conclusion, the step that failed, queue wait,
+duration, peak memory and CPU seconds from the job's cgroup on Linux, and a redacted tail of the
+log. The pool view merges every device's records over the tailnet, so one command shows them
+all.
+
+```text
+$ tentmaker runs
+CONCLUSION         REPO          JOB        DEVICE  QUEUED  DURATION  PEAK MEM  ENDED      ID
+running            baney75/app   build      mac     -       2m00s     -         -          tm-mac-1
+failure (go test)  baney75/site  ci / test  box     30s     4m30s     3.0GiB    5m00s ago  tm-box-1
+success            baney75/site  ci / lint  box     -       1m00s     512MiB    8m00s ago  tm-box-2
+
+$ tentmaker logs tm-box-1 -n 4
+    login_test.go:41: got 500, want 200
+FAIL
+FAIL	github.com/baney75/site/auth	0.311s
+##[error]Process completed with exit code 1.
+
+$ sudo tentmaker rerun tm-box-1
+Asked the forge to rerun the failed jobs of run 41 in baney75/site (through box).
+
+$ tentmaker stats --since 7d
+REPO          JOBS  FAILED  QUEUE P50  QUEUE P95  RUN P50  RUN P95  MINUTES  EST. SAVED
+baney75/site  2     50%     30s        30s        1m00s    4m30s    6        $0.04
+Last 7d. estimated saving: billed minutes at GitHub-hosted per-minute rates as of 2026-01-01 (Linux $0.006, Windows $0.010, macOS $0.062); an estimate, not a bill
+```
+
+`tentmaker logs JOB-ID --follow` streams a running job. Alerts go to ntfy, Slack, Discord or any
+webhook on failure, on recovery and on slow jobs; see `[[alerts]]` in
+[docs/config.md](docs/config.md) and check them with `sudo tentmaker alerts test`. An agent gets
+the same through MCP, plus `wait_for_run`, which blocks until a commit's jobs end and returns the
+failed step and the last 80 log lines ([docs/agents.md](docs/agents.md)).
 
 ## Security model
 
