@@ -19,6 +19,96 @@ type RunRecorder interface {
 	JobEnded(rec runs.Record, log []byte)
 }
 
+// ReportRecorder takes a broker's forge result for a runner job that
+// ended: the record's conclusion, failed step and log come from the forge,
+// not the runner's diag logs. It must not block for long.
+type ReportRecorder interface {
+	ForgeReport(rep runs.ForgeReport)
+}
+
+// reportReq is an ended runner job whose forge result is still to read.
+type reportReq struct {
+	rep   runs.ForgeReport
+	tries int
+	next  time.Time
+}
+
+const (
+	reportEvery = 10 * time.Second // between reads of one job
+	reportTries = 12               // about two minutes, runs.ForgeGrace
+	logTries    = 3                // reads of a completed job whose log isn't up yet
+	maxReports  = 256
+)
+
+// queueReportLocked queues the forge read for a runner job that ended
+// identified on a forge that can report it.
+func (b *Broker) queueReportLocked(rec *grantRec) {
+	if b.o.Reports == nil || rec.Kind != core.KindRunner || !rec.Identified || rec.Fork || rec.TookJob == 0 ||
+		len(b.reports) >= maxReports {
+		return
+	}
+	if _, ok := b.o.Forges[rec.Forge].(core.JobReporter); !ok {
+		return
+	}
+	rep := runs.ForgeReport{ID: rec.Name, Device: rec.Device, Forge: rec.Forge, Repo: rec.Repo, JobID: rec.TookJob,
+		RunID: rec.TookRun, EndedAt: rec.EndedAt}
+	if rec.Job.ID == rec.TookJob {
+		rep.Job, rep.RunURL = rec.Job.Name, rec.Job.HTMLURL
+	}
+	b.reports = append(b.reports, &reportReq{rep: rep, next: b.now()})
+}
+
+// sendReports reads the forge result of each queued job that is due and
+// hands it to Reports. A job not completed yet, or a read that fails, is
+// tried again until reportTries; then the record keeps what the runner's
+// diag logs said.
+func (b *Broker) sendReports(ctx context.Context, now time.Time) {
+	b.mu.Lock()
+	var due []*reportReq
+	keep := b.reports[:0]
+	for _, q := range b.reports {
+		if now.Before(q.next) {
+			keep = append(keep, q)
+		} else {
+			due = append(due, q)
+		}
+	}
+	b.reports = keep
+	b.mu.Unlock()
+	for _, q := range due {
+		jr, ok := b.o.Forges[q.rep.Forge].(core.JobReporter)
+		if !ok {
+			continue
+		}
+		fctx, cancel := context.WithTimeout(ctx, forgeTimeout)
+		res, err := jr.JobReport(fctx, q.rep.Repo, q.rep.JobID, runs.LogTailBytes)
+		cancel()
+		q.tries++
+		if err == nil && res.Conclusion != "" && (res.LogErr == nil || q.tries >= logTries) {
+			q.rep.Conclusion, q.rep.FailedStep, q.rep.Log = res.Conclusion, res.FailedStep, res.Log
+			if res.LogErr != nil {
+				b.log.Info("job log not read from the forge; the record keeps the runner's diag log",
+					"runner", q.rep.ID, "job_id", q.rep.JobID, "error", res.LogErr)
+				q.rep.Log = nil
+			}
+			b.o.Reports.ForgeReport(q.rep)
+			continue
+		}
+		if err != nil {
+			b.noteErr(q.rep.Repo, "read job result", err)
+		}
+		if q.tries >= reportTries {
+			b.log.Info("job result not read from the forge; the record keeps the runner's diag log",
+				"runner", q.rep.ID, "job_id", q.rep.JobID)
+			continue
+		}
+		q.next = now.Add(reportEvery)
+		b.mu.Lock()
+		b.reports = append(b.reports, q)
+		b.mu.Unlock()
+	}
+}
+
 // usageEvery is how often a running job's cgroup is read. The cgroup goes
 // when the job's unit stops, so the last reading is what history keeps.
 const usageEvery = 5 * time.Second
@@ -139,8 +229,9 @@ func (w *Worker) recordEnd(j *jobRec, res *core.CheckResult, why string, c colle
 			log = []byte(res.LogTail)
 		}
 	default:
+		// The broker's forge result replaces these when it comes.
 		concl, step := runs.ParseRunnerLog(string(c.log))
-		rec.Conclusion, rec.FailedStep = concl, step
+		rec.Conclusion, rec.FailedStep, rec.LogSource = concl, step, runs.LogRunnerDiag
 		if rec.Conclusion == "" {
 			rec.Conclusion = runs.Unknown
 		}

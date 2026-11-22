@@ -78,7 +78,7 @@ func Wait(ctx context.Context, look func(ctx context.Context) (Snapshot, error),
 		now := o.Now()
 		if err == nil {
 			looked, last = true, snap
-			if settled(snap) {
+			if settled(snap, now) {
 				if quietSince.IsZero() {
 					quietSince = now
 				}
@@ -109,12 +109,12 @@ func Wait(ctx context.Context, look func(ctx context.Context) (Snapshot, error),
 	}
 }
 
-func settled(s Snapshot) bool {
+func settled(s Snapshot, now time.Time) bool {
 	if len(s.Records) == 0 || len(s.Queued) > 0 {
 		return false
 	}
 	for _, r := range s.Records {
-		if !r.Ended() {
+		if !r.Ended() || r.awaitingForge(now) {
 			return false
 		}
 	}

@@ -89,4 +89,6 @@ type LogAnswer struct {
 	// a follower asks again and prints what is past what it has.
 	Size int64  `json:"size"`
 	Data []byte `json:"data"`
+	// Source is the record's LogSource, for an ended runner job.
+	Source string `json:"source,omitempty"`
 }

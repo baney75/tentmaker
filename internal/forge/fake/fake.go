@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"path"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -88,11 +89,18 @@ type Forge struct {
 	token    string
 
 	likeGitHub bool // Runner never reports a busy runner's JobID
+	reports    map[errKey]report
+}
+
+type report struct {
+	rep core.JobReport
+	err error
 }
 
 var (
 	_ core.Forge       = (*Forge)(nil)
 	_ core.StatusForge = (*Forge)(nil)
+	_ core.JobReporter = (*Forge)(nil)
 )
 
 // New returns a fake forge called name. now may be nil (time.Now).
@@ -120,7 +128,35 @@ func New(name string, now func() time.Time) *Forge {
 		files:      map[string]map[string][]byte{},
 		statuses:   map[string]map[string]string{},
 		token:      "archive-token-" + name,
+		reports:    map[errKey]report{},
 	}
+}
+
+// SetReport sets what JobReport answers for job id once the job is
+// completed: rep, or err. A job with none set reads as not completed.
+func (f *Forge) SetReport(repo string, id int64, rep core.JobReport, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.reports[errKey{strconv.FormatInt(id, 10), repo}] = report{rep, err}
+}
+
+// JobReport implements core.JobReporter from SetReport.
+func (f *Forge) JobReport(ctx context.Context, repo string, jobID, maxLog int64) (core.JobReport, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls["JobReport"]++
+	r, ok := f.reports[errKey{strconv.FormatInt(jobID, 10), repo}]
+	if j := f.jobs[repo][jobID]; !ok || j == nil || j.Status != "completed" {
+		return core.JobReport{}, nil
+	}
+	if r.err != nil {
+		return core.JobReport{}, r.err
+	}
+	rep := r.rep
+	if int64(len(rep.Log)) > maxLog {
+		rep.Log = rep.Log[int64(len(rep.Log))-maxLog:]
+	}
+	return rep, nil
 }
 
 // Name implements core.Forge and core.StatusForge.

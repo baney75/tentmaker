@@ -60,6 +60,75 @@ type Record struct {
 	CacheBytes int64 `json:"cache_bytes,omitempty"`
 	// HasLog says the device keeps a log tail for the job.
 	HasLog bool `json:"has_log,omitempty"`
+	// LogSource says where a runner job's conclusion and log came from:
+	// LogForge (the forge's own job log and step results) or LogRunnerDiag
+	// (the runner's _diag trace logs, when the forge could not be read).
+	LogSource string `json:"log_source,omitempty"`
+}
+
+// Log sources.
+const (
+	LogForge      = "forge"
+	LogRunnerDiag = "runner-diag"
+)
+
+// ForgeGrace is how long after a runner job ends with an unknown
+// conclusion the pool waits for the broker's forge result.
+const ForgeGrace = 2 * time.Minute
+
+// awaitingForge reports whether r ended without a conclusion and the
+// broker's forge result may still come.
+func (r Record) awaitingForge(now time.Time) bool {
+	return r.Kind == "runner" && r.Conclusion == Unknown && r.LogSource != LogForge &&
+		!r.EndedAt.IsZero() && now.Sub(r.EndedAt) < ForgeGrace
+}
+
+// ForgeReport is a broker's forge result for one runner job.
+type ForgeReport struct {
+	ID, Device, Forge, Repo, Job string
+	JobID, RunID                 int64
+	RunURL                       string
+	EndedAt                      time.Time
+	Conclusion, FailedStep       string
+	Log                          []byte // raw; nil when it could not be read
+}
+
+// ApplyForge puts the forge's conclusion and failed step on r. A job
+// Tentmaker ended keeps its note.
+func (r *Record) ApplyForge(rep ForgeReport) {
+	if c := ForgeConclusion(rep.Conclusion); c != Unknown || r.Conclusion == "" {
+		r.Conclusion = c
+	}
+	if rep.FailedStep != "" || r.Conclusion == Success {
+		r.FailedStep = rep.FailedStep
+	}
+	if rep.Log != nil {
+		r.LogSource = LogForge
+	}
+}
+
+// Record is the record a broker keeps for a peer's job it has a forge
+// result for; the pool merges it into the peer's own record. It is marked
+// LogForge even when the log could not be read (HasLog then stays false).
+func (rep ForgeReport) Record() Record {
+	r := Record{ID: rep.ID, Kind: "runner", Forge: rep.Forge, Repo: rep.Repo, Job: rep.Job, JobID: rep.JobID,
+		RunID: rep.RunID, RunURL: rep.RunURL, Device: rep.Device, EndedAt: rep.EndedAt}
+	r.ApplyForge(rep)
+	r.LogSource = LogForge
+	return r
+}
+
+// ForgeConclusion maps a forge job conclusion to a run conclusion.
+func ForgeConclusion(s string) string {
+	switch s {
+	case "success", "neutral", "skipped":
+		return Success
+	case "failure", "timed_out", "startup_failure":
+		return Failure
+	case "cancelled":
+		return Cancelled
+	}
+	return Unknown
 }
 
 // QueueWait is how long the job waited between the forge queueing it and
@@ -163,6 +232,16 @@ func Apply(recs []Record, q Query) []Record {
 	return out
 }
 
+// withForge is dev's record with the conclusion a broker read from the
+// forge.
+func withForge(dev, forge Record) Record {
+	dev.Conclusion, dev.FailedStep = forge.Conclusion, forge.FailedStep
+	if forge.HasLog {
+		dev.LogSource = LogForge
+	}
+	return dev
+}
+
 // SortNewest sorts running jobs first, then by end (or start) time, newest
 // first; ties by device and id, so the order is stable.
 func SortNewest(recs []Record) {
@@ -183,7 +262,9 @@ func SortNewest(recs []Record) {
 
 // Merge joins the record lists of several devices into one, newest first.
 // A record two lists both carry (the same device and id) is kept once: the
-// ended copy wins over a running one, else the first seen.
+// ended copy wins over a running one; an ended device copy takes the
+// conclusion of a broker's forge copy (LogSource LogForge); else the first
+// seen wins.
 func Merge(lists ...[]Record) []Record {
 	type key struct{ device, id string }
 	seen := map[key]int{}
@@ -192,8 +273,13 @@ func Merge(lists ...[]Record) []Record {
 		for _, r := range l {
 			k := key{r.Device, r.ID}
 			if i, ok := seen[k]; ok {
-				if !out[i].Ended() && r.Ended() {
+				switch {
+				case !out[i].Ended() && r.Ended():
 					out[i] = r
+				case r.Ended() && r.LogSource == LogForge && out[i].LogSource != LogForge:
+					out[i] = withForge(out[i], r)
+				case out[i].LogSource == LogForge && r.LogSource != LogForge && r.Ended():
+					out[i] = withForge(r, out[i])
 				}
 				continue
 			}

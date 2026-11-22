@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/baney75/tentmaker/internal/alerts"
@@ -24,14 +25,24 @@ type history struct {
 	alerts *alerts.Notifier
 	log    *slog.Logger
 	stop   context.CancelFunc
+	device string
+
+	mu sync.Mutex // one record update at a time; early below
+	// early holds forge results for this device's jobs that came before
+	// the worker recorded them; memory only.
+	early map[string]runs.ForgeReport
 }
+
+// maxEarly caps the forge results kept for jobs not recorded yet.
+const maxEarly = 256
 
 func (d *Daemon) newHistory(cfg config.Config, log *slog.Logger) *history {
 	max := cfg.HistoryMax
 	if max <= 0 {
 		max = config.DefaultHistoryMax
 	}
-	h := &history{store: runs.Open(filepath.Join(cfg.StateDir, "runs"), max), log: log}
+	h := &history{store: runs.Open(filepath.Join(cfg.StateDir, "runs"), max), log: log, device: cfg.Device,
+		early: map[string]runs.ForgeReport{}}
 	if len(cfg.Alerts) > 0 {
 		var resolve func(string) (string, error)
 		if d.o.Secrets != nil {
@@ -55,11 +66,53 @@ func (h *history) close() {
 }
 
 // JobEnded keeps the record and its redacted log tail, then queues alerts.
+// A forge result that came first replaces the runner's diag conclusion and
+// log.
 func (h *history) JobEnded(rec runs.Record, log []byte) {
+	h.mu.Lock()
+	if rep, ok := h.early[rec.ID]; ok {
+		delete(h.early, rec.ID)
+		rec.ApplyForge(rep)
+		if rep.Log != nil {
+			log = rep.Log
+		}
+	}
+	h.add(rec, log)
+	h.mu.Unlock()
+	h.alerts.JobEnded(rec)
+}
+
+// ForgeReport takes a broker's forge result for a runner job: it updates
+// this device's record, or keeps a copy for a peer's job that the pool
+// merges into the peer's record. A conclusion that changes fires alerts.
+func (h *history) ForgeReport(rep runs.ForgeReport) {
+	h.mu.Lock()
+	rec, ok := h.store.Get(rep.ID)
+	if !ok && rep.Device == h.device {
+		if len(h.early) < maxEarly {
+			h.early[rep.ID] = rep
+		}
+		h.mu.Unlock()
+		return
+	}
+	prev := ""
+	if ok {
+		prev = rec.Conclusion
+		rec.ApplyForge(rep)
+	} else {
+		rec = rep.Record()
+	}
+	h.add(rec, rep.Log)
+	h.mu.Unlock()
+	if rec.Conclusion != prev {
+		h.alerts.JobEnded(rec)
+	}
+}
+
+func (h *history) add(rec runs.Record, log []byte) {
 	if err := h.store.Add(rec, log); err != nil {
 		h.log.Warn("run history: can't keep the record", "runner", rec.ID, "error", err)
 	}
-	h.alerts.JobEnded(rec)
 }
 
 func (d *Daemon) currentHistory() *history {
@@ -74,6 +127,13 @@ type historyProxy struct{ d *Daemon }
 func (p historyProxy) JobEnded(rec runs.Record, log []byte) {
 	if h := p.d.currentHistory(); h != nil {
 		h.JobEnded(rec, log)
+	}
+}
+
+// ForgeReport is the broker's way in (dispatch.ReportRecorder).
+func (p historyProxy) ForgeReport(rep runs.ForgeReport) {
+	if h := p.d.currentHistory(); h != nil {
+		h.ForgeReport(rep)
 	}
 }
 
@@ -138,18 +198,21 @@ func (d *Daemon) localRunLog(ctx context.Context, id string, max int64) (runs.Lo
 	if h == nil {
 		return runs.LogAnswer{}, core.ErrNotFound
 	}
-	if _, ok := h.store.Get(id); !ok {
+	rec, ok := h.store.Get(id)
+	if !ok || (rec.Device != d.device() && !rec.HasLog) {
+		// A peer's job this broker has only a forge result for: the peer
+		// has the log.
 		return runs.LogAnswer{}, core.ErrNotFound
 	}
 	data, err := h.store.Log(id)
 	if errors.Is(err, core.ErrNotFound) {
-		return runs.LogAnswer{ID: id, Device: d.device(), Data: []byte{}}, nil
+		return runs.LogAnswer{ID: id, Device: rec.Device, Data: []byte{}, Source: rec.LogSource}, nil
 	}
 	if err != nil {
 		return runs.LogAnswer{}, err
 	}
 	size := int64(len(data))
-	return runs.LogAnswer{ID: id, Device: d.device(), Size: size, Data: runs.Tail(data, int(max))}, nil
+	return runs.LogAnswer{ID: id, Device: rec.Device, Size: size, Data: runs.Tail(data, int(max)), Source: rec.LogSource}, nil
 }
 
 // localRerun reruns failed jobs with this device's forge token for repo,

@@ -432,3 +432,27 @@ func TestQueryValuesRoundTrip(t *testing.T) {
 		}
 	}
 }
+
+// A peer's job: the peer's own record (diag, unknown) takes the conclusion
+// of the copy its broker made from the forge, whatever the list order, and
+// keeps the peer's own fields. Until then wait_for_run keeps waiting.
+func TestMergeForgeCopy(t *testing.T) {
+	now := time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC)
+	dev := Record{ID: "tm-mac-1", Kind: "runner", Device: "mac", Executor: "darwin", Slot: 2, EndedAt: now,
+		Conclusion: Unknown, LogSource: LogRunnerDiag}
+	if settled(Snapshot{Records: []Record{dev}}, now.Add(time.Minute)) {
+		t.Fatal("an unknown runner job settled before the forge grace")
+	}
+	if !settled(Snapshot{Records: []Record{dev}}, now.Add(ForgeGrace)) {
+		t.Fatal("an unknown runner job never settled")
+	}
+	cp := ForgeReport{ID: "tm-mac-1", Device: "mac", Conclusion: "failure", FailedStep: "go test", Log: []byte("x")}.Record()
+	cp.HasLog = true
+	for _, lists := range [][][]Record{{{dev}, {cp}}, {{cp}, {dev}}} {
+		got := Merge(lists...)
+		if len(got) != 1 || got[0].Conclusion != Failure || got[0].FailedStep != "go test" || got[0].Executor != "darwin" ||
+			got[0].Slot != 2 || got[0].LogSource != LogForge {
+			t.Fatalf("merged = %+v", got)
+		}
+	}
+}

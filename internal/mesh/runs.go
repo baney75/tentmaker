@@ -171,13 +171,18 @@ func (n *Node) PoolRuns(ctx context.Context, q runs.Query) (runs.Answer, error) 
 }
 
 // PoolRunLog finds the device that has job id and returns its log tail.
+// An ended runner job's forge log, which its broker keeps, wins over the
+// runner's diag log the device that ran it keeps.
 func (n *Node) PoolRunLog(ctx context.Context, id string, max int64) (runs.LogAnswer, error) {
 	if !runs.ValidID(id) {
 		return runs.LogAnswer{}, errors.New("bad job id")
 	}
+	var fallback *runs.LogAnswer
 	if n.o.Runs != nil {
 		l, err := n.o.Runs.RunLog(ctx, id, max)
-		if !errors.Is(err, core.ErrNotFound) {
+		if err == nil && l.Source == runs.LogRunnerDiag {
+			fallback = &l
+		} else if !errors.Is(err, core.ErrNotFound) {
 			return l, err
 		}
 	}
@@ -211,11 +216,20 @@ func (n *Node) PoolRunLog(ctx context.Context, id string, max int64) (runs.LogAn
 	for range asked {
 		g := <-ch
 		if g.err == nil {
-			return g.l, nil
+			if g.l.Source != runs.LogRunnerDiag {
+				return g.l, nil
+			}
+			if fallback == nil {
+				fallback = &g.l
+			}
+			continue
 		}
 		if !strings.Contains(g.err.Error(), ": 404 ") {
 			errs = append(errs, g.err.Error())
 		}
+	}
+	if fallback != nil {
+		return *fallback, nil
 	}
 	if len(errs) > 0 {
 		return runs.LogAnswer{}, fmt.Errorf("job %s is on no device that answered (%s)", id, strings.Join(errs, "; "))

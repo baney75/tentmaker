@@ -309,6 +309,23 @@ type JobInspector interface {
 	JobUsage(ctx context.Context, name string) (Usage, error)
 }
 
+// JobReport is how a finished runner job went, as the forge saw it.
+// Conclusion is the forge's own word ("success", "failure", "cancelled",
+// "timed_out", ...); it is "" while the job is not completed. Log is the
+// tail of the job's own log (step output), raw; the caller redacts it.
+type JobReport struct {
+	Conclusion string
+	FailedStep string
+	Log        []byte
+	LogErr     error // the log could not be read; the conclusion still holds
+}
+
+// JobReporter is a forge that can say how a job ended and hand over its
+// log (GitHub). The forge token never leaves the broker that holds it.
+type JobReporter interface {
+	JobReport(ctx context.Context, repo string, jobID, maxLog int64) (JobReport, error)
+}
+
 // Rerunner is a forge that can rerun the failed jobs of a run (GitHub).
 type Rerunner interface {
 	RerunFailed(ctx context.Context, repo string, runID int64) error

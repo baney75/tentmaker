@@ -713,9 +713,14 @@ type JobInspector interface {                 // an Executor that can show a job
     JobUsage(ctx context.Context, name string) (Usage, error)
 }
 type Rerunner interface { RerunFailed(ctx context.Context, repo string, runID int64) error }
+type JobReport struct { Conclusion, FailedStep string; Log []byte; LogErr error }
+type JobReporter interface {                  // a Forge that reports a finished job (GitHub)
+    JobReport(ctx context.Context, repo string, jobID, maxLog int64) (JobReport, error)
+}
 
 // dispatch
 type RunRecorder interface { JobEnded(rec runs.Record, log []byte) }  // WorkerOptions.Runs
+type ReportRecorder interface { ForgeReport(rep runs.ForgeReport) }    // BrokerOptions.Reports
 func (w *Worker) RunningRecords() []runs.Record
 func (w *Worker) JobLog(ctx context.Context, name string, max int64) (core.JobLog, bool, error)
 func (b *Broker) Queued(repo, sha string, runID int64) []string
@@ -724,7 +729,9 @@ func (b *Broker) Queued(repo, sha string, runID int64) []string
 type Record struct { ID, Kind, Forge, Repo, Workflow, Job string; JobID, RunID int64; RunURL, Ref,
     SHA, Device, Executor, Platform string; Slot int; QueuedAt, StartedAt, EndedAt time.Time;
     Conclusion, FailedStep, Note string; PeakMemoryBytes int64; CPUSeconds float64;
-    CacheBytes int64; HasLog bool }
+    CacheBytes int64; HasLog bool; LogSource string }  // LogSource: "forge" or "runner-diag"
+type ForgeReport struct { ID, Device, Forge, Repo, Job string; JobID, RunID int64; RunURL string;
+    EndedAt time.Time; Conclusion, FailedStep string; Log []byte }
 type Query struct { Repo, SHA, ID string; RunID int64; Failed bool; Since time.Time; Limit int }
 func Open(dir string, max int) *Store         // Add, List, Log, Err
 func Redact(data []byte, extra ...[]byte) []byte
@@ -740,9 +747,24 @@ func New(o Options) *Notifier                 // Run, JobEnded, Test, Counts, En
   when a job ends, before `Clean`: the executor's `JobLog` and `JobUsage` are read while the job
   folder and cgroup still exist. Usage is also sampled every 5 s while the job runs and the
   highest reading of each number kept, because a cgroup is gone once its unit exits.
-- The conclusion comes from the runner's worker log (`Job result` lines and the failed step) for
-  a runner job, from the check result for a check job. A job Tentmaker stopped (budget, guards,
-  shutdown) is `cancelled` with the reason in `Note`.
+- A runner job's conclusion, failed step and log come from the forge. The runner's `_diag` logs
+  hold only trace lines: actions/runner writes step output to `_diag/pages` and deletes the pages
+  once it uploads them. So when a runner job ends identified, its broker, which holds the forge
+  token, reads the job (`GET /repos/{repo}/actions/jobs/{id}`: conclusion, and the first step
+  whose conclusion is `failure` or `timed_out`) and its log (`.../jobs/{id}/logs`, a redirect to a
+  signed URL fetched without the token, at most 64 MiB read, the last 512 KiB kept). It tries
+  every 10 s, 12 times, while the job is not completed or the read fails, and 3 times while the
+  log is not up yet. This works for every executor, the darwin one too, which can show no log.
+- The worker writes the record first, from the executor's diag log (`Job result` lines and the
+  failed step, `LogSource` `runner-diag`; `unknown` where the executor has no log). The broker's
+  result then replaces the conclusion and failed step, and, when the log was read, the log tail
+  (`LogSource` `forge`); a conclusion that changes fires the alerts then. A result that comes
+  before the worker's record waits in memory for it. For a job that ran on a peer, the broker
+  keeps a copy of the record (`LogSource` `forge`, its device the peer's) with the forge log;
+  `runs.Merge` puts the copy's conclusion on the peer's record and `PoolRunLog` prefers a `forge`
+  log to a `runner-diag` one. If the forge can't be read, the record keeps the diag conclusion
+  and tail and says `runner-diag`. A check job's conclusion comes from its check result. A job
+  Tentmaker stopped (budget, guards, shutdown) is `cancelled` with the reason in `Note`.
 - The store is `<state>/runs`: `index.json` with the last `history_max` records (default 2000)
   and one log file per job, the last 512 KiB, redacted before it is written. Every file goes
   through `config.WriteAtomic`, mode 0600 root. The oldest records and their logs go first.
@@ -756,12 +778,15 @@ func New(o Options) *Notifier                 // Run, JobEnded, Test, Counts, En
   root to read a redacted tail would be worse than the tail itself.
 - `wait_for_run` settles when it has seen at least one record, every record has ended and no
   broker holds a job queued for the commit, all for 20 s, because a job that needs another one
-  queues only after it ends. A look that fails is retried at the next poll. `Broker.Queued`
+  queues only after it ends. A runner record that ended `unknown` without a forge result counts
+  as not ended for `runs.ForgeGrace` (2 minutes), so the broker's result can land. A look that
+  fails is retried at the next poll. `Broker.Queued`
   returns nothing unless a sha or a run id narrows it.
 - Stats: p50 and p95 by nearest rank over ended jobs in the window. The saving is each job's
   minutes rounded up, as GitHub bills, times `runs.HostedRate` for the job's OS, and every answer
   says it is an estimate and when the rates were checked.
-- Alerts run on the device that ran the job. `JobEnded` never blocks: a full queue (64) drops
+- Alerts run on the device that ran the job, and on the broker for a peer's job whose forge
+  result changed its conclusion, so a pool with alerts on both may send one twice. `JobEnded` never blocks: a full queue (64) drops
   the alert and counts it, with one warning a minute. Each send has a 10 s timeout, each alert a
   15 minute cooldown per repo and job, and `recovered` compares with the last conclusion of the
   same repo and job on this device (cancelled and unknown don't reset it). Errors name only the

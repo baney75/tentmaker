@@ -1,6 +1,7 @@
 package dispatch
 
 import (
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -147,5 +148,81 @@ func TestBrokerQueued(t *testing.T) {
 	c.tick()
 	if got := c.broker.Queued(repoSite, sha1, 0); len(got) != 1 || got[0] != "tentmaker/test" {
 		t.Fatalf("checks queued = %v", got)
+	}
+}
+
+type reports struct {
+	mu  sync.Mutex
+	got []runs.ForgeReport
+}
+
+func (r *reports) ForgeReport(rep runs.ForgeReport) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.got = append(r.got, rep)
+}
+
+func (r *reports) all() []runs.ForgeReport {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]runs.ForgeReport(nil), r.got...)
+}
+
+// endJob runs one job on wr to its end at the forge and on the device.
+func endJob(t *testing.T, r *rig, wr *wrig) (core.Job, string) {
+	t.Helper()
+	n := len(started(wr.ex))
+	j := r.addJob(repoApp)
+	for i := 0; i < 10 && len(started(wr.ex)) == n; i++ {
+		r.run(2*time.Second, 2*time.Second)
+	}
+	names := started(wr.ex)
+	if len(names) == n {
+		t.Fatal("no runner started")
+	}
+	name := names[len(names)-1]
+	r.run(6*time.Second, 2*time.Second)
+	if err := r.forge.Take(name, j.ID); err != nil {
+		t.Fatal(err)
+	}
+	r.run(6*time.Second, 2*time.Second)
+	return j, name
+}
+
+// The broker reads each ended runner job's result from the forge and hands
+// it over: a log not up yet is tried again, then sent without one (the
+// record keeps the diag log); a result it can't read is given up on.
+func TestBrokerForgeReports(t *testing.T) {
+	r := newRig(t, runnerRepo(repoApp))
+	rp := &reports{}
+	r.broker.o.Reports = rp
+	wr := r.addWorker("alpha", 1, linuxX64)
+
+	j, name := endJob(t, r, wr)
+	r.forge.SetReport(repoApp, j.ID, core.JobReport{Conclusion: "failure", FailedStep: "go test", LogErr: errors.New("404")}, nil)
+	r.forge.Finish(name)
+	wr.ex.Exit(name)
+	r.run(10*time.Second, 2*time.Second)
+	if got := rp.all(); len(got) != 0 {
+		t.Fatalf("sent before the log retries: %+v", got)
+	}
+	r.run(30*time.Second, 2*time.Second)
+	got := rp.all()
+	if len(got) != 1 || got[0].ID != name || got[0].JobID != j.ID || got[0].Device != "alpha" ||
+		got[0].Conclusion != "failure" || got[0].FailedStep != "go test" || got[0].Log != nil {
+		t.Fatalf("reports = %+v", got)
+	}
+
+	j, name = endJob(t, r, wr)
+	r.forge.SetReport(repoApp, j.ID, core.JobReport{}, errors.New("github: 502"))
+	r.forge.Finish(name)
+	wr.ex.Exit(name)
+	before := r.forge.Calls("JobReport")
+	r.run(5*time.Minute, 2*time.Second)
+	if got := rp.all(); len(got) != 1 {
+		t.Fatalf("an unreadable result was sent: %+v", got)
+	}
+	if n := r.forge.Calls("JobReport") - before; n != reportTries {
+		t.Fatalf("JobReport tried %d times, want %d", n, reportTries)
 	}
 }

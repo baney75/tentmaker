@@ -99,7 +99,11 @@ An agent that pushes a fix can watch its own CI without a browser or a forge tok
    Tentmaker job for that commit has ended and nothing more has queued for 20 s, then returns
    `conclusion` and one entry per job.
 3. On `success`, stop. On `failure`, each failed job carries `failed_step` and `log_tail`, the
-   last 80 lines of its redacted log, which is usually enough to see the error. For more, call
+   last 80 lines of its redacted log, which is usually enough to see the error. For a GitHub
+   runner job the log is the job's own log from GitHub, with each step's output, which the
+   broker reads with its token once the job ends (the record says `log_source: "forge"`). If
+   the broker can't read it, the record falls back to the runner's trace log and says
+   `log_source: "runner-diag"`; that log names the failed step but holds no test output. For more, call
    `logs` with the job's `id` and a bigger `lines`.
 4. Fix, push and go back to step 2. For a flaky failure with no code change, call `rerun` with
    the job id instead (it needs the MCP server to run as root).

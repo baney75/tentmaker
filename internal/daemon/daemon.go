@@ -575,6 +575,7 @@ func (d *Daemon) apply(cfg config.Config) {
 				Log:          log,
 				Now:          d.o.Now,
 				OnWork:       d.kickWorker,
+				Reports:      historyProxy{d},
 			})
 			bc = startComp(d.runCtx, log, "broker", b.Run)
 			log.Info("broker started", "forges", forges.Tokens, "repos", len(cfg.Repos))
