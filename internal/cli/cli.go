@@ -111,6 +111,10 @@ type Env struct {
 	// when the service can't run it in place, in order of preference.
 	// Default binsafe.ServiceDirs.
 	ServiceBinDirs []string
+	// OwnNewFiles makes Administrators the owner of the files and folders
+	// setup creates next (Windows; elsewhere root already owns them). nil
+	// does nothing. Default binsafe.OwnNewFiles.
+	OwnNewFiles func() error
 	// Command runs a host tool (journalctl, git) with output to out.
 	Command   func(ctx context.Context, out io.Writer, name string, args ...string) error
 	RunBundle func(ctx context.Context, b core.CheckBundle, outDir string, log io.Writer) core.CheckResult
@@ -169,6 +173,7 @@ func DefaultEnv() *Env {
 		Executable:     os.Executable,
 		BinaryProblem:  binsafe.Problem,
 		ServiceBinDirs: binsafe.ServiceDirs(runtime.GOOS, os.Getenv),
+		OwnNewFiles:    binsafe.OwnNewFiles,
 		Command:        runCommand,
 		RunBundle:      checks.RunBundle,
 		RunDaemon: func(ctx context.Context, o daemon.Options) error {

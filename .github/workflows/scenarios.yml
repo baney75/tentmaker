@@ -77,6 +77,9 @@ jobs:
           path: metrics/
           if-no-files-found: warn
           retention-days: 30
+          # A rerun of a failed job must replace its earlier metrics: with
+          # two artifacts of one name, summary's merge kept the old one.
+          overwrite: true
 
   summary:
     needs: scenario
