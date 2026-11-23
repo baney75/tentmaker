@@ -346,7 +346,15 @@ func copyInArgv(os, dst string) ([]string, error) {
 func copyOutArgv(os, src string) ([]string, error) {
 	switch os {
 	case "linux", "macos":
-		return []string{"tar", "-c", "-f", "-", "-C", path.Dir(src), path.Base(src)}, nil
+		// The name is tar's one operand; one that starts with a dash
+		// (data/--help, -rf) would be read as an option, so it goes as
+		// ./NAME, which names the same file. The folder is -C's argument,
+		// never an option, whatever it starts with.
+		name := path.Base(src)
+		if strings.HasPrefix(name, "-") {
+			name = "./" + name
+		}
+		return []string{"tar", "-c", "-f", "-", "-C", path.Dir(src), name}, nil
 	}
 	return nil, refuse(http.StatusNotImplemented, "copy with tentmaker sandbox exec and tar", "copying files out of a %s sandbox is not in this version", os)
 }

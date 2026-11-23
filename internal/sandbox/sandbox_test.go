@@ -174,3 +174,32 @@ func TestValidIDIsExact(t *testing.T) {
 		}
 	}
 }
+
+// A copy-out path is tar's operand; a name like --help or
+// --to-command=sh must never be read as an option.
+func TestCopyOutArgvNeverPassesAnOption(t *testing.T) {
+	for src, want := range map[string]string{
+		"data/--help":                  "./--help",
+		"--to-command=sh":              "./--to-command=sh",
+		"/work/-rf":                    "./-rf",
+		"-dir/-x":                      "./-x",
+		"/work/a b":                    "a b",
+		"out":                          "out",
+		"./--checkpoint-action=exec=x": "./--checkpoint-action=exec=x",
+	} {
+		clean, err := cleanSandboxPath(src)
+		if err != nil {
+			t.Fatal(err)
+		}
+		argv, err := copyOutArgv("linux", clean)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(argv) != 7 || argv[4] != "-C" || argv[6] != want {
+			t.Errorf("%q: argv %q, want the operand %q", src, argv, want)
+		}
+		if strings.HasPrefix(argv[6], "-") {
+			t.Errorf("%q: the operand %q is an option", src, argv[6])
+		}
+	}
+}
