@@ -475,3 +475,37 @@ func TestSandboxExecRefusesADirOutsideTheWorkFolder(t *testing.T) {
 		t.Fatalf("%d commands ran", n)
 	}
 }
+
+// namedSource is a broker with any name; it asks to stop every runner in
+// stop and records what it was told runs.
+type namedSource struct {
+	name    string
+	stop    []string
+	running []string
+}
+
+func (s *namedSource) Name() string { return s.name }
+func (s *namedSource) Work(ctx context.Context, req core.WorkRequest) (core.WorkResponse, error) {
+	s.running = append(s.running, req.Running...)
+	return core.WorkResponse{Stop: s.stop}, nil
+}
+
+// A sandbox is no broker's job even when a mesh source happens to be
+// named "sandbox": it is never reported to one, and no broker stops it.
+func TestNoBrokerSeesOrStopsASandbox(t *testing.T) {
+	r := newRig(t)
+	wr := r.addWorker("w1", 2)
+	src := &namedSource{name: SandboxSource, stop: []string{"sbx-000000000001"}}
+	wr.w.o.Sources = func() []core.WorkSource { return []core.WorkSource{src} }
+	r.tick()
+	if _, err := wr.w.StartSandbox(bg, sbxSpec("sbx-000000000001")); err != nil {
+		t.Fatal(err)
+	}
+	r.run(30*time.Second, 10*time.Second)
+	if len(src.running) != 0 {
+		t.Fatalf("a broker was told a sandbox runs: %v", src.running)
+	}
+	if _, err := wr.w.Sandbox("sbx-000000000001"); err != nil || called(wr.ex, "Stop", "sbx-000000000001") {
+		t.Fatalf("a broker stopped a sandbox: %v", err)
+	}
+}

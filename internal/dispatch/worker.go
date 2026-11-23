@@ -921,7 +921,8 @@ func (w *Worker) exchange(ctx context.Context, now time.Time, d core.Decision, a
 		idle := only != nil && w.runningCacheLocked() == nil
 		var running []string
 		for _, j := range w.st.Jobs {
-			if j.Source == name && !j.starting && !j.kept() {
+			// A sandbox is no broker's job, whatever a source is named.
+			if j.Source == name && j.Kind != core.KindSandbox && !j.starting && !j.kept() {
 				running = append(running, j.Name)
 			}
 		}
@@ -979,7 +980,7 @@ func (w *Worker) exchange(ctx context.Context, now time.Time, d core.Decision, a
 		var stops []*jobRec
 		for _, n := range resp.Stop {
 			for _, j := range w.st.Jobs {
-				if j.Name == n && j.Source == name {
+				if j.Name == n && j.Source == name && j.Kind != core.KindSandbox {
 					stops = append(stops, j)
 				}
 			}
