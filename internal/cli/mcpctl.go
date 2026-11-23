@@ -5,8 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
+	"math"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/baney75/tentmaker/internal/control"
 	"github.com/baney75/tentmaker/internal/forge/github"
@@ -292,12 +297,23 @@ func (c controller) WaitForRun(ctx context.Context, repo, sha, runURL string, ti
 
 func (a *app) cmdMCP(args []string) (any, error) {
 	f := a.flags("mcp", commands["mcp"].usage)
+	rootFlag := f.String("root", "", "the only folder sandbox_cp may copy files out of a sandbox into (default: the current folder)")
 	pos, err := a.parse(f, args)
 	if err != nil {
 		return nil, err
 	}
 	if len(pos) > 0 {
-		return nil, usage("usage: tentmaker mcp", "unexpected argument %q", pos[0])
+		return nil, usage("usage: tentmaker mcp [--root DIR]", "unexpected argument %q", pos[0])
+	}
+	if root := *rootFlag; root != "" {
+		if a.mcpRoot, err = resolveRoot(root); err != nil {
+			return nil, usage("pass --root with a folder that exists", "--root %s: %v", root, err)
+		}
+	} else {
+		// No --root: the current folder, unless it confines nothing. The
+		// server still starts, so every other tool works, and copy out
+		// says to pass --root (review first-F1, second-F3).
+		a.mcpRoot, a.mcpNoRoot = defaultRoot(a.env.Getwd)
 	}
 	// stdout is the protocol: nothing else may print there.
 	a.json = true
@@ -325,17 +341,212 @@ func (c controller) SandboxCreate(ctx context.Context, os, device string, cpus f
 }
 
 func (c controller) SandboxExec(ctx context.Context, id string, argv []string, dir string, timeoutS float64, stdin string) (any, error) {
+	// The tool checks this too; a fraction or a negative must never reach
+	// the request, where 0.5 would truncate to 0, which means no limit.
+	if timeoutS < 0 || timeoutS > mcp.MaxSandboxTimeoutS || timeoutS != math.Trunc(timeoutS) {
+		return nil, fmt.Errorf("timeout_s must be a whole number from 0 to %d, not %g", mcp.MaxSandboxTimeoutS, timeoutS)
+	}
 	var in io.Reader
 	if stdin != "" {
 		in = strings.NewReader(stdin)
 	}
-	v, err := c.a.sandboxExecCollect(ctx, id, sandbox.ExecRequest{Argv: argv, Dir: dir, TimeoutS: int64(timeoutS)}, in)
+	start := time.Now()
+	out, errs := &tailBuffer{max: mcpMaxOutput}, &tailBuffer{max: mcpMaxOutput}
+	e, err := c.a.sandboxExec(ctx, id, sandbox.ExecRequest{Argv: argv, Dir: dir, TimeoutS: int64(timeoutS)}, in, out, errs)
+	if err != nil {
+		return nil, mcpErr(err)
+	}
+	v := mcpExecView{ID: id, ExitCode: e.ExitCode, Stdout: out.String(), Stderr: errs.String(),
+		StdoutCutBytes: out.cut(), StderrCutBytes: errs.cut(), Seconds: time.Since(start).Seconds()}
+	if v.StdoutCutBytes > 0 || v.StderrCutBytes > 0 {
+		v.Note = fmt.Sprintf("output was cut to the last %d KiB of each stream (stdout_cut_bytes and stderr_cut_bytes say how much was dropped from the start); "+
+			"write long output to a file in the sandbox and read the part you need, or copy it out with sandbox_cp", mcpMaxOutput>>10)
+	}
+	return v, nil
+}
+
+// mcpMaxOutput caps each stream sandbox_exec returns to an agent: enough
+// for a test failure or a build error, small enough for a model's context.
+const mcpMaxOutput = 64 << 10
+
+// mcpExecView is sandbox_exec's answer.
+type mcpExecView struct {
+	ID             string  `json:"id"`
+	ExitCode       int     `json:"exit_code"`
+	Stdout         string  `json:"stdout"`
+	Stderr         string  `json:"stderr"`
+	StdoutCutBytes int64   `json:"stdout_cut_bytes,omitempty"`
+	StderrCutBytes int64   `json:"stderr_cut_bytes,omitempty"`
+	Seconds        float64 `json:"seconds"`
+	Note           string  `json:"note,omitempty"`
+}
+
+// tailBuffer keeps the last max bytes written to it and counts the rest:
+// the end of a command's output is where its error usually is.
+type tailBuffer struct {
+	max   int
+	b     []byte
+	total int64
+}
+
+func (t *tailBuffer) Write(p []byte) (int, error) {
+	t.total += int64(len(p))
+	t.b = append(t.b, p...)
+	// Trim in batches so a stream of small writes stays linear.
+	if len(t.b) > 2*t.max {
+		t.b = append(t.b[:0], t.b[len(t.b)-t.max:]...)
+	}
+	return len(p), nil
+}
+
+// tail is what the buffer keeps, starting on a UTF-8 boundary.
+func (t *tailBuffer) tail() []byte {
+	b := t.b
+	if len(b) > t.max {
+		b = b[len(b)-t.max:]
+		for i := 0; i < utf8.UTFMax && len(b) > 0 && !utf8.RuneStart(b[0]); i++ {
+			b = b[1:]
+		}
+	}
+	return b
+}
+
+func (t *tailBuffer) String() string { return string(t.tail()) }
+
+// cut is how many bytes from the start were dropped.
+func (t *tailBuffer) cut() int64 { return t.total - int64(len(t.tail())) }
+
+// SandboxCopy confines a copy out of a sandbox to the server's --root: an
+// agent steered by text inside a sandbox must not be able to write host
+// files, least of all when the server runs as root.
+func (c controller) SandboxCopy(ctx context.Context, from, to string) (any, error) {
+	_, _, fromSandbox := splitRemote(from)
+	_, _, toSandbox := splitRemote(to)
+	if fromSandbox && !toSandbox {
+		if c.a.mcpRoot == "" && c.a.mcpNoRoot != "" {
+			return nil, fmt.Errorf("sandbox_cp won't copy out of a sandbox: %s, so it would confine nothing; start the server with tentmaker mcp --root DIR", c.a.mcpNoRoot)
+		}
+		if sandbox.HasGitPart(to) {
+			return nil, fmt.Errorf("sandbox_cp won't copy into %q: a .git folder's config and hooks run code on the next git command", to)
+		}
+		dst, err := underRoot(c.a.mcpRoot, to)
+		if err != nil {
+			return nil, err
+		}
+		to = dst
+	}
+	v, err := c.a.sandboxCopy(ctx, from, to)
 	return v, mcpErr(err)
 }
 
-func (c controller) SandboxCopy(ctx context.Context, from, to string) (any, error) {
-	v, err := c.a.sandboxCopy(ctx, from, to)
-	return v, mcpErr(err)
+// geteuid is os.Geteuid (tests replace it). It is -1 on Windows.
+var geteuid = os.Geteuid
+
+// defaultRoot is the copy-out root when --root is not given: the current
+// folder, resolved. It is "" with the reason when that can't be read, or
+// when it is a filesystem root or the home folder, which a client or a
+// service manager often starts a server in and which would let a sandbox
+// file replace /etc/passwd or ~/.bashrc.
+func defaultRoot(getwd func() (string, error)) (root, why string) {
+	if getwd == nil {
+		return "", "the current folder is unknown"
+	}
+	wd, err := getwd()
+	if err != nil {
+		return "", "the current folder can't be read"
+	}
+	r, err := resolveRoot(wd)
+	if err != nil {
+		return "", "the current folder can't be resolved"
+	}
+	if filepath.Dir(r) == r {
+		return "", "the current folder is " + r + ", a filesystem root"
+	}
+	// A server running as root reaches every file, and sudo often sets HOME
+	// to root's while the folder is a user's home, so it gets no default
+	// (review r2 sol-F1, first-F1).
+	if geteuid() == 0 {
+		return "", "the server runs as root"
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", "the home folder is unknown"
+	}
+	if h, err := resolveRoot(home); err != nil || h == r {
+		return "", "the current folder is the home folder, or the home folder can't be resolved"
+	}
+	return r, ""
+}
+
+// resolveRoot is dir made absolute with its symlinks resolved; it must be
+// a folder.
+func resolveRoot(dir string) (string, error) {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return "", err
+	}
+	real, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return "", err
+	}
+	st, err := os.Stat(real)
+	if err != nil {
+		return "", err
+	}
+	if !st.IsDir() {
+		return "", errors.New("not a folder")
+	}
+	return real, nil
+}
+
+// underRoot resolves dst (relative to root when it isn't absolute) with
+// the symlinks of the part that exists, and refuses it unless it is root
+// or a folder under it. What doesn't exist yet can't hold a symlink, so
+// the answer is where the copy lands; the copy itself then writes only
+// below it, through os.Root, and never writes through or replaces an
+// existing file there.
+func underRoot(root, dst string) (string, error) {
+	if root == "" {
+		return "", errors.New("this MCP server has no folder to copy into; start it with tentmaker mcp --root DIR")
+	}
+	refuse := func() error {
+		return fmt.Errorf("sandbox_cp writes only under %s, the folder this MCP server was started with (--root); %q is outside it", root, dst)
+	}
+	p := dst
+	if !filepath.IsAbs(p) {
+		// Windows "/x" and "C:x" name a drive, not a folder under the root.
+		if filepath.VolumeName(p) != "" || strings.HasPrefix(p, "/") || strings.HasPrefix(p, `\`) {
+			return "", refuse()
+		}
+		p = filepath.Join(root, p)
+	}
+	p = filepath.Clean(p)
+	var rest []string
+	for {
+		_, err := os.Lstat(p)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			return "", fmt.Errorf("%s: %v", dst, err)
+		}
+		parent := filepath.Dir(p)
+		if parent == p {
+			return "", refuse()
+		}
+		rest = append([]string{filepath.Base(p)}, rest...)
+		p = parent
+	}
+	real, err := filepath.EvalSymlinks(p)
+	if err != nil {
+		return "", fmt.Errorf("%s: %v", dst, err)
+	}
+	full := filepath.Join(append([]string{real}, rest...)...)
+	rel, err := filepath.Rel(root, full)
+	if err != nil || (rel != "." && !filepath.IsLocal(rel)) {
+		return "", refuse()
+	}
+	return full, nil
 }
 
 func (c controller) SandboxList(ctx context.Context) (any, error) {

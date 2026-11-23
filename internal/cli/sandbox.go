@@ -51,7 +51,8 @@ const (
 	// sandboxExecLimit bounds an exec with no --timeout: the longest time
 	// to live the config allows, and a minute.
 	sandboxExecLimit = 7*24*time.Hour + time.Minute
-	// maxJSONOutput caps each stream an exec with --json (or MCP) keeps.
+	// maxJSONOutput caps each stream an exec with --json keeps (MCP keeps
+	// mcpMaxOutput of the tail).
 	maxJSONOutput = 1 << 20
 )
 
@@ -446,13 +447,16 @@ func (a *app) copyOut(ctx context.Context, c *control.Client, id, src, dst strin
 	}
 	done := make(chan result, 1)
 	go func() {
-		r, err := sandbox.Extract(pr, dst)
+		// The MCP server (mcpRoot set) copies for an agent: guarded.
+		r, err := sandbox.ExtractWith(pr, dst, sandbox.ExtractOptions{Guarded: a.mcpRoot != ""})
 		// Drain so a failed extract can't stall the frame reader.
 		_, _ = io.Copy(io.Discard, pr)
 		done <- result{r, err}
 	}()
 	var stderr capWriter
-	e, ferr := sandbox.ReadFrames(resp.Body, pw, &stderr)
+	// The daemon stops a copy at MaxCopy; count here too, so a daemon
+	// without that limit can't send more and have it called a success.
+	e, ferr := sandbox.ReadFrames(resp.Body, &copyLimit{w: pw, left: sandbox.MaxCopy}, &stderr)
 	pw.CloseWithError(ferr)
 	res := <-done
 	switch {
@@ -467,6 +471,21 @@ func (a *app) copyOut(ctx context.Context, c *control.Client, id, src, dst strin
 		return copyView{}, fail("copy into an empty folder", "copy %s:%s into %s: %v", id, src, dst, res.err)
 	}
 	return copyView{ID: id, From: id + ":" + src, To: dst, Files: res.r.Files, Bytes: res.r.Bytes, Skipped: res.r.Skipped}, nil
+}
+
+// copyLimit passes at most left bytes and fails the write past them.
+type copyLimit struct {
+	w    io.Writer
+	left int64
+}
+
+func (c *copyLimit) Write(p []byte) (int, error) {
+	if int64(len(p)) > c.left {
+		return 0, fmt.Errorf("the copy is larger than the %s limit", config.Size(sandbox.MaxCopy))
+	}
+	n, err := c.w.Write(p)
+	c.left -= int64(n)
+	return n, err
 }
 
 type sandboxList struct {

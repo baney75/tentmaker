@@ -264,6 +264,11 @@ type app struct {
 	json bool
 	ctx  context.Context
 	in   *bufio.Reader
+	// mcpRoot is the folder `tentmaker mcp --root` may write to, symlinks
+	// resolved; "" outside the MCP server, where sandbox_cp writes nothing.
+	mcpRoot string
+	// mcpNoRoot says why there is no default mcpRoot (defaultRoot).
+	mcpNoRoot string
 }
 
 // out prints human output; nothing in --json mode.
@@ -323,7 +328,7 @@ func init() {
 		"rollback":  {"tentmaker rollback [--json]", (*app).cmdRollback},
 		"uninstall": {"tentmaker uninstall [--purge] [--yes] [--json]", (*app).cmdUninstall},
 		"sandbox":   {usageSandbox, (*app).cmdSandbox},
-		"mcp":       {"tentmaker mcp\n\nStdio MCP server for agents. Register it with: claude mcp add tentmaker -- tentmaker mcp", (*app).cmdMCP},
+		"mcp":       {"tentmaker mcp [--root DIR]\n\nStdio MCP server for agents. Register it with: claude mcp add tentmaker -- tentmaker mcp\n\n--root is the one folder sandbox_cp may copy files out of a sandbox into (default: the current folder when the server starts).", (*app).cmdMCP},
 		"version":   {"tentmaker version [--json]", (*app).cmdVersion},
 		"daemon":    {"tentmaker daemon\n\nRun by the service. Not for people.", (*app).cmdDaemon},
 		"check-run": {"tentmaker check-run --out DIR\n\nRuns inside a sandbox: CheckBundle JSON on stdin. Not for people.", (*app).cmdCheckRun},

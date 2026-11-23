@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/baney75/tentmaker/internal/runs"
+	"github.com/baney75/tentmaker/internal/sandbox"
 )
 
 // prop is one tool argument.
@@ -86,7 +87,7 @@ func sandboxes(c Controller) (SandboxController, error) {
 
 func sandboxID(v any) error {
 	s := v.(string)
-	if !strings.HasPrefix(s, "sbx-") || len(s) > 64 {
+	if !sandbox.ValidID(s) {
 		return fmt.Errorf("%q is not a sandbox ID (they look like sbx-1a2b3c4d5e6f); list them with sandbox_ls", s)
 	}
 	return nil
@@ -218,6 +219,11 @@ func window(v any) error {
 	}
 	return nil
 }
+
+// MaxSandboxTimeoutS bounds sandbox_exec's timeout_s: seven days, longer
+// than any sandbox may live. A fraction is refused, never truncated: 0.5
+// would become 0, which means no limit.
+const MaxSandboxTimeoutS = 7 * 24 * 3600
 
 func between(lo, hi float64) func(any) error {
 	return func(v any) error {
@@ -570,21 +576,16 @@ var tools = []tool{
 	{
 		Name:  "sandbox_exec",
 		Title: "Run a command in a sandbox",
-		Description: "Run one command in a sandbox and return its exit_code, stdout and stderr (each capped at 1 MiB; " +
-			"*_truncated says when). The command is argv, not a shell line: use [\"sh\", \"-c\", \"...\"] for pipes. " +
+		Description: "Run one command in a sandbox and return its exit_code, stdout and stderr. Each stream keeps its " +
+			"last 64 KiB; stdout_cut_bytes and stderr_cut_bytes say how many bytes were dropped from the start. The command is argv, not a shell line: use [\"sh\", \"-c\", \"...\"] for pipes. " +
 			"It runs in the sandbox's work folder unless dir says otherwise, and stops at timeout_s or when the " +
 			"sandbox expires. A non-zero exit_code is a normal result, not a tool error.",
 		Props: []prop{
 			{Name: "id", Type: "string", Required: true, Description: "The sandbox id from sandbox_create.", Check: sandboxID},
 			{Name: "command", Type: "array", Required: true, Description: "The program and its arguments.", Check: command},
 			{Name: "dir", Type: "string", Description: "The folder to run in, relative to the work folder and inside it (default: the work folder)."},
-			{Name: "timeout_s", Type: "number", Description: "Stop the command after this many seconds; omit to run until the sandbox expires.",
-				Check: func(v any) error {
-					if f := v.(float64); f < 0 || math.IsInf(f, 0) || math.IsNaN(f) {
-						return fmt.Errorf("must be 0 or more")
-					}
-					return nil
-				}},
+			{Name: "timeout_s", Type: "number", Description: "Stop the command after this many whole seconds (1 to 604800); omit or pass 0 to run until the sandbox expires.",
+				Check: between(0, MaxSandboxTimeoutS)},
 			{Name: "stdin", Type: "string", Description: "Text to pass on stdin."},
 		},
 		run: func(ctx context.Context, c Controller, a args) (any, error) {
@@ -600,11 +601,12 @@ var tools = []tool{
 		Title: "Copy files to or from a sandbox",
 		Description: "Copy a file or folder between this machine and a sandbox. Write the sandbox side as ID:PATH. " +
 			"Into a sandbox: from is a local path and to is ID:FOLDER; it lands in FOLDER under its own name. Out of " +
-			"a sandbox: from is ID:PATH and to is a local folder. Out of a sandbox, only regular files and folders " +
-			"are written, never links.",
+			"a sandbox: from is ID:PATH and to is a local folder under the folder this server was started with " +
+			"(its --root, by default its current folder); a relative to is taken from there, and any path outside it, " +
+			"after symlinks, is refused. Out of a sandbox, only regular files and folders are written, never links.",
 		Props: []prop{
 			{Name: "from", Type: "string", Required: true, Description: "A local path, or ID:PATH in a sandbox.", Check: nonEmpty},
-			{Name: "to", Type: "string", Required: true, Description: "ID:FOLDER in a sandbox, or a local folder.", Check: nonEmpty},
+			{Name: "to", Type: "string", Required: true, Description: "ID:FOLDER in a sandbox, or a local folder under the server's --root.", Check: nonEmpty},
 		},
 		run: func(ctx context.Context, c Controller, a args) (any, error) {
 			sc, err := sandboxes(c)

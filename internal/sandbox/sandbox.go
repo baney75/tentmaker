@@ -22,7 +22,9 @@ import (
 	"net/http"
 	"os/user"
 	"path"
+	"regexp"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/baney75/tentmaker/internal/config"
@@ -184,10 +186,13 @@ func NewID() (string, error) {
 	return Prefix + hex.EncodeToString(b[:]), nil
 }
 
-// ValidID reports whether s can be a sandbox id.
-func ValidID(s string) bool {
-	return strings.HasPrefix(s, Prefix) && core.NamePattern.MatchString(s)
-}
+// idPattern is a sandbox id exactly: Prefix and 12 lowercase hex digits,
+// the shape NewID makes and the Linux executor accepts (isSandboxName).
+var idPattern = regexp.MustCompile(`^` + Prefix + `[0-9a-f]{12}$`)
+
+// ValidID reports whether s is a sandbox id. Nothing else may go into a
+// sandbox URL, a unit name or a log line as one.
+func ValidID(s string) bool { return idPattern.MatchString(s) }
 
 // Create places one sandbox on this device and waits until it runs.
 func (m *Manager) Create(ctx context.Context, c Caller, req CreateRequest) (Info, error) {
@@ -342,7 +347,15 @@ func copyInArgv(os, dst string) ([]string, error) {
 func copyOutArgv(os, src string) ([]string, error) {
 	switch os {
 	case "linux", "macos":
-		return []string{"tar", "-c", "-f", "-", "-C", path.Dir(src), path.Base(src)}, nil
+		// The name is tar's one operand; one that starts with a dash
+		// (data/--help, -rf) would be read as an option, so it goes as
+		// ./NAME, which names the same file. The folder is -C's argument,
+		// never an option, whatever it starts with.
+		name := path.Base(src)
+		if strings.HasPrefix(name, "-") {
+			name = "./" + name
+		}
+		return []string{"tar", "-c", "-f", "-", "-C", path.Dir(src), name}, nil
 	}
 	return nil, refuse(http.StatusNotImplemented, "copy with tentmaker sandbox exec and tar", "copying files out of a %s sandbox is not in this version", os)
 }
@@ -412,7 +425,42 @@ func (m *Manager) CopyOut(ctx context.Context, c Caller, id, src string, out, st
 	if err != nil {
 		return -1, err
 	}
-	return w.ExecSandbox(ctx, id, core.SandboxExec{Argv: argv}, nil, out, stderr)
+	// tar -c has no size limit of its own: stop it at MaxCopy, and call
+	// that an error, never a success, whatever tar exits with.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	lw := &limitWriter{w: out, left: MaxCopy, over: cancel}
+	code, err := w.ExecSandbox(ctx, id, core.SandboxExec{Argv: argv}, nil, lw, stderr)
+	if lw.hit.Load() {
+		return -1, refuse(http.StatusRequestEntityTooLarge, "copy less at a time, or pack it smaller inside the sandbox first",
+			"copy out of %s stopped: a copy is limited to %s", id, config.Size(MaxCopy))
+	}
+	return code, err
+}
+
+// errCopyLimit is what a limitWriter answers once it is full.
+var errCopyLimit = errors.New("the copy limit was reached")
+
+// limitWriter passes at most left bytes to w. The write that would pass
+// the limit writes nothing, marks hit, calls over and fails, as does
+// every write after it.
+type limitWriter struct {
+	w    io.Writer
+	left int64
+	over func()
+	hit  atomic.Bool
+}
+
+func (l *limitWriter) Write(p []byte) (int, error) {
+	if l.hit.Load() || int64(len(p)) > l.left {
+		if !l.hit.Swap(true) {
+			l.over()
+		}
+		return 0, errCopyLimit
+	}
+	n, err := l.w.Write(p)
+	l.left -= int64(n)
+	return n, err
 }
 
 // MaxCopy bounds one copy either way.

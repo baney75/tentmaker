@@ -981,18 +981,43 @@ the payload (at most 1 MiB). The `x` frame is `{"exit_code", "error", "fix"}` an
 stream with no `x` frame broke. The 200 goes out with the first frame, so a refusal before any
 output keeps its status. `POST /v1/sandboxes/{id}/files?path=DIR` takes a tar stream and unpacks
 it into DIR (made if missing) with `tar` run inside the sandbox as its user; `GET` with
-`path=PATH` answers a frame stream of `tar -c` of PATH. The client extracts it with `os.Root`:
-only regular files and folders, never links, nothing outside the destination, at most 2 GiB.
+`path=PATH` answers a frame stream of `tar -c -f - -C DIR NAME` of PATH; a NAME that starts
+with a dash goes as `./NAME`, so no path is ever read as a tar option. The daemon stops a copy out at
+`MaxCopy` (2 GiB): it cancels the command and the `x` frame carries a 413 error, never a
+success, whatever tar exits with; the client counts too and fails past the same limit. The
+client extracts it with `os.Root`: only regular files and folders, never links, nothing outside
+the destination, at most 2 GiB.
 Errors are `{"error", "fix"}` with a status: 400 bad request, 403 not allowed, 404 no such
-sandbox, 409 no room or not running, 501 not supported, 503 no worker.
+sandbox, 409 no room or not running, 501 not supported, 503 no worker. A sandbox id is exactly
+`sbx-` and 12 lowercase hex digits (`sandbox.ValidID`, the executor's rule); the CLI, the MCP
+tools and the Manager refuse any other string before it reaches a URL or a unit name.
 
 **CLI and MCP.** `tentmaker sandbox create|exec|cp|ls|rm` and the MCP tools `sandbox_create`,
 `sandbox_exec`, `sandbox_cp`, `sandbox_ls`, `sandbox_rm` call the same functions. `create
 --copy DIR` sends DIR's working tree: in a Git work tree the files `git ls-files -z --cached
 --others --exclude-standard` lists, read from disk (so uncommitted changes and untracked,
 non-ignored files, and no `.git`); elsewhere the whole folder. A failed copy removes the
-sandbox. `exec` streams and exits with the command's code; with `--json` (and over MCP) it keeps
-up to 1 MiB of each stream and says when it cut one.
+sandbox. `exec` streams and exits with the command's code; with `--json` it keeps up to 1 MiB of
+each stream and says when it cut one. Over MCP, `sandbox_exec` keeps the last 64 KiB of each
+stream (the end is where an error usually is), starting on a UTF-8 boundary, and answers
+`stdout_cut_bytes` and `stderr_cut_bytes` with how many bytes it dropped from the start, so the
+answer fits a model's context. `tentmaker mcp --root DIR` (default: the current folder when it
+starts, symlinks resolved, unless that is a filesystem root, the home folder or can't be read,
+or the server runs as root or knows no home folder: then there is no default, the server still
+serves, and copy out is refused with a note to pass `--root`; review first-F1, second-F3 and r2
+sol-F1) is the only place `sandbox_cp` may copy out of a sandbox into: a
+relative `to` is taken from the root, the part of the path that exists has its symlinks resolved,
+and anything that isn't the root or under it is refused before the copy starts. `Extract` then
+writes only below that folder through `os.Root` and removes an existing entry before it writes a
+file, so a symlink or hardlink inside the root can't carry the write to a file outside it. An
+agent's copy out (`ExtractWith` with `Guarded`) also only adds files: it refuses any entry or `to`
+with a `.git` part, in any case, and refuses to replace an existing file, so an agent can't plant
+a git hook or config, or rewrite a Makefile, that runs on the owner's next command (r2
+second-second-F1). The CLI's own `tentmaker sandbox cp` still replaces. Text in
+a sandbox can steer the agent, and the server may run as root, so it must not be able to name a
+host file. The MCP tool's `timeout_s` is a whole number of seconds from 0
+(until the sandbox expires) to 604800; a fraction or a negative is refused, never truncated,
+since 0.5 would become 0, which means no limit.
 
 ## Checks mode (internal/checks, internal/forge/gitlab)
 
