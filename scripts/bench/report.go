@@ -25,15 +25,25 @@ type workload struct {
 	Cached      bool     // the warm run restores what the cold run saved; it records cache_hit
 	Go          bool     // compiles Go; both sides must record the same Go
 	Rates       []string // phases whose warm throughput the gate compares
+	// Store: only Tentmaker keeps this workload's cache (the repo's
+	// container store), so only its warm runs record cache_hit, and
+	// store_bound; the hosted runner starts every job empty.
+	Store bool
+}
+
+// tracksHit says whether warm runs of wi on platform record cache_hit, so
+// a miss is left out of the warm numbers.
+func (wi workload) tracksHit(platform string) bool {
+	return wi.Cached || (wi.Store && platform == "tentmaker")
 }
 
 // workloadInfo is the fixed list of workloads, in table order.
 var workloadInfo = []workload{
-	{"go-test", "Go test (this repo: gofmt, vet, go test -race)", true, true, true, nil},
-	{"cross-build", "Go cross build (this repo, 6 targets)", true, true, true, nil},
-	{"node", "Node: tj/commander.js v15.1.0, npm ci and npm test", true, true, false, nil},
-	{"docker", "Docker build, two stages (Tentmaker keeps the layer cache; the hosted runner starts empty)", false, false, false, nil},
-	{"cache", "Cache: 256 MiB blob save, then restore", true, true, false, []string{"restore"}},
+	{"go-test", "Go test (this repo: gofmt, vet, go test -race)", true, true, true, nil, false},
+	{"cross-build", "Go cross build (this repo, 6 targets)", true, true, true, nil, false},
+	{"node", "Node: tj/commander.js v15.1.0, npm ci and npm test", true, true, false, nil, false},
+	{"docker", "Docker build, two stages (Tentmaker keeps the layer cache; the hosted runner starts empty)", false, false, false, nil, true},
+	{"cache", "Cache: 256 MiB blob save, then restore", true, true, false, []string{"restore"}, false},
 }
 
 func infoOf(name string) workload {
@@ -75,10 +85,12 @@ type Side struct {
 	Failed int `json:"failed"` // samples that did not pass, or had no job time
 	// Warm runs of a cached workload only: passing runs that hit the cache,
 	// that missed it (left out of every number below), and that didn't
-	// record which (kept, but the gate fails on them).
+	// record which (kept, but the gate fails on them). Unbound counts the
+	// missed runs that recorded running without the repo's container store.
 	Hits       int             `json:"cache_hits,omitempty"`
 	Missed     int             `json:"cache_missed,omitempty"`
 	Unrecorded int             `json:"cache_unrecorded,omitempty"`
+	Unbound    int             `json:"store_unbound,omitempty"`
 	Go         []string        `json:"go,omitempty"`    // the Go versions passing runs recorded
 	NoGo       int             `json:"no_go,omitempty"` // passing runs of a Go workload that recorded none
 	Job        Cell            `json:"job_s"`           // passing runs only
@@ -170,12 +182,15 @@ func side(samples []Sample, wi workload, platform string) map[string]*Side {
 					gos[s.Go] = true
 				}
 			}
-			if round == "warm" && wi.Cached {
+			if round == "warm" && wi.tracksHit(platform) {
 				switch {
 				case s.CacheHit == nil:
 					sd.Unrecorded++
 				case !*s.CacheHit:
 					sd.Missed++
+					if s.StoreBound != nil && !*s.StoreBound {
+						sd.Unbound++
+					}
 					continue
 				default:
 					sd.Hits++
@@ -403,8 +418,10 @@ func Markdown(rep Report) string {
 	p("Median seconds from the job starting to its result. Cold: an empty cache. Warm: the same\n")
 	p("workload again with the cache the cold run left (`actions/cache` on GitHub, Tentmaker's repo\n")
 	p("cache on Tentmaker). Speedup is GitHub-hosted warm over Tentmaker warm. n counts passing warm\n")
-	p("runs, GitHub-hosted / Tentmaker; for every workload but Docker, only warm runs that hit the cache\n")
-	p("count, and a warm run that missed it is left out of every number.\n\n")
+	p("runs, GitHub-hosted / Tentmaker; only warm runs that hit the cache count, and a warm run that\n")
+	p("missed it is left out of every number. Docker's hosted runner keeps no layer cache, so there\n")
+	p("only Tentmaker's warm runs count hits: a job that started with the repo's container store bound\n")
+	p("and holding an earlier run's build.\n\n")
 	p("| Workload | GitHub-hosted cold | GitHub-hosted warm | Tentmaker cold | Tentmaker warm | Speedup | n |\n")
 	p("|---|---|---|---|---|---|---|\n")
 	for _, w := range rep.Workloads {
@@ -425,8 +442,15 @@ func Markdown(rep Report) string {
 			if pl == "tentmaker" {
 				sd = w.Tentmaker["warm"]
 			}
+			if n := sd.Hits + sd.Missed + sd.Unrecorded; sd.Hits+sd.Missed > 0 && !infoOf(w.Name).Cached {
+				notes = append(notes, fmt.Sprintf("%s, %s: %d of %d passing warm runs hit the cache", w.Name, platformName(pl), sd.Hits, n))
+			}
 			if sd.Missed > 0 {
-				notes = append(notes, fmt.Sprintf("%s, %s: %d warm runs missed the cache and are left out", w.Name, platformName(pl), sd.Missed))
+				n := fmt.Sprintf("%s, %s: %d warm runs missed the cache and are left out", w.Name, platformName(pl), sd.Missed)
+				if sd.Unbound > 0 {
+					n += fmt.Sprintf(" (%d ran without the repo's container store bound)", sd.Unbound)
+				}
+				notes = append(notes, n)
 			}
 			if sd.Unrecorded > 0 {
 				notes = append(notes, fmt.Sprintf("%s, %s: %d warm runs didn't record whether they hit the cache", w.Name, platformName(pl), sd.Unrecorded))
