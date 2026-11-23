@@ -100,3 +100,43 @@ func TestViewsMethodsAndAbsence(t *testing.T) {
 		t.Errorf("no views: %d, want 404", rec.Code)
 	}
 }
+
+// Viewers reach the views and nothing else of the peer API (review
+// second-F5): a tagged scraper such as tag:monitoring is let in without
+// being admitted to work, claim or release. An entry that names no caller
+// admits none, and this device itself stays refused.
+func TestViewersSeeTheViewsAlone(t *testing.T) {
+	ts := newFakeTS()
+	ts.self.DNSName = "alice-mac.example-tailnet.ts.net"
+	served := 0
+	views := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { served++ })
+	n := New(Options{Device: "alice-mac", Pool: "home", Tailscale: ts, Views: views,
+		Viewers: []string{"TAG:CI", "bob-pc", "alice-mac", "nSELF", "tag:"}})
+	for _, remote := range []string{"100.64.0.6:4000", "100.64.0.5:4000"} {
+		for _, path := range []string{"/metrics", "/", "/status"} {
+			if rec := getView(n, path, remote, "100.64.0.1:7433"); rec.Code != 200 {
+				t.Errorf("viewer %s GET %s: %d, want 200", remote, path, rec.Code)
+			}
+		}
+		for _, c := range []struct{ method, path string }{
+			{"GET", "/v1/status"}, {"GET", "/v1/runs"}, {"GET", "/v1/runs/log?id=x"}, {"POST", "/v1/work"},
+			{"POST", "/v1/claim"}, {"POST", "/v1/release"}, {"POST", "/v1/rerun"}, {"GET", "/v1/archive/x"},
+		} {
+			if rec := do(t, n.handler(), c.method, c.path, remote, nil, "home"); rec.Code != http.StatusForbidden {
+				t.Errorf("viewer %s %s %s: %d, want 403", remote, c.method, c.path, rec.Code)
+			}
+		}
+	}
+	for _, remote := range []string{"127.0.0.1:4000", "100.64.0.1:4000", "100.64.0.9:4000"} {
+		if rec := getView(n, "/metrics", remote, "100.64.0.1:7433"); rec.Code != http.StatusForbidden {
+			t.Errorf("GET /metrics from %s: %d, want 403", remote, rec.Code)
+		}
+	}
+	if served != 6 {
+		t.Fatalf("served %d views, want 6", served)
+	}
+	other := New(Options{Device: "alice-mac", Pool: "home", Tailscale: ts, Views: views, Viewers: []string{"tag:monitoring"}})
+	if rec := getView(other, "/metrics", "100.64.0.6:4000", "100.64.0.1:7433"); rec.Code != http.StatusForbidden {
+		t.Errorf("tag:ci under a tag:monitoring allow-list: %d, want 403", rec.Code)
+	}
+}

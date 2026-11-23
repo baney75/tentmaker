@@ -5,10 +5,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -201,4 +204,79 @@ func addrPorts(c net.Conn) (client, server netip.AddrPort, err error) {
 		return client, server, errors.New("not a TCP connection")
 	}
 	return ra.AddrPort(), la.AddrPort(), nil
+}
+
+// procTCPIdentify names a loopback TCP caller from proc's net/tcp and
+// net/tcp6 (the daemon's own network namespace): the uid that owns the
+// client end of the connection, classified like a Unix socket caller. A
+// connection it can't find is refused.
+func procTCPIdentify(proc string, runner func() ([]IDRange, error)) Identify {
+	return func(c net.Conn) (Caller, error) {
+		client, server, err := addrPorts(c)
+		if err != nil {
+			return Caller{}, err
+		}
+		if !client.Addr().Unmap().IsLoopback() {
+			return Caller{}, errors.New("not a loopback connection")
+		}
+		for _, f := range []string{"tcp", "tcp6"} {
+			table, err := os.ReadFile(filepath.Join(proc, "net", f))
+			if err != nil {
+				continue
+			}
+			if uid, ok := tcpOwnerUID(table, client, server, f == "tcp6"); ok {
+				ids, err := runner()
+				return classifyUID(uid, ids, err)
+			}
+		}
+		return Caller{}, fmt.Errorf("no socket owns the connection from %s", client)
+	}
+}
+
+// tcpOwnerUID finds, in a /proc/net/tcp (or tcp6 when v6) table, the uid
+// that owns the socket whose own end is client and whose peer is server.
+func tcpOwnerUID(table []byte, client, server netip.AddrPort, v6 bool) (uint32, bool) {
+	la, ra := procAddr(client, v6), procAddr(server, v6)
+	if la == "" || ra == "" {
+		return 0, false
+	}
+	sc := bufio.NewScanner(bytes.NewReader(table))
+	sc.Buffer(make([]byte, 0, 4096), 1<<20)
+	sc.Scan() // header
+	for sc.Scan() {
+		f := strings.Fields(sc.Text())
+		// sl local rem st tx:rx tr:when retrnsmt uid timeout inode
+		if len(f) < 10 || !strings.EqualFold(f[1], la) || !strings.EqualFold(f[2], ra) {
+			continue
+		}
+		uid, err := strconv.ParseUint(f[7], 10, 32)
+		if err != nil {
+			return 0, false
+		}
+		return uint32(uid), true
+	}
+	return 0, false
+}
+
+// procAddr writes ap the way /proc/net/tcp{,6} does: the address as 32-bit
+// words in host order (little endian on every Linux Tentmaker supports),
+// then the port in hex. An IPv4 address in tcp6 is v4-mapped.
+func procAddr(ap netip.AddrPort, v6 bool) string {
+	a := ap.Addr()
+	var raw []byte
+	switch {
+	case v6:
+		b := a.As16()
+		raw = b[:]
+	case a.Unmap().Is4():
+		b := a.Unmap().As4()
+		raw = b[:]
+	default:
+		return ""
+	}
+	out := make([]byte, len(raw))
+	for i := 0; i+4 <= len(raw); i += 4 {
+		binary.LittleEndian.PutUint32(out[i:], binary.BigEndian.Uint32(raw[i:]))
+	}
+	return strings.ToUpper(hex.EncodeToString(out)) + fmt.Sprintf(":%04X", ap.Port())
 }

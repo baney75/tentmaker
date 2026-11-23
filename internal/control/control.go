@@ -252,6 +252,27 @@ func NewRelayServer(r Relayer, log *slog.Logger) *Server {
 	return s
 }
 
+// NewMetricsServer returns a Server for the loopback metrics listener
+// (config metrics_listen): GET /metrics from views and nothing else, so a
+// Prometheus on this device can scrape it over TCP, which the control
+// API's Unix socket doesn't allow. Like the control API, it names every
+// caller from the connection (TCPIdentify in the daemon) and refuses a CI
+// job, and every caller when ident is nil or can't name one. It takes no
+// token and has no other route.
+func NewMetricsServer(views http.Handler, ident Identify, log *slog.Logger) *Server {
+	if log == nil {
+		log = slog.New(slog.DiscardHandler)
+	}
+	s := &Server{ident: ident, guarded: true, log: log, mux: http.NewServeMux()}
+	if views != nil {
+		s.mux.Handle("GET /metrics", views)
+	}
+	s.mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "the metrics listener serves only GET /metrics"})
+	})
+	return s
+}
+
 // ServeHTTP checks the Host header (no DNS rebinding) and dispatches.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	host := r.Host

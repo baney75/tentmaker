@@ -9,6 +9,8 @@ import (
 	"encoding/hex"
 	"fmt"
 	"math"
+	"net"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -220,6 +222,11 @@ type Mesh struct {
 	// Members limits the pool to these tailnet login names (empty = devices
 	// owned by the same tailnet user as this one).
 	Members []string `toml:"members" json:"members"`
+	// Viewers lets more tailnet nodes read this device's metrics and status
+	// page over the peer API, and nothing else: "tag:<name>" for nodes with
+	// that ACL tag (a Prometheus on tag:monitoring), or a node's MagicDNS
+	// name or stable node ID.
+	Viewers []string `toml:"viewers" json:"viewers"`
 }
 
 // Update is how Tentmaker updates itself.
@@ -247,6 +254,12 @@ type Config struct {
 	// device (0 = DefaultHistoryMax).
 	HistoryMax int     `toml:"history_max" json:"history_max"`
 	Alerts     []Alert `toml:"alerts" json:"alerts"`
+	// MetricsListen, when set, serves GET /metrics alone on this loopback
+	// address ("127.0.0.1:9437"), for a Prometheus on this device. The
+	// daemon names each caller from the connection and refuses CI jobs;
+	// where the OS can't name a TCP caller (macOS) it refuses everyone.
+	// Read when the service starts.
+	MetricsListen string `toml:"metrics_listen" json:"metrics_listen"`
 }
 
 // DefaultHistoryMax is the run history size when history_max is 0.
@@ -267,6 +280,17 @@ type Alert struct {
 
 // alertSecretRe is secrets.NamePattern; config can't import secrets.
 var alertSecretRe = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
+
+// viewerRe is a mesh.viewers entry: tag:<name>, or a MagicDNS name or
+// stable node ID.
+var viewerRe = regexp.MustCompile(`^(?i:tag:[a-z0-9][a-z0-9-]{0,79}|[a-z0-9][a-z0-9.-]{0,252})$`)
+
+func trunc(s string, n int) string {
+	if len(s) > n {
+		return s[:n]
+	}
+	return s
+}
 
 // Default returns the config a fresh install starts with. Memory defaults
 // scale with the machine: everyday is a quarter of RAM (at least 2 GiB, at
@@ -396,6 +420,19 @@ func (c Config) Validate() []string {
 	}
 	if c.HistoryMax < 0 {
 		p = append(p, "history_max can't be negative")
+	}
+	for _, v := range c.Mesh.Viewers {
+		if !viewerRe.MatchString(strings.TrimSpace(v)) {
+			p = append(p, fmt.Sprintf("mesh.viewers: %q is neither tag:<name> nor a node name or id", trunc(v, 80)))
+		}
+	}
+	if a := c.MetricsListen; a != "" {
+		host, port, err := net.SplitHostPort(a)
+		ip, ierr := netip.ParseAddr(host)
+		n, perr := strconv.Atoi(port)
+		if err != nil || ierr != nil || !ip.IsLoopback() || perr != nil || n < 1 || n > 65535 {
+			p = append(p, fmt.Sprintf("metrics_listen %q must be a loopback IP and port, like 127.0.0.1:9437", trunc(a, 80)))
+		}
 	}
 	for i, a := range c.Alerts {
 		p = append(p, a.problems(i)...)
