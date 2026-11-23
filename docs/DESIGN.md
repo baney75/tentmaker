@@ -68,6 +68,8 @@ internal/mesh/            tailnet peer API: discovery, WhoIs auth, remote WorkSo
 internal/runs/            run history: records, log tails, redaction, stats, wait
 internal/alerts/          webhooks on failure, recovery and slow jobs
 internal/observe/         GET /metrics (Prometheus text) and the read-only pool status page
+internal/actionscache/    GitHub Actions cache service for Linux runner jobs
+internal/buildcache/      Bazel, Gradle and Turborepo remote build caches beside it
 internal/executor/joblog/ reads a job's log from its job folder without following the job's links
 internal/testresults/     finds JUnit reports in a job's workspace and go test -json in its log
 internal/service/         install the daemon as a systemd / launchd / Windows service
@@ -494,6 +496,82 @@ disk speed with no workflow change. Any step of it that fails leaves the job on 
   forwarded port and a per-VM identity, and Windows jobs share one user and the host's network
   stack, so a connection names no job). Container steps keep GitHub's cache too: their
   connections come through the podman uplink, which names no job.
+
+**Build cache (Linux, `internal/buildcache`, `internal/executor/linux/buildcache.go`).** A job
+that has an Actions cache grant also gets a remote build cache for its repo on the device, so
+Bazel, Gradle and Turborepo hit a warm cache at local disk speed with no workflow change.
+
+- Protocols, on the Actions cache listener (`Options.Build`; `buildcache.Owns` routes the paths):
+  the Bazel HTTP remote cache (`GET`, `HEAD` and `PUT` on `/ac/<sha256>` and `/cas/<sha256>`; a
+  CAS `PUT` whose body's sha256 is not its name is refused with 400), the Gradle HTTP build cache
+  (`GET`, `HEAD` and `PUT` on `/cache/<key>`) and the Turborepo remote cache API (`GET`, `HEAD`
+  and `PUT` on `/v8/artifacts/<hash>`, keeping `x-artifact-tag` and `x-artifact-duration` and
+  giving them back on `GET`; `GET /v8/artifacts/status` says enabled; `POST
+  /v8/artifacts/events` is read and ignored). Query strings (`teamId`, `slug`) and the
+  `Authorization` header are ignored and never logged. Keys: 64 lowercase hex for Bazel,
+  `[A-Za-z0-9._-]{1,200}` for the others; anything else is 404.
+- Who may do what: the Actions cache names the job by its connection and hands the request over
+  with a `buildcache.Caller`, so the build cache has exactly the Actions cache's grants. No job
+  on the connection, or a grant at `None`, is 404 (a miss). Any grant at `Read` or above reads
+  the repo's whole build cache. A write is kept only when the job could save an Actions cache
+  entry now, asked when the write starts and again under the repo lock just before the rename:
+  confirmed, `Write`, and not held (`Service.Hold`: every other job on the device is a
+  confirmed writer of its repo and ref). So confirmed trusted push jobs read and write;
+  `pull_request` jobs, jobs not yet confirmed and held jobs read only; a job whose neighbor of
+  another trust started (`limitActionsLocked`) and any job without a repo cache (untrusted and
+  fork jobs, which never get a grant) get nothing. One store per repo, not per ref: entries are
+  keyed by their inputs, and only confirmed trusted pushes write, so a PR or a feature branch
+  reads what main and other trusted pushes built.
+- Fail open for speed, closed for safety: a lookup that can't be answered (no folder, a torn
+  entry, an I/O error) is a 404 miss. A write the job may not make, or one the device can't keep
+  (a full disk), is read and dropped and answered as success (200, 202 for turbo) with
+  `X-Tentmaker-Build-Cache: not-stored`, so no tool turns its remote cache off for the rest of
+  the build. A kept write says `stored`. Only a malformed write (a CAS digest mismatch, a body
+  shorter than its `Content-Length`) is 400 and one over the entry cap is 413; each tool logs
+  those as a warning and the build goes on.
+- Storage: `build/` in the repo's Actions cache folder (`.tentmaker-actions/`, opened through
+  `os.Root` with its owner and mode checks), a folder per keyspace (`ac`, `cas`, `gradle`,
+  `turbo`), each entry named by the sha256 of its key. A write streams to `build/tmp/<random>`
+  through a pooled 1 MiB buffer and is renamed into place, so a reader never sees a partial
+  entry. Each entry file starts with a header (magic `TMB1`, the body size, then up to 4 KiB of
+  meta JSON for turbo's headers); a file whose size does not match it reads as a miss, so a
+  crash that cut a write short serves nothing. There is no index file to keep atomic: the
+  entries are the state.
+- Caps and LRU: an entry may be at most `MaxEntry` (2 GiB) and a repo's entries together at
+  most min(`MaxRepo` (5 GiB), the Actions cache budget / 2), so with the Actions cache's half
+  the repo's own folders keep at least a quarter of `cache_max`. A hit bumps the file's mtime,
+  at most once a minute; a write that takes the repo past its budget removes the least recently
+  used entries, never the one just written, until the rest fit in 90% of it, under a per repo
+  lock. The repo's size is read from disk once and kept in memory after. Temp files older than 6
+  hours go at the same sweep. The repo cache's own LRU drops the whole repo folder as before.
+- Pointing the tools at it: when the worker sets `ExecSpec.ActionsCache`, the Linux executor
+  writes these beside the Actions cache's variables (they need no runner patch: the runner
+  leaves them alone):
+  - Turborepo: `TURBO_API` (the service URL with no trailing slash), `TURBO_TEAM=tentmaker` and
+    `TURBO_TOKEN=tentmaker-no-secret` in `.env`. turbo needs a token to turn its remote cache
+    on; this one is a fixed word and no secret, since the cache names the job by its connection.
+    A workflow that sets its own `TURBO_API` keeps it (workflow env wins over `.env`); one that
+    sets only `TURBO_TOKEN` and `TURBO_TEAM` sends them to the device, which ignores them.
+  - Gradle: `~/.gradle/init.d/tentmaker-build-cache.gradle` in the job home. It turns the build
+    cache on (`startParameter.buildCacheEnabled`) and, after settings, sets an `HttpBuildCache`
+    remote at `<url>cache/` with `push = true` only when the build configured no remote of its
+    own. Every step is in a try block, so it never fails a build. A workflow that sets
+    `GRADLE_USER_HOME` elsewhere, or passes `--no-build-cache`, does without it.
+  - Bazel: `~/.bazelrc` in the job home with `build --remote_cache=<url>`. Bazel reads it after
+    the workspace `.bazelrc`, so it wins over a remote cache the workspace sets; a
+    `--remote_cache` on the command line still wins over it, and `--nohome_rc` drops it.
+  - No secret in any of them, and none in argv.
+- Metrics: `tentmaker_build_cache_requests_total{tool,result}` (`hit`, `miss`, `stored`,
+  `not_stored`) and `tentmaker_build_cache_bytes_total{tool,direction}` (`served`, `stored`),
+  since the daemon started, only on a device that serves the build cache. `HEAD` lookups are not
+  counted.
+- Speed: `BenchmarkBazelCASGet10MiB` (a 10 MiB CAS `GET` round trip, i9-14900HX, tmpfs,
+  loopback, 3 runs of 50): 1.45 to 1.57 ms, 6.7 to 7.2 GB/s, on sendfile. `BenchmarkBazelCASPut10MiB`
+  (with the sha256 check and the rename): 7.4 ms, 1.4 GB/s.
+- Not yet: macOS (tart) and Windows jobs get no build cache, for the same reason as the Actions
+  cache: neither can name a job by its connection, so their executors write none of these files
+  or variables. Container steps get none either (the podman uplink names no job), and a tool
+  run inside a container doesn't see the job home's files.
 
 **Network isolation.** Install fences the runner user off and every `Start` checks the fence
 first; no rules means no job (fail closed). A Linux job also gets a network namespace of its own
@@ -1111,6 +1189,10 @@ the views follow the `status --json` contract). The job counters come from `obse
   history change nothing, and only a restart resets the counters. At most 1024 jobs wait; past
   that the oldest counts with what it has.
 
+Build cache counters (`internal/buildcache`, see Executors) come straight from the cache's
+own counters at scrape: `tentmaker_build_cache_requests_total{tool,result}` and
+`tentmaker_build_cache_bytes_total{tool,direction}`, `tool` one of `bazel`, `gradle` and `turbo`.
+
 Cache outcomes are facts recorded once, when the Linux executor claims a job's cache: the repo
 cache is a hit when the repo's folder already held files; the container store is a hit when the
 job was bound to a store that already held images (`repocache.ContainersWarm`, read through
@@ -1562,6 +1644,11 @@ section is rewritten.
   something a step cannot forge. The `sig` capability in returned URLs still binds a URL to one
   job's grant, so a URL that leaks to another job or outlives its job is 404.
   The uplink unit names a job of the device, not which one: jobs share the runner uid (see Hold).
+- The build cache rides the Actions cache's listener, identity and grants instead of a port and
+  a grant of its own: one way to name a job is one thing to get right, and a job's build cache
+  right can never be wider than its Actions cache right. A write the job may not make is read and
+  answered as success rather than refused, because Gradle turns its remote cache off for the rest
+  of a build after a refused store, which would cost the reading job its hits too.
 - The control API names its caller instead of trusting the network (fence verification, item
   18): Windows Firewall doesn't filter loopback, so a job reached 7434 whatever the rules said.
   Linux and macOS serve it on the Unix socket `control.DefaultAddr`

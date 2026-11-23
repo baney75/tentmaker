@@ -668,6 +668,14 @@ func (e *Executor) prepareJob(dir, kind string, spec core.ExecSpec, uid, gid int
 					env.WriteString(kv + "\n")
 				}
 			}
+			// The build caches (internal/buildcache) need no patch: the
+			// runner leaves these alone.
+			for _, kv := range buildCacheEnv(base) {
+				env.WriteString(kv + "\n")
+			}
+			if err := writeBuildCacheFiles(filepath.Join(dir, "home"), base); err != nil {
+				return fmt.Errorf("the build cache files: %w", err)
+			}
 		}
 		if err := os.WriteFile(filepath.Join(dir, "runner", ".env"), []byte(env.String()), 0o600); err != nil {
 			return err

@@ -58,7 +58,8 @@ const unixPrefix = "unix:"
 const DefaultRelayAddr = "127.0.0.1:7435"
 
 // DefaultCacheAddr is where the daemon serves the GitHub Actions cache
-// service (internal/actionscache) to Linux runner jobs. The job fence allows
+// service (internal/actionscache), and the build caches beside it
+// (internal/buildcache), to Linux runner jobs. The job fence allows
 // it like the relay; keep it in step with CachePort in internal/executor/linux.
 const DefaultCacheAddr = "127.0.0.1:7436"
 

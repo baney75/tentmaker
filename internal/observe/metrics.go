@@ -156,6 +156,7 @@ func Metrics(in MetricsInput) []byte {
 	}
 
 	writeJobMetrics(m, in)
+	writeBuildCacheMetrics(m, in)
 	return m.buf.Bytes()
 }
 
@@ -199,6 +200,29 @@ func writeJobMetrics(m *metricWriter, in MetricsInput) {
 		for _, res := range []string{core.CacheHit, core.CacheMiss} {
 			m.sample("tentmaker_cache_jobs_total", float64(j.Cache[[2]string{c, res}]), "device", dev, "cache", c, "result", res)
 		}
+	}
+}
+
+// writeBuildCacheMetrics writes the build cache counters, per tool, when
+// the device serves a build cache.
+func writeBuildCacheMetrics(m *metricWriter, in MetricsInput) {
+	if len(in.BuildCache) == 0 {
+		return
+	}
+	dev := in.Self.Device
+	const req = "tentmaker_build_cache_requests_total"
+	m.family(req, "counter", "Build cache requests since the daemon started, by tool (bazel, gradle, turbo) and result: a lookup's hit or miss, a write stored or not_stored (read and dropped: no write right, or the device could not keep it).")
+	for _, c := range in.BuildCache {
+		m.sample(req, float64(c.Hits), "device", dev, "tool", c.Tool, "result", "hit")
+		m.sample(req, float64(c.Misses), "device", dev, "tool", c.Tool, "result", "miss")
+		m.sample(req, float64(c.Stored), "device", dev, "tool", c.Tool, "result", "stored")
+		m.sample(req, float64(c.NotStored), "device", dev, "tool", c.Tool, "result", "not_stored")
+	}
+	const by = "tentmaker_build_cache_bytes_total"
+	m.family(by, "counter", "Build cache body bytes since the daemon started, by tool and direction: served on hits, stored on kept writes.")
+	for _, c := range in.BuildCache {
+		m.sample(by, float64(c.BytesServed), "device", dev, "tool", c.Tool, "direction", "served")
+		m.sample(by, float64(c.BytesStored), "device", dev, "tool", c.Tool, "direction", "stored")
 	}
 }
 

@@ -38,7 +38,14 @@ func (v viewsSource) MetricsInput(ctx context.Context) (observe.MetricsInput, er
 		return observe.MetricsInput{}, errors.New("status has no device name")
 	}
 	now := v.d.o.Now()
-	return observe.MetricsInput{Now: now, Self: self, Jobs: v.d.tally.Counts(now)}, nil
+	in := observe.MetricsInput{Now: now, Self: self, Jobs: v.d.tally.Counts(now)}
+	if v.d.build != nil {
+		for _, s := range v.d.build.Stats() {
+			in.BuildCache = append(in.BuildCache, observe.BuildCacheCounts{Tool: s.Tool, Hits: s.Hits, Misses: s.Misses,
+				Stored: s.Stored, NotStored: s.NotStored, BytesServed: s.BytesServed, BytesStored: s.BytesStored})
+		}
+	}
+	return in, nil
 }
 
 // PageInput is the pool view (this device alone when local), its running
