@@ -49,11 +49,14 @@ if [ "$engine" = podman ]; then
 fi
 bases=$(sed -n 's|^FROM \${BASE}/\([^ ]*\).*|\1|p' test/bench/Dockerfile)
 [ -n "$bases" ] || { echo "docker-build.sh: no FROM \${BASE}/ line in test/bench/Dockerfile" >&2; exit 1; }
+# Bound each pull where timeout exists (the Linux bench hosts); macOS, where
+# only this script's tests run it against a fake engine, has none.
+bounded() { if command -v timeout >/dev/null 2>&1; then timeout "$@"; else shift; "$@"; fi; }
 base=
 for b in mirror.gcr.io/library public.ecr.aws/docker/library; do
 	ok=1
 	for img in $bases; do
-		if ! timeout 300 "$engine" pull -q "$b/$img" >/dev/null; then
+		if ! bounded 300 "$engine" pull -q "$b/$img" >/dev/null; then
 			echo "docker-build.sh: could not pull $b/$img; trying the next mirror" >&2
 			ok=0
 			break
