@@ -310,7 +310,10 @@ func init() {
 		"schedule":  {usageSchedule, (*app).cmdSchedule},
 		"repo":      {usageRepo, (*app).cmdRepo},
 		"connect":   {"tentmaker connect github|forgejo|gitlab [--url URL] [--token-stdin] [--json]", (*app).cmdConnect},
-		"devices":   {"tentmaker devices add HOST [--channel stable|dev] [--memory S] [--boost-memory S] [--repo R]... [--json]", (*app).cmdDevices},
+		"devices":   {usageDevicesAll, (*app).cmdDevices},
+		"invite":    {usageInvite, (*app).cmdInvite},
+		"join":      {usageJoin, (*app).cmdJoin},
+		"leave":     {"tentmaker leave [--json]\n\nDrops this device out of the pool it joined with tentmaker join.", (*app).cmdLeave},
 		"migrate":   {usageMigrate, (*app).cmdMigrate},
 		"pause":     {"tentmaker pause [--for DURATION] [REASON...] [--json]", (*app).cmdPause},
 		"resume":    {"tentmaker resume [--json]", (*app).cmdResume},
@@ -347,7 +350,11 @@ Usage:
   tentmaker schedule list|add|remove
   tentmaker repo list|add|remove  repositories this device serves
   tentmaker connect github|forgejo|gitlab
+  tentmaker devices [remove NAME] the pool's devices; revoke a lent one
   tentmaker devices add HOST      install on another tailnet device
+  tentmaker invite [--trust T]    a one-time code to lend a device to this pool
+  tentmaker join                  lend this device to a pool (code on stdin)
+  tentmaker leave                 drop out of the pool this device joined
   tentmaker migrate [PATH]        point workflows at Tentmaker
   tentmaker pause [--for D] [REASON...]
   tentmaker resume

@@ -242,6 +242,11 @@ type knownDevice struct {
 	Device   string    `json:"device"`
 	Wake     *WakeInfo `json:"wake,omitempty"`
 	LastSeen time.Time `json:"last_seen"`
+	// Kind is what the node was to this device (owner, guest or host) and
+	// Login its tailnet user, for tentmaker devices. An older file has
+	// neither; such a device counts as the owner's.
+	Kind  string `json:"kind,omitempty"`
+	Login string `json:"login,omitempty"`
 }
 
 type knownFile struct {
@@ -293,7 +298,7 @@ func (n *Node) loadKnown() {
 }
 
 // noteKnown records a hello from pool peer id at now.
-func (n *Node) noteKnown(id string, h helloResponse, now time.Time) {
+func (n *Node) noteKnown(id string, h helloResponse, kind, login string, now time.Time) {
 	n.known.mu.Lock()
 	defer n.known.mu.Unlock()
 	d := n.known.devs[id]
@@ -302,10 +307,10 @@ func (n *Node) noteKnown(id string, h helloResponse, now time.Time) {
 		n.known.devs[id] = d
 		n.known.dirty = true
 	}
-	if d.Device != h.Device || !sameWake(d.Wake, h.Wake) {
+	if d.Device != h.Device || !sameWake(d.Wake, h.Wake) || d.Kind != kind || d.Login != login {
 		n.known.dirty = true
 	}
-	d.Device, d.Wake, d.LastSeen = h.Device, h.Wake, now
+	d.Device, d.Wake, d.LastSeen, d.Kind, d.Login = h.Device, h.Wake, now, kind, login
 	if now.Sub(n.known.savedAt[id]) >= knownSaveEvery {
 		n.known.dirty = true
 	}
@@ -376,19 +381,52 @@ func (n *Node) knownList() []knownDevice {
 	return out
 }
 
-// knownByName is the most recently seen known device with that name.
+// knownByName is the most recently seen known device with that name,
+// preferring one with wake facts: a guest that announces the name of the
+// owner's sleeping device must not stop it being woken.
 func (n *Node) knownByName(name string) (knownDevice, bool) {
 	var best knownDevice
 	found := false
 	for _, d := range n.knownList() {
-		if d.Device == name && (!found || d.LastSeen.After(best.LastSeen)) {
+		if d.Device != name || !ownerRecord(d) {
+			continue
+		}
+		if !found || betterRecord(d, best) {
 			best, found = d, true
 		}
 	}
 	return best, found
 }
 
-// lastSeen is when any known device with that name last answered.
+// betterRecord: of two records of one name, d stands for it over o when
+// only d has wake facts, or both or neither do and d was seen later.
+func betterRecord(d, o knownDevice) bool {
+	if (d.Wake != nil) != (o.Wake != nil) {
+		return d.Wake != nil
+	}
+	return d.LastSeen.After(o.LastSeen)
+}
+
+// ownerRecord: a known device of the pool owner's (or one recorded before
+// kinds were, which discovery clears of a non-owner's wake facts). A lent
+// device's or a host's record never stands for a name in a wake.
+func ownerRecord(d knownDevice) bool { return d.Kind == "" || d.Kind == kindOwner }
+
+// scrubForeignWake drops wake facts recorded for a tailnet node that is not
+// this device's own user (recorded before only the same user's were kept).
+func (n *Node) scrubForeignWake(self Peer, all []Peer) {
+	n.known.mu.Lock()
+	defer n.known.mu.Unlock()
+	for _, p := range all {
+		d := n.known.devs[p.ID]
+		if d != nil && d.Wake != nil && !sameUser(self, p.UserID, p.LoginName, p.Tags) {
+			d.Wake = nil
+			n.known.dirty = true
+		}
+	}
+}
+
+// lastSeen is when the pool owner's device with that name last answered.
 func (n *Node) lastSeen(name string) time.Time {
 	d, _ := n.knownByName(name)
 	return d.LastSeen
@@ -601,7 +639,7 @@ func (n *Node) WakeTick(ctx context.Context) {
 	known := n.knownList()
 	byName := map[string]knownDevice{}
 	for _, d := range known {
-		if o, ok := byName[d.Device]; !ok || d.LastSeen.After(o.LastSeen) {
+		if o, ok := byName[d.Device]; ownerRecord(d) && (!ok || betterRecord(d, o)) {
 			byName[d.Device] = d
 		}
 	}

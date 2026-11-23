@@ -72,7 +72,7 @@ func linuxNeed(key string, since time.Time) WakeNeed {
 // sleep at seen.
 func asleep(name string, w *WakeInfo, seen time.Time, nodes ...*Node) {
 	for _, n := range nodes {
-		n.noteKnown("n-"+name, helloResponse{Device: name, Pool: n.o.Pool, Wake: w}, seen)
+		n.noteKnown("n-"+name, helloResponse{Device: name, Pool: n.o.Pool, Wake: w}, kindOwner, "", seen)
 	}
 }
 
@@ -175,7 +175,7 @@ func TestWakeAsksAPeerOnTheSleepersLAN(t *testing.T) {
 
 	// The desk answers 40 s later: online, and its misses reset.
 	clk.Add(40 * time.Second)
-	broker.node.noteKnown("n-desk", helloResponse{Device: "desk", Pool: "home", Wake: wakeInfo(deskMAC, homeSubnet, homeBcast)}, clk.Now())
+	broker.node.noteKnown("n-desk", helloResponse{Device: "desk", Pool: "home", Wake: wakeInfo(deskMAC, homeSubnet, homeBcast)}, kindOwner, "", clk.Now())
 	needs.set()
 	broker.node.WakeTick(context.Background())
 	r, _ = broker.node.wakes.record("desk")
@@ -410,7 +410,7 @@ func TestWakeEndpointUsesOnlyItsOwnRecords(t *testing.T) {
 		{`{"mac":"de:ad:be:ef:00:01"}`, 400, "device must be"},
 	} {
 		if c.body == `{"device":"broker"}` {
-			n.noteKnown("n2", helloResponse{Device: "broker", Pool: "home", Wake: wakeInfo("a4:5e:60:00:00:07", homeSubnet, homeBcast)}, clk.Now())
+			n.noteKnown("n2", helloResponse{Device: "broker", Pool: "home", Wake: wakeInfo("a4:5e:60:00:00:07", homeSubnet, homeBcast)}, kindOwner, "", clk.Now())
 		}
 		rec := do(t, n.handler(), "POST", "/v1/wake", "100.64.0.2:1", strings.NewReader(c.body), "home")
 		if rec.Code != c.code || !strings.Contains(errText(rec), c.why) {

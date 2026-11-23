@@ -165,6 +165,12 @@ type Repo struct {
 	// Public repos run only with AllowPublic, after the forge requires
 	// approval for outside contributors.
 	AllowPublic bool `toml:"allow_public" json:"allow_public"`
+	// LendPublic lets devices lent to the pool with public trust run this
+	// public repo's fork pull_request jobs. Set it only on a repo where no
+	// job a tentmaker runner could take uses a secret: GitHub hands a
+	// runner any queued job its labels fit, and the broker stops one that
+	// took anything else only after it started.
+	LendPublic bool `toml:"lend_public,omitempty" json:"lend_public,omitempty"`
 	// Mode is "runner" (the forge's own runner; GitHub and Forgejo) or
 	// "checks" (Tentmaker runs workflow jobs itself and posts commit
 	// statuses; any forge, and GitHub repos whose hosted Actions don't run).
@@ -419,6 +425,9 @@ func (c Config) Validate() []string {
 		}
 		if len(r.Branches) > 0 && r.Mode != "checks" {
 			p = append(p, fmt.Sprintf(`repo %q: branches apply only to mode = "checks"`, r.Name))
+		}
+		if r.LendPublic && (!r.AllowPublic || r.Mode == "checks") {
+			p = append(p, fmt.Sprintf(`repo %q: lend_public needs allow_public = true and mode = "runner"`, r.Name))
 		}
 		if k := r.Debug.KeepFailed.D(); k < 0 || k > MaxKeepFailed {
 			p = append(p, fmt.Sprintf("repo %q: debug.keep_failed must be from 0 to %s", r.Name, MaxKeepFailed))

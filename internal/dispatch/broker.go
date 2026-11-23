@@ -124,6 +124,9 @@ type infoCache struct {
 	noForks bool
 	// defaultBranch is the repo's, for the Actions cache (actionsOffer).
 	defaultBranch string
+	// public: the forge says the repo is public (a public lent device
+	// runs only public repos' jobs).
+	public bool
 }
 
 // grantRec is one runner the broker granted. It holds no secret.
@@ -134,7 +137,11 @@ type grantRec struct {
 	// Node is the tailnet node that asked for the grant (core.CallerNode),
 	// "" for this broker's own device. Only that node speaks for Device
 	// while any of its grants is on record.
-	Node       string        `json:"node,omitempty"`
+	Node string `json:"node,omitempty"`
+	// Lend is the trust of the lent device it was granted to (trusted or
+	// public), "" for the owner's own. The monitor checks the job the
+	// runner took against it.
+	Lend       string        `json:"lend,omitempty"`
 	Forge      string        `json:"forge"`
 	Repo       string        `json:"repo"`
 	RunnerID   int64         `json:"runner_id,omitempty"`
@@ -185,6 +192,8 @@ type deviceRec struct {
 	// labels and platforms are what its last request asked for (Waiting).
 	labels    []string
 	platforms []core.Platform
+	// lend is its trust when its last request came from a lent device.
+	lend *core.Lend
 }
 
 type statusPost struct {
@@ -277,6 +286,7 @@ func (b *Broker) Work(ctx context.Context, req core.WorkRequest) (core.WorkRespo
 		return core.WorkResponse{}, errors.New("work request without a device name")
 	}
 	node := core.CallerNode(ctx)
+	lend, lent := core.CallerLend(ctx)
 	now := b.now()
 	var resp core.WorkResponse
 	var picks []*grantRec
@@ -299,6 +309,11 @@ func (b *Broker) Work(ctx context.Context, req core.WorkRequest) (core.WorkRespo
 	}
 	dev.LastSeen, dev.Offline, dev.Free = now, false, req.Free
 	dev.labels, dev.platforms = append([]string(nil), req.Labels...), append([]core.Platform(nil), req.Platforms...)
+	dev.lend = nil
+	if lent {
+		l := lend
+		dev.lend = &l
+	}
 
 	// Results first, so an ended check job with a result posts that result.
 	for _, r := range req.Results {
@@ -419,11 +434,20 @@ func (b *Broker) Work(ctx context.Context, req core.WorkRequest) (core.WorkRespo
 		blocked = "device quarantined"
 	case b.verdictPendingLocked(req.Device):
 		blocked = "a runner of this device ended and is being checked"
+	case lent && lend.Trust != core.TrustTrusted && lend.Trust != core.TrustPublic:
+		blocked = "a lent device removed from the pool"
 	}
 	if req.Free > 0 && blocked == "" {
-		picks = b.pickLocked(req, now)
+		var lp *core.Lend
+		if lent {
+			lp = &lend
+		}
+		picks = b.pickLocked(req, lp, now)
 		for _, rec := range picks {
 			rec.Node = node
+			if lent {
+				rec.Lend = lend.Trust
+			}
 		}
 	}
 	b.pruneArchivesLocked() // revokes the archive refs of expired grants too
@@ -495,16 +519,16 @@ func (b *Broker) newNameLocked(device string) string {
 
 // pickLocked reserves grants for the request. The reservations count as idle
 // runners at once, so a concurrent request can't over-serve a job.
-func (b *Broker) pickLocked(req core.WorkRequest, now time.Time) []*grantRec {
+func (b *Broker) pickLocked(req core.WorkRequest, lend *core.Lend, now time.Time) []*grantRec {
 	skipped := false
 	if req.OnlyRepoIdle {
 		// Another repo waits for a device that only a reset frees: offer
 		// nothing, so it empties, resets and takes that repo's job.
-		if b.pickAllLocked(req, now, &skipped, false); skipped {
+		if b.pickAllLocked(req, lend, now, &skipped, false); skipped {
 			return nil
 		}
 	}
-	picks := b.pickAllLocked(req, now, &skipped, true)
+	picks := b.pickAllLocked(req, lend, now, &skipped, true)
 	for _, rec := range picks {
 		rec.drain = skipped
 	}
@@ -513,8 +537,10 @@ func (b *Broker) pickLocked(req core.WorkRequest, now time.Time) []*grantRec {
 
 // pickAllLocked picks grants for req; it sets *skipped when a job this
 // device could run waits only because of req.OnlyRepo. With reserve false
-// it only sets *skipped and picks nothing.
-func (b *Broker) pickAllLocked(req core.WorkRequest, now time.Time, skipped *bool, reserve bool) []*grantRec {
+// it only sets *skipped and picks nothing. lend is the trust of a lent
+// device (nil for the owner's own), which limits what it may get
+// (lendJobRefusalLocked).
+func (b *Broker) pickAllLocked(req core.WorkRequest, lend *core.Lend, now time.Time, skipped *bool, reserve bool) []*grantRec {
 	var picks []*grantRec
 	type cand struct {
 		r      *repoState
@@ -528,6 +554,9 @@ func (b *Broker) pickAllLocked(req core.WorkRequest, now time.Time, skipped *boo
 			continue
 		}
 		if why := b.repoRefusalLocked(r, now); why != "" {
+			continue
+		}
+		if lend != nil && b.lendRepoRefusalLocked(r, *lend) != "" {
 			continue
 		}
 		var idle []*grantRec
@@ -546,7 +575,11 @@ func (b *Broker) pickAllLocked(req core.WorkRequest, now time.Time, skipped *boo
 		sort.Slice(idle, func(i, k int) bool { return idle[i].Granted.Before(idle[k].Granted) })
 		used := make([]bool, len(idle))
 		for _, j := range r.queued {
-			if why := b.jobRefusal(j, now); why != "" {
+			if lend != nil {
+				if b.lendJobRefusalLocked(r, j, *lend, now) != "" {
+					continue
+				}
+			} else if why := b.jobRefusal(j, now); why != "" {
 				b.noteRefusal(j, why)
 				continue
 			}
@@ -598,6 +631,11 @@ func (b *Broker) pickAllLocked(req core.WorkRequest, now time.Time, skipped *boo
 
 	for _, r := range b.repos {
 		if r.mode != "checks" || r.denied {
+			continue
+		}
+		// A public lent device gets no check job: its result becomes the
+		// owner's commit status. A trusted one gets its list's repos.
+		if lend != nil && (lend.Trust != core.TrustTrusted || !lend.AllowsRepo(r.cfg.Name)) {
 			continue
 		}
 		for _, h := range r.heads {
@@ -677,6 +715,18 @@ func (b *Broker) realize(ctx context.Context, req core.WorkRequest, rec *grantRe
 		drop("grant", fmt.Errorf("no forge named %q", rec.Forge))
 		return core.WorkOffer{}, false
 	}
+	cache, actions := b.cacheSafe(rec), b.actionsOffer(rec)
+	if rec.Lend == core.TrustPublic {
+		cache, actions = false, nil
+	}
+	if lend, ok := core.CallerLend(ctx); ok {
+		// The last word before a runner is registered for a lent device.
+		if why := core.LendRefusal(lend, core.WorkOffer{Job: rec.Job, Cache: cache, Actions: actions}); why != "" {
+			b.log.Warn("offer for a lent device refused", "device", req.Device, "repo", rec.Repo, "job_id", rec.Job.ID, "why", why)
+			drop("", nil)
+			return core.WorkOffer{}, false
+		}
+	}
 	if b.o.Claimer != nil {
 		cctx, cancel := context.WithTimeout(ctx, forgeTimeout)
 		ok := b.o.Claimer.Claim(cctx, rec.Job, req.Device, b.claimTTL())
@@ -704,8 +754,8 @@ func (b *Broker) realize(ctx context.Context, req core.WorkRequest, rec *grantRe
 	b.log.Info("runner granted", "runner", rec.Name, "runner_id", g.RunnerID, "device", req.Device,
 		"repo", rec.Repo, "job_id", rec.Job.ID, "job", rec.Job.Name, "platform", rec.Platform.String(),
 		"labels", strings.Join(rec.Labels, ","))
-	return core.WorkOffer{Job: rec.Job, Grant: g, Secret: g.Secret, Platform: rec.Platform, Cache: b.cacheSafe(rec), Drain: rec.drain,
-		Actions: b.actionsOffer(rec)}, true
+	return core.WorkOffer{Job: rec.Job, Grant: g, Secret: g.Secret, Platform: rec.Platform, Cache: cache, Drain: rec.drain,
+		Actions: actions}, true
 }
 
 // actionsOffer marks a runner offer for a github.com repo: only there does
@@ -855,6 +905,69 @@ func (b *Broker) realizeCheck(ctx context.Context, req core.WorkRequest, rec *gr
 	// A check job runs exactly one commit the broker picked, never a fork's
 	// (pollChecks skips them), so it may use the repo's cache.
 	return core.WorkOffer{Job: rec.Job, Grant: g, Secret: secret, Platform: rec.Platform, Cache: !rec.Job.FromFork, Drain: rec.drain}, true
+}
+
+// lendRepoRefusalLocked says why a device lent with l gets no job of repo
+// r, or "". trusted: repos on its list. public: none yet (issue #61).
+func (b *Broker) lendRepoRefusalLocked(r *repoState, l core.Lend) string {
+	switch l.Trust {
+	case core.TrustTrusted:
+		if !l.AllowsRepo(r.cfg.Name) {
+			return "not on the lent device's list"
+		}
+		return ""
+	case core.TrustPublic:
+		return core.PublicLendOff
+	}
+	return "trust " + l.Trust + " gets no work"
+}
+
+// lendJobRefusalLocked says why a device lent with l may not be granted a
+// runner for queued job j of repo r, or "". trusted: what an owner's device
+// may get, and only when no fork can reach the runner (cacheSafe), never a
+// pull_request_target job. public: only a fork's pull_request job, which no
+// owner's device ever gets.
+func (b *Broker) lendJobRefusalLocked(r *repoState, j core.Job, l core.Lend, now time.Time) string {
+	switch l.Trust {
+	case core.TrustTrusted:
+		if why := b.jobRefusal(j, now); why != "" {
+			return why
+		}
+		if j.Event == core.EventPullRequestTarget {
+			return "a pull_request_target job"
+		}
+		if !b.runnerCacheSafeLocked(r.forge, r.cfg.Name, j) {
+			return "a fork could reach the runner"
+		}
+		return ""
+	case core.TrustPublic:
+		if !j.FromFork || j.Event != core.EventPullRequest {
+			return "not a fork's pull_request job"
+		}
+		j.FromFork = false // jobRefusal's other rules still apply
+		return b.jobRefusal(j, now)
+	}
+	return "trust " + l.Trust + " gets no work"
+}
+
+// takenRefusal says why the runner rec must stop now that the forge says
+// it took job j, or "": a fork's job on an owner's or trusted device, a
+// pull_request_target job on a trusted one, anything but a fork's
+// pull_request job on a public one.
+func takenRefusal(rec grantRec, j core.Job) string {
+	switch rec.Lend {
+	case core.TrustPublic:
+		if !j.FromFork {
+			return "a job not from a fork reached a public lent device"
+		}
+		return core.TakenRefusal(rec.Lend, j.Event, true)
+	case core.TrustTrusted:
+		return core.TakenRefusal(rec.Lend, j.Event, j.FromFork)
+	}
+	if j.FromFork {
+		return "a fork's job reached one of its runners"
+	}
+	return ""
 }
 
 // maxCheckRetries is how many times a check whose grant ended unstarted
@@ -1144,6 +1257,7 @@ func (b *Broker) pollRunner(ctx context.Context, r *repoState, now time.Time) {
 		} else {
 			nc.why = repoRefusal(r, info)
 			nc.noForks = !info.Public && info.ForkPolicy == "off"
+			nc.public = info.Public
 			nc.defaultBranch = info.DefaultBranch
 		}
 		b.mu.Lock()
@@ -1343,8 +1457,8 @@ func (b *Broker) watch(ctx context.Context, f core.Forge, rec *grantRec, r grant
 		return
 	}
 	b.tookLocked(rec, j)
-	if j.FromFork {
-		b.forkCaught(ctx, f, rec, r, j)
+	if why := takenRefusal(r, j); why != "" {
+		b.forkCaught(ctx, f, rec, r, j, why)
 		return
 	}
 	b.log.Info("runner took a job", "runner", r.Name, "device", r.Device, "repo", r.Repo, "job_id", j.ID,
@@ -1411,7 +1525,7 @@ func (b *Broker) tookLocked(rec *grantRec, j core.Job) {
 	defer b.mu.Unlock()
 	rec.TookJob, rec.TookRun, rec.Identified, rec.Fork = j.ID, j.RunID, true, j.FromFork
 	rec.TookEvent, rec.TookBranch = j.Event, j.HeadBranch
-	rec.Settled = !j.FromFork
+	rec.Settled = takenRefusal(*rec, j) == ""
 }
 
 func (b *Broker) unidentified(ctx context.Context, f core.Forge, rec *grantRec, r grantRec, busySince, now time.Time, why string) {
@@ -1427,15 +1541,17 @@ func (b *Broker) unidentified(ctx context.Context, f core.Forge, rec *grantRec, 
 	b.tryDelete(ctx, f, r)
 }
 
-// forkCaught: a fork's job reached our runner (a JIT runner takes any job
-// its labels match). Stop it, cancel the run, delete the runner, and make
-// the device reset before it takes more work.
-func (b *Broker) forkCaught(ctx context.Context, f core.Forge, rec *grantRec, r grantRec, j core.Job) {
-	b.log.Warn("fork job reached a runner; stopping it and cancelling the run", "runner", r.Name,
-		"device", r.Device, "repo", r.Repo, "job_id", j.ID, "run_id", j.RunID)
+// forkCaught: a job the device may not run reached our runner (a JIT
+// runner takes any job its labels match): a fork's job, or on a lent
+// device a job its trust doesn't allow (takenRefusal). Stop it, cancel the
+// run, delete the runner, and make the device reset before it takes more
+// work.
+func (b *Broker) forkCaught(ctx context.Context, f core.Forge, rec *grantRec, r grantRec, j core.Job, why string) {
+	b.log.Warn("a job this device may not run reached its runner; stopping it and cancelling the run", "runner", r.Name,
+		"device", r.Device, "repo", r.Repo, "job_id", j.ID, "run_id", j.RunID, "why", why)
 	b.mu.Lock()
 	b.stopLocked(rec)
-	b.quarantineLocked(r.Device, "a fork's job reached one of its runners")
+	b.quarantineLocked(r.Device, why)
 	b.mu.Unlock()
 	fctx, cancel := context.WithTimeout(ctx, forgeTimeout)
 	if err := f.CancelRun(fctx, r.Repo, j.RunID); err != nil {
@@ -1528,8 +1644,8 @@ func (b *Broker) verdict(ctx context.Context, f core.Forge, rec *grantRec, r gra
 			return
 		}
 		b.tookLocked(rec, j)
-		if j.FromFork {
-			b.forkCaught(ctx, f, rec, r, j)
+		if why := takenRefusal(r, j); why != "" {
+			b.forkCaught(ctx, f, rec, r, j, why)
 		} else {
 			b.tryDelete(ctx, f, r)
 		}
@@ -1546,8 +1662,8 @@ func (b *Broker) verdict(ctx context.Context, f core.Forge, rec *grantRec, r gra
 			return
 		}
 		b.tookLocked(rec, j)
-		if j.FromFork {
-			b.forkCaught(ctx, f, rec, r, j)
+		if why := takenRefusal(r, j); why != "" {
+			b.forkCaught(ctx, f, rec, r, j, why)
 		} else {
 			b.log.Info("ended runner's job identified", "runner", r.Name, "device", r.Device, "repo", r.Repo,
 				"job_id", j.ID, "job", j.Name)

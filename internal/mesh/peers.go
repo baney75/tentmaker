@@ -23,6 +23,7 @@ var (
 	_ core.Claimer       = (*Node)(nil)
 	_ core.WorkSource    = (*remoteBroker)(nil)
 	_ core.ArchiveSource = (*remoteBroker)(nil)
+	_ core.LentSource    = (*remoteBroker)(nil)
 )
 
 // peerState is one pool device this node has said hello to.
@@ -34,6 +35,10 @@ type peerState struct {
 	failures  int
 	skipUntil time.Time
 	latency   time.Duration // smoothed latency of recent successes; 0 = none yet
+	// What the node is to this device (relOf) at its last discovery.
+	kind  string
+	same  bool
+	login string
 }
 
 // DeviceStatus is one device's answer in a pool view.
@@ -44,6 +49,8 @@ type DeviceStatus struct {
 	Version string          `json:"version"`
 	Status  json.RawMessage `json:"status,omitempty"`
 	Error   string          `json:"error,omitempty"`
+	// Lent marks a guest's device.
+	Lent bool `json:"lent,omitempty"`
 }
 
 // peerRef is a snapshot of a peer for one call.
@@ -52,6 +59,9 @@ type peerRef struct {
 	hello    helloResponse
 	latency  time.Duration
 	skipped  bool
+	kind     string
+	same     bool
+	login    string
 }
 
 // discover refreshes the pool: online devices of this user (or members) are
@@ -80,9 +90,11 @@ func (n *Node) discover(ctx context.Context) {
 		return
 	}
 	listed = true
+	n.scrubForeignWake(self, all)
 
 	type found struct {
 		p     Peer
+		rel   relation
 		base  string
 		hello helloResponse
 		err   error
@@ -93,14 +105,18 @@ func (n *Node) discover(ctx context.Context) {
 	now := n.now()
 	n.peersMu.Lock()
 	for _, p := range all {
-		if !p.Online || p.ID == self.ID || !n.allowed(self, p.UserID, p.LoginName, p.Tags) {
+		if !p.Online || p.ID == self.ID {
+			continue
+		}
+		rel := n.relOf(self, p.ID, p.UserID, p.LoginName, p.Tags)
+		if rel.kind == "" || (rel.kind == kindGuest && rel.lend.Trust == core.TrustRevoked) {
 			continue
 		}
 		base := n.peerURL(p)
 		if base == "" {
 			continue
 		}
-		f := &found{p: p, base: base}
+		f := &found{p: p, rel: rel, base: base}
 		if st, ok := n.peers[p.ID]; ok && now.Before(st.skipUntil) {
 			f.skip = true
 		}
@@ -138,22 +154,40 @@ func (n *Node) discover(ctx context.Context) {
 				n.failLocked(st, f.err)
 				next[f.p.ID] = st
 			}
-		case f.hello.Pool != n.o.Pool:
+		case f.hello.Pool != n.pool():
 			// Another pool: not ours.
 		default:
 			if !had {
 				st = &peerState{id: f.p.ID}
-				n.log.Info("mesh: found a pool device", "device", f.hello.Device, "broker", f.hello.Broker)
+				n.log.Info("mesh: found a pool device", "device", f.hello.Device, "broker", f.hello.Broker, "as", f.rel.kind)
 			}
-			st.base, st.hello, st.ips = f.base, f.hello, f.p.IPs
+			h := f.hello
+			if !f.rel.same {
+				// Wake facts and the guest table are honored only from the
+				// same tailnet user's devices (#58): a member, guest or
+				// host can't aim magic packets or grant trust.
+				h.Wake, h.Guests = nil, ""
+			}
+			st.base, st.hello, st.ips = f.base, h, f.p.IPs
+			st.kind, st.same, st.login = f.rel.kind, f.rel.same, f.p.LoginName
 			n.okLocked(st, f.d)
 			next[f.p.ID] = st
-			n.noteKnown(f.p.ID, f.hello, now)
+			n.noteKnown(f.p.ID, h, f.rel.kind, f.p.LoginName, now)
 		}
 	}
 	n.peers = next
 	n.peersMu.Unlock()
 	n.saveKnown(now)
+	var owners []peerRef
+	for _, p := range n.allPeers() {
+		switch {
+		case p.kind == kindGuest:
+			n.noteGuestName(p.id, p.hello.Device)
+		case p.same && !p.skipped:
+			owners = append(owners, p)
+		}
+	}
+	n.pullGuests(ctx, owners)
 }
 
 // ensureFresh runs discovery if nothing has for one discovery period, so
@@ -209,8 +243,21 @@ func (n *Node) record(id string, err error, d time.Duration) {
 	n.okLocked(st, d)
 }
 
-// snapshot lists known pool peers, healthy or not.
+// snapshot lists the owner's pool peers (the same user or members),
+// healthy or not: the devices that share runs, claims and wakes. Guests
+// and, on a lent device, the pool owner's devices are left out.
 func (n *Node) snapshot() []peerRef {
+	var out []peerRef
+	for _, p := range n.allPeers() {
+		if p.kind == kindOwner {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// allPeers lists every pool peer, whatever it is to this device.
+func (n *Node) allPeers() []peerRef {
 	now := n.now()
 	n.peersMu.Lock()
 	defer n.peersMu.Unlock()
@@ -218,7 +265,7 @@ func (n *Node) snapshot() []peerRef {
 	for _, st := range n.peers {
 		out = append(out, peerRef{
 			id: st.id, base: st.base, hello: st.hello, latency: st.latency,
-			skipped: now.Before(st.skipUntil),
+			skipped: now.Before(st.skipUntil), kind: st.kind, same: st.same, login: st.login,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -230,16 +277,27 @@ func (n *Node) snapshot() []peerRef {
 	return out
 }
 
-// healthyBrokers lists broker peers not being skipped, fastest first.
-func (n *Node) healthyBrokers() []peerRef {
+// healthyBrokers lists broker peers of kind not being skipped, fastest
+// first.
+func (n *Node) healthyBrokers(kind string) []peerRef {
 	var out []peerRef
-	for _, p := range n.snapshot() {
-		if p.hello.Broker && !p.skipped {
+	for _, p := range n.allPeers() {
+		if p.kind == kind && p.hello.Broker && !p.skipped {
 			out = append(out, p)
 		}
 	}
 	sortByLatency(out)
 	return out
+}
+
+// workKind is the kind of peer whose brokers this device takes work from:
+// the pool owner's devices while lent, else the owner's own. A guest's
+// broker never hands work to anyone but its own device.
+func (n *Node) workKind() string {
+	if n.lentInfo() != nil {
+		return kindHost
+	}
+	return kindOwner
 }
 
 // sortByLatency orders peers by recent success latency; peers with no
@@ -259,7 +317,7 @@ func sortByLatency(ps []peerRef) {
 func (n *Node) Brokers(ctx context.Context) []core.WorkSource {
 	n.ensureFresh(ctx)
 	var out []core.WorkSource
-	for _, p := range n.healthyBrokers() {
+	for _, p := range n.healthyBrokers(n.workKind()) {
 		out = append(out, &remoteBroker{n: n, ref: p})
 	}
 	return out
@@ -272,6 +330,10 @@ type remoteBroker struct {
 }
 
 func (b *remoteBroker) Name() string { return "mesh:" + b.ref.hello.Device }
+
+// Lend implements core.LentSource: the trust this device accepted when it
+// joined the broker's pool, or nil when the broker is the owner's own.
+func (b *remoteBroker) Lend() *core.Lend { return b.n.lendFor(b.ref.kind) }
 
 func (b *remoteBroker) Work(ctx context.Context, req core.WorkRequest) (core.WorkResponse, error) {
 	ctx, cancel := context.WithTimeout(ctx, ioTimeout)
@@ -302,7 +364,7 @@ func (b *remoteBroker) FetchArchive(ctx context.Context, ref, device string, w i
 	if err != nil {
 		return err
 	}
-	req.Header.Set(poolHeader, b.n.o.Pool)
+	req.Header.Set(poolHeader, b.n.pool())
 	req.Header.Set(deviceHeader, device)
 	resp, err := b.n.stream.Do(req)
 	if err != nil {
@@ -347,7 +409,7 @@ type claimParty struct {
 func (n *Node) claimParties(ctx context.Context) []claimParty {
 	n.ensureFresh(ctx)
 	parties := []claimParty{{name: n.o.Device, self: true}}
-	for _, p := range n.healthyBrokers() {
+	for _, p := range n.healthyBrokers(kindOwner) {
 		parties = append(parties, claimParty{name: p.hello.Device, ref: p})
 	}
 	sort.SliceStable(parties, func(i, j int) bool {
@@ -447,11 +509,24 @@ func (n *Node) Pool(ctx context.Context) ([]DeviceStatus, error) {
 		self.Status = b
 	}
 
-	peers := n.snapshot()
+	// The owner's devices and its guests (which show their status to the
+	// pool owner); on a lent device, the pool owner's devices, whose status
+	// a guest may not read.
+	lent := n.lentInfo() != nil
+	var peers []peerRef
+	for _, p := range n.allPeers() {
+		if (!lent && (p.kind == kindOwner || p.kind == kindGuest)) || (lent && p.kind == kindHost) {
+			peers = append(peers, p)
+		}
+	}
 	out := make([]DeviceStatus, len(peers))
 	var wg sync.WaitGroup
 	for i, p := range peers {
-		out[i] = DeviceStatus{Device: p.hello.Device, Broker: p.hello.Broker, Version: p.hello.Version}
+		out[i] = DeviceStatus{Device: p.hello.Device, Broker: p.hello.Broker, Version: p.hello.Version, Lent: p.kind == kindGuest}
+		if lent {
+			out[i].Error = "this device is lent to the pool; the pool owner's status is not shared with it"
+			continue
+		}
 		if p.skipped {
 			out[i].Error = "not answering; skipped for now"
 			continue
@@ -502,7 +577,7 @@ func (n *Node) callMax(ctx context.Context, method, url string, in, out any, max
 	if err != nil {
 		return err
 	}
-	req.Header.Set(poolHeader, n.o.Pool)
+	req.Header.Set(poolHeader, n.pool())
 	req.Header.Set("Accept", "application/json")
 	if in != nil {
 		req.Header.Set("Content-Type", "application/json")

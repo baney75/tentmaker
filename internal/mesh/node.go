@@ -47,6 +47,9 @@ type Options struct {
 	// implements core.ArchiveSource, /v1/archive/<ref> streams from it.
 	Broker core.WorkSource
 	Status func() any // this device's status for pool views
+	// LentStatus is what a lent device shows the pool owner's devices: no
+	// repos, jobs or problems of its own. nil serves {}.
+	LentStatus func() any
 	// Runs is this device's run history; nil serves an empty one.
 	Runs RunsSource
 	// Views serves GET /metrics and the status page (GET / and GET
@@ -130,6 +133,13 @@ type Node struct {
 	wakeMu   sync.Mutex
 	selfWake *WakeInfo
 	sentAt   map[string]time.Time // magic packets this device sent, by device
+
+	// Lending (lend.go): this pool's guests and open invites, and this
+	// device's own lent state when it joined another user's pool.
+	guests  guestTable
+	lentMu  sync.Mutex
+	lent    *Lent
+	hostURL func(netip.AddrPort) string // test seam for joinURL
 }
 
 // New returns a Node. It does nothing until Run, Brokers, Claim or Pool.
@@ -165,6 +175,7 @@ func New(o Options) *Node {
 		n.wakes = NewWakeLog()
 	}
 	n.loadKnown()
+	n.loadLend()
 	for _, m := range o.Members {
 		if m = strings.ToLower(strings.TrimSpace(m)); m != "" {
 			n.members[m] = true
@@ -296,7 +307,7 @@ func (n *Node) serve(ctx context.Context, ips []netip.Addr, lns []net.Listener) 
 	n.boundMu.Lock()
 	n.bound = addrs
 	n.boundMu.Unlock()
-	n.log.Info("mesh: serving the peer API", "addrs", strings.Join(addrs, ","), "pool", n.o.Pool)
+	n.log.Info("mesh: serving the peer API", "addrs", strings.Join(addrs, ","), "pool", n.pool())
 	defer func() {
 		sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		_ = srv.Shutdown(sctx)
@@ -371,19 +382,6 @@ func isTagged(login string, tags []string) bool {
 	return len(tags) > 0 || strings.EqualFold(login, TaggedLogin)
 }
 
-// allowed reports whether a device owned by (userID, login, tags) may use
-// this node: a login listed in Members, or the same person as Self. Tagged
-// devices are never "the same person".
-func (n *Node) allowed(self Peer, userID int64, login string, tags []string) bool {
-	if l := strings.ToLower(login); l != "" && n.members[l] {
-		return true
-	}
-	if isTagged(login, tags) || isTagged(self.LoginName, self.Tags) {
-		return false
-	}
-	return userID != 0 && userID == self.UserID
-}
-
 // viewer reports whether the node id names is in Options.Viewers.
 func (n *Node) viewer(id Identity) bool {
 	for _, t := range id.Tags {
@@ -403,7 +401,7 @@ func (n *Node) handler() http.Handler {
 		if isView(r.URL.Path) {
 			// The views alone also admit Viewers.
 			id, ok := n.authorizeWith(w, r, func(self Peer, id Identity) bool {
-				return n.allowed(self, id.UserID, id.LoginName, id.Tags) || n.viewer(id)
+				return n.relOf(self, id.ID, id.UserID, id.LoginName, id.Tags).kind == kindOwner || n.viewer(id)
 			})
 			if !ok {
 				return
@@ -411,14 +409,31 @@ func (n *Node) handler() http.Handler {
 			n.serveView(w, r.WithContext(context.WithValue(r.Context(), callerKey{}, id)))
 			return
 		}
-		id, ok := n.authorize(w, r)
+		if r.URL.Path == "/v1/join" {
+			// Any tailnet node WhoIs can name may try a code: it is not a
+			// guest until the code works. handleJoin rate limits failures.
+			id, ok := n.authorizeWith(w, r, func(_ Peer, id Identity) bool { return id.ID != "" })
+			if !ok {
+				return
+			}
+			r = r.WithContext(context.WithValue(r.Context(), callerKey{}, id))
+			n.route(w, r, http.MethodPost, n.handleJoin)
+			return
+		}
+		id, rel, ok := n.authorize(w, r)
 		if !ok {
 			return
 		}
-		r = r.WithContext(context.WithValue(r.Context(), callerKey{}, id))
-		if r.URL.Path != "/v1/hello" && r.Header.Get(poolHeader) != n.o.Pool {
+		ctx := context.WithValue(r.Context(), callerKey{}, id)
+		r = r.WithContext(context.WithValue(ctx, relationKey{}, rel))
+		if r.URL.Path != "/v1/hello" && r.Header.Get(poolHeader) != n.pool() {
 			n.refuse(r, "", "pool mismatch")
 			writeErr(w, http.StatusForbidden, "this device is in another pool")
+			return
+		}
+		if !routeAllows(rel, r.URL.Path) {
+			n.refuse(r, id.LoginName+" on "+id.Node, "a "+rel.kind+" device may not use this endpoint")
+			writeErr(w, http.StatusForbidden, "forbidden")
 			return
 		}
 		switch r.URL.Path {
@@ -446,6 +461,10 @@ func (n *Node) handler() http.Handler {
 			n.route(w, r, http.MethodPost, n.handleRerun)
 		case "/v1/wake":
 			n.route(w, r, http.MethodPost, n.handleWake)
+		case "/v1/guests":
+			n.route(w, r, r.Method, n.handleGuests)
+		case "/v1/leave":
+			n.route(w, r, http.MethodPost, n.handleLeave)
 		default:
 			if ref, ok := strings.CutPrefix(r.URL.Path, "/v1/archive/"); ok {
 				n.route(w, r, http.MethodGet, func(w http.ResponseWriter, r *http.Request) { n.handleArchive(w, r, ref) })
@@ -520,11 +539,14 @@ func (n *Node) route(w http.ResponseWriter, r *http.Request, method string, h ht
 type callerKey struct{}
 
 // authorize runs WhoIs on the caller and fails closed. It returns the
-// caller's identity.
-func (n *Node) authorize(w http.ResponseWriter, r *http.Request) (Identity, bool) {
-	return n.authorizeWith(w, r, func(self Peer, id Identity) bool {
-		return n.allowed(self, id.UserID, id.LoginName, id.Tags)
+// caller's identity and what it is to this device.
+func (n *Node) authorize(w http.ResponseWriter, r *http.Request) (Identity, relation, bool) {
+	var rel relation
+	id, ok := n.authorizeWith(w, r, func(self Peer, id Identity) bool {
+		rel = n.relOf(self, id.ID, id.UserID, id.LoginName, id.Tags)
+		return rel.kind != ""
 	})
+	return id, rel, ok
 }
 
 // authorizeWith is authorize with admit as its last rule: a request from
@@ -558,7 +580,7 @@ func (n *Node) authorizeWith(w http.ResponseWriter, r *http.Request, admit func(
 		}
 	}
 	if !admit(self, id) {
-		n.refuse(r, id.LoginName+" on "+id.Node, "not this tailnet user or a member")
+		n.refuse(r, id.LoginName+" on "+id.Node, "not this tailnet user, a member or a guest")
 		writeErr(w, http.StatusForbidden, "forbidden")
 		return Identity{}, false
 	}
@@ -631,22 +653,13 @@ func (n *Node) callerDevice(ctx context.Context, id Identity, remote string) (na
 	}
 	ip := ap.Addr()
 	look := func() (string, string, bool) {
-		n.peersMu.Lock()
-		defer n.peersMu.Unlock()
-		me := n.peers[id.ID]
-		if me == nil || me.id != id.ID || !slices.Contains(me.ips, ip) {
-			return "", "", false
+		name, why, kind, ok := n.lookCaller(id.ID, ip)
+		if ok && why == "" && kind != kindOwner && n.ownerHoldsName(name, id.ID) {
+			// A sleeping owner device is out of the peer table, not out
+			// of the pool: a lent device can't take its name meanwhile.
+			return "", "one of the pool owner's devices has that name", true
 		}
-		name := me.hello.Device
-		if name == "" || name == n.o.Device {
-			return "", "it announced no name or this device's own", true
-		}
-		for _, st := range n.peers {
-			if st != nil && st != me && st.hello.Device == name {
-				return "", "another pool device announced the same name", true
-			}
-		}
-		return name, "", true
+		return name, why, ok
 	}
 	if name, why, ok := look(); ok {
 		return name, why
@@ -656,6 +669,43 @@ func (n *Node) callerDevice(ctx context.Context, id Identity, remote string) (na
 		return name, why
 	}
 	return "", "it is not a known pool device"
+}
+
+// ownerHoldsName reports whether a known device of the pool owner's other
+// than node id announced name.
+func (n *Node) ownerHoldsName(name, id string) bool {
+	for _, d := range n.knownList() {
+		if d.Device == name && d.ID != id && ownerRecord(d) {
+			return true
+		}
+	}
+	return false
+}
+
+// lookCaller finds the peer table's name for node id at ip, and its kind.
+func (n *Node) lookCaller(id string, ip netip.Addr) (name, why, kind string, ok bool) {
+	n.peersMu.Lock()
+	defer n.peersMu.Unlock()
+	me := n.peers[id]
+	if me == nil || me.id != id || !slices.Contains(me.ips, ip) {
+		return "", "", "", false
+	}
+	name = me.hello.Device
+	if name == "" || name == n.o.Device {
+		return "", "it announced no name or this device's own", me.kind, true
+	}
+	for _, st := range n.peers {
+		if st == nil || st == me || st.hello.Device != name {
+			continue
+		}
+		// The owner's device keeps its name against a guest or a
+		// host that announces it too; anyone else loses it.
+		if me.kind == kindOwner && st.kind != kindOwner {
+			continue
+		}
+		return "", "another pool device announced the same name", me.kind, true
+	}
+	return name, "", me.kind, true
 }
 
 // refusalLog keeps a refusal log line per caller and reason to one a minute,
@@ -688,27 +738,48 @@ type helloResponse struct {
 	Broker    bool            `json:"broker"`
 	Platforms []core.Platform `json:"platforms"`
 	// Wake is this device's Wake-on-LAN facts; absent from an older
-	// Tentmaker or one with no Options.Wake.
+	// Tentmaker or one with no Options.Wake. Only the same tailnet user's
+	// devices are sent it.
 	Wake *WakeInfo `json:"wake,omitempty"`
+	// Guests names this device's guest table (guestsRev), so the owner's
+	// other devices fetch it when it changed. Only the same tailnet user's
+	// devices are sent it.
+	Guests string `json:"guests,omitempty"`
 }
 
 func (n *Node) hello() helloResponse {
 	return helloResponse{
 		Device:    n.o.Device,
-		Pool:      n.o.Pool,
+		Pool:      n.pool(),
 		Version:   n.o.Version,
 		Broker:    n.o.Broker != nil,
 		Platforms: n.o.Platforms,
 		Wake:      n.selfWakeInfo(),
+		Guests:    n.guestsRev(),
 	}
 }
 
 func (n *Node) handleHello(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, n.hello())
+	h := n.hello()
+	if !callerRelation(r.Context()).same {
+		// A member, guest or pool owner learns nothing of this device's
+		// LAN, power or schedule, or its guest table.
+		h.Wake, h.Guests = nil, ""
+	}
+	writeJSON(w, http.StatusOK, h)
 }
 
 func (n *Node) handleStatus(w http.ResponseWriter, r *http.Request) {
 	var st any = map[string]any{}
+	if callerRelation(r.Context()).kind == kindHost {
+		// The pool owner sees this lent device's slots, never its own
+		// repos, jobs or problems.
+		if n.o.LentStatus != nil {
+			st = n.o.LentStatus()
+		}
+		writeJSON(w, http.StatusOK, st)
+		return
+	}
 	if n.o.Status != nil {
 		st = n.o.Status()
 	}
@@ -723,6 +794,11 @@ func (n *Node) handleWork(w http.ResponseWriter, r *http.Request) {
 	cctx, ok := n.callerIs(w, r, req.Device)
 	if !ok {
 		return
+	}
+	if rel := callerRelation(r.Context()); rel.kind == kindGuest {
+		// The broker limits a guest's work to its trust from the guest
+		// table, never to anything in the request.
+		cctx = core.WithCallerLend(cctx, rel.lend)
 	}
 	ctx, cancel := context.WithTimeout(cctx, ioTimeout)
 	defer cancel()
@@ -757,6 +833,9 @@ func (n *Node) handleArchive(w http.ResponseWriter, r *http.Request, ref string)
 	cctx, ok := n.callerIs(w, r, device)
 	if !ok {
 		return
+	}
+	if rel := callerRelation(r.Context()); rel.kind == kindGuest {
+		cctx = core.WithCallerLend(cctx, rel.lend)
 	}
 	rc := http.NewResponseController(w)
 	_ = rc.SetWriteDeadline(time.Now().Add(archiveTimeout + time.Minute))

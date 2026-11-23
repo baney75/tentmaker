@@ -122,3 +122,17 @@ func TestValidateViewersAndMetricsListen(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateLendPublic(t *testing.T) {
+	c := Default(16*int64(GiB), 8)
+	c.Repos = []Repo{{Name: "a/pub", AllowPublic: true, LendPublic: true}}
+	if p := c.Validate(); len(p) != 0 {
+		t.Fatalf("lend_public with allow_public refused: %q", p)
+	}
+	for _, r := range []Repo{{Name: "a/pub", LendPublic: true}, {Name: "a/pub", AllowPublic: true, LendPublic: true, Mode: "checks"}} {
+		c.Repos = []Repo{r}
+		if p := c.Validate(); !strings.Contains(strings.Join(p, "\n"), "lend_public") {
+			t.Errorf("%+v accepted", r)
+		}
+	}
+}

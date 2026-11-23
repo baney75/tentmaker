@@ -729,15 +729,16 @@ func (d *Daemon) apply(cfg config.Config) {
 			n := mesh.New(mesh.Options{
 				Device: cfg.Device, Pool: cfg.Mesh.Pool, Port: cfg.Mesh.Port, Members: cfg.Mesh.Members, Viewers: cfg.Mesh.Viewers,
 				Tailscale: d.o.Tailscale, Broker: src, Version: d.o.Version,
-				Status:    func() any { return d.Status(context.Background()) },
-				Runs:      runsSource{d},
-				Views:     d.LocalViews(),
-				Wake:      d.wakeInfo,
-				Sender:    d.o.WakeSender,
-				WakeNeeds: needs,
-				WakeLog:   d.wakes,
-				StateDir:  cfg.StateDir,
-				Log:       log,
+				Status:     func() any { return d.Status(context.Background()) },
+				LentStatus: func() any { return d.lentStatus(context.Background()) },
+				Runs:       runsSource{d},
+				Views:      d.LocalViews(),
+				Wake:       d.wakeInfo,
+				Sender:     d.o.WakeSender,
+				WakeNeeds:  needs,
+				WakeLog:    d.wakes,
+				StateDir:   cfg.StateDir,
+				Log:        log,
 			})
 			nc := startComp(d.runCtx, log, "mesh", n.Run)
 			d.mu.Lock()
@@ -1213,6 +1214,8 @@ func (d *Daemon) Status(ctx context.Context) Status {
 	if n := d.currentNode(); n != nil {
 		ws := n.WakeStatus()
 		s.Wake = &ws
+		ls := n.LendStatus()
+		s.Mesh.Pool, s.Mesh.Lent, s.Mesh.Guests = n.PoolName(), ls.Lent, ls.Guests
 	}
 	s.Next = NextStep(s)
 	rt := readRuntime(started, d.o.Now())

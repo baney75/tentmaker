@@ -57,12 +57,23 @@ func (a *app) installOnDevice(ctx context.Context, host string, args mesh.Instal
 
 func (a *app) cmdDevices(args []string) (any, error) {
 	u := commands["devices"].usage
-	if len(args) == 0 || args[0] != "add" {
+	switch {
+	case len(args) > 0 && args[0] == "remove":
+		return a.removeDevice(args[1:])
+	case len(args) == 0 || args[0] != "add":
 		if wantsHelp(args) {
 			fmt.Fprintln(a.env.Stdout, u)
 			return nil, nil
 		}
-		return nil, usage("usage: "+u, "devices needs add")
+		f := a.flags("devices", u)
+		pos, err := a.parse(f, args)
+		if err != nil {
+			return nil, err
+		}
+		if len(pos) > 0 {
+			return nil, usage("usage: "+u, "devices takes add or remove, not %q", pos[0])
+		}
+		return a.listDevices()
 	}
 	f := a.flags("devices add", u)
 	var ia mesh.InstallArgs

@@ -48,6 +48,13 @@ type MeshStatus struct {
 	Up      bool   `json:"up"`
 	Self    string `json:"self,omitempty"`
 	Warning string `json:"warning,omitempty"`
+	// Pool is the pool this device works for: its config's, or the one it
+	// joined as a lent device.
+	Pool string `json:"pool,omitempty"`
+	// Lent is the pool this device is lent to and its trust there.
+	Lent *mesh.Lent `json:"lent,omitempty"`
+	// Guests are the devices lent to this pool, revoked ones included.
+	Guests []mesh.Guest `json:"guests,omitempty"`
 }
 
 // Why explains a decision in a few words: "boost: plugged in, idle 14m",

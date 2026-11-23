@@ -907,10 +907,11 @@ func (w *Worker) exchange(ctx context.Context, now time.Time, d core.Decision, a
 			continue
 		}
 		name := s.Name()
+		lend := sourceLend(s)
 		w.mu.Lock()
 		quarantined := w.st.Quarantined[name] != ""
 		free := 0
-		if ask && !quarantined {
+		if ask && !quarantined && (lend == nil || lend.Trust != core.TrustRevoked) {
 			free = w.freeLocked(d, now)
 		}
 		platforms := w.platformsLocked(now)
@@ -982,6 +983,22 @@ func (w *Worker) exchange(ctx context.Context, now time.Time, d core.Decision, a
 			for _, j := range w.st.Jobs {
 				if j.Name == n && j.Source == name && j.Kind != core.KindSandbox {
 					stops = append(stops, j)
+				}
+			}
+		}
+		if lend != nil {
+			// This device was lent to the source's pool: a runner that took
+			// a job its trust doesn't allow stops, whatever the broker says.
+			for _, c := range resp.Confirm {
+				why := core.TakenRefusal(lend.Trust, c.Event, false)
+				if why == "" {
+					continue
+				}
+				for _, j := range w.st.Jobs {
+					if j.Name == c.Runner && j.Source == name && j.Kind != core.KindSandbox {
+						w.log.Warn("lent runner took a job its trust doesn't allow; stopping it", "source", name, "runner", j.Name, "why", why)
+						stops = append(stops, j)
+					}
 				}
 			}
 		}
@@ -1086,6 +1103,17 @@ func (w *Worker) start(ctx context.Context, src core.WorkSource, off core.WorkOf
 	if !core.NamePattern.MatchString(name) {
 		w.log.Warn("offer with a bad runner name refused", "source", source)
 		return false
+	}
+	if lend := sourceLend(src); lend != nil {
+		// This device is lent to the source's pool: it checks the offer
+		// against the trust it accepted at join, not the broker's word.
+		if why := core.LendRefusal(*lend, off); why != "" {
+			w.decline(source, off, why)
+			return false
+		}
+		if lend.Trust != core.TrustOwner && lend.Trust != core.TrustTrusted {
+			off.Cache, off.Actions = false, nil
+		}
 	}
 	now := w.now()
 	w.mu.Lock()
@@ -1536,6 +1564,15 @@ func (w *Worker) Status() WorkerStatus {
 // String makes a short summary for logs and tests.
 func (s WorkerStatus) String() string {
 	return fmt.Sprintf("%s: %d/%d slots used, admit=%v", s.Device, s.Slots.Used, s.Slots.Total, s.Decision.Admit)
+}
+
+// sourceLend is the trust this device accepted when it joined s's pool as
+// a lent device, or nil when s is its own pool's (or its own) broker.
+func sourceLend(s core.WorkSource) *core.Lend {
+	if ls, ok := s.(core.LentSource); ok {
+		return ls.Lend()
+	}
+	return nil
 }
 
 // trustKey names the repo a cache is for, "" for none.

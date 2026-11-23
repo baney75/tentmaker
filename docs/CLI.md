@@ -36,7 +36,16 @@ tentmaker repo add OWNER/NAME [--forge github|forgejo|gitlab] [--mode runner|che
                    [--enable]
 tentmaker repo remove OWNER/NAME
 tentmaker connect github|forgejo|gitlab [--url URL] [--token-stdin]
+tentmaker devices [--json]        Every device in the pool: owner login, trust, repos,
+                                  online or asleep, lent or not.
+tentmaker devices remove NAME     Revoke a lent device at once (needs root).
 tentmaker devices add HOST [--channel stable|dev] [--memory S] [--boost-memory S] [--repo R]...
+tentmaker invite [--trust trusted] [--repos owner/a,owner/b] [--ttl 24h]
+                                  A one-time code that lends another user's device to this
+                                  pool, printed once (needs root).
+tentmaker join                    Lend this device to a pool: the code is read from the
+                                  terminal without echo, or from stdin (needs root).
+tentmaker leave                   Drop out of the pool this device joined (needs root).
 tentmaker migrate [PATH] [--platform linux|macos|windows] [--write] [--all]
 tentmaker migrate --pr [PATH] [--platform linux|macos|windows] [--all]
 tentmaker pause [--for DURATION] [REASON...]
@@ -168,6 +177,10 @@ running it also has a `runtime` section about the daemon process itself:
 On a device that runs for months these numbers should level off; one that only grows (heap,
 goroutines or open files) is a leak worth a bug report. When the service is not running,
 status is computed locally and has no `runtime` section.
+
+`mesh.pool` is the pool this device works for, `mesh.lent` the pool it is lent to (pool, host
+device, owner login, trust, repos) and `mesh.guests` the devices lent to this pool (node ID,
+login, name, trust, repos, joined, and revoked when removed).
 
 ## setup
 
@@ -340,6 +353,11 @@ CLI writes config itself and then calls /v1/reload. If the daemon isn't running,
 commands fall back to computing what they can locally and say "service not running".
 POST /v1/pr {repo, head, base, title, body} opens or updates a pull request with the device's
 stored GitHub token, for a repo this device serves, and returns {number, url, created}.
+POST /v1/invite {trust, repos, ttl_s} answers mesh.InviteCode (the code, shown once), POST
+/v1/join {code} answers mesh.Lent, POST /v1/leave answers mesh.Lent and POST /v1/devices/remove
+{name} answers the revoked mesh.Guest records; all four need the token. GET /v1/devices answers
+[]mesh.PoolDevice and is open like /v1/pool. An invite code travels only in a request or answer
+body, never a URL, and no answer or log line names it.
 
 The sandbox routes (`/v1/sandboxes...`, see DESIGN.md) need the `Tentmaker-Client` header on
 every request, so a web page can't drive them, and refuse CI jobs like every route. The
