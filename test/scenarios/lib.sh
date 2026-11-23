@@ -374,6 +374,13 @@ statuses() {
 			"https://api.github.com/repos/$REPO/commits/$sha/statuses?per_page=100") || code=000
 	case $code in
 		200)
+			# A commit's statuses only grow, but a lagging GitHub replica can
+			# answer with an older, shorter list: keep the newer one we have.
+			if [ -s "$f.json" ] && [ "$(command jq length <"$f.new" 2>/dev/null || echo 0)" -lt "$(command jq length <"$f.json" 2>/dev/null || echo 0)" ]; then
+				rm -f "$f.new"
+				tr -d '\r' <"$f.json"
+				return 0
+			fi
 			mv "$f.new" "$f.json"
 			{ grep -i '^etag:' "$f.h" || true; } | sed 's/^[^:]*: *//' | tr -d '\r' >"$f.etag"
 			;;
