@@ -5,6 +5,7 @@
 //	go run ./scripts/bench report -raw DIR -md FILE -json FILE
 //	go run ./scripts/bench report -from FILE -md FILE -json FILE
 //	go run ./scripts/bench gate -json FILE
+//	go run ./scripts/bench quota [-need N] < rate_limit.json
 //	go run ./scripts/bench install -os OS -marks FILE -setup FILE [-statuses FILE -ctx C] [-budget-ms N] -json FILE -md FILE
 //
 // report writes both files and prints the Markdown; with -from it reads the
@@ -13,7 +14,8 @@
 // number from the samples in the JSON and exits 1 when the run fails the
 // gate (see Gate). install times one e2e job's path from the install
 // command to its first green job (see install.go). It is a repo tool, not
-// part of tentmaker.
+// part of tentmaker. quota prints how many seconds the bench should wait for
+// the repo's API limit (see QuotaWait).
 package main
 
 import (
@@ -22,6 +24,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }
@@ -33,6 +36,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	if args[0] == "install" {
 		return runInstall(args[1:], stdout, stderr)
+	}
+	if args[0] == "quota" {
+		return runQuota(args[1:], os.Stdin, stdout, stderr, time.Now())
 	}
 	fs := flag.NewFlagSet("bench "+args[0], flag.ContinueOnError)
 	fs.SetOutput(stderr)

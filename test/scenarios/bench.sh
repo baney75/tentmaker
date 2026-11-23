@@ -34,6 +34,9 @@ mkdir -p "$OUT"
 
 # The dogfood scenario's device: 8 GiB and 4 CPUs, the default job size.
 scn_up --memory 8GiB --boost-memory 8GiB --cpus 4 --boost-cpus 4
+# The repo's shared API limit left as the reps start; under a quarter of the
+# limit the daemon paces its polls (issue #39). rate_left at the end is below.
+measure "rate_left_start" "$(rate_left)"
 
 # stage_tool TOOL DIR VERSION: DIR as <state>/tools/TOOL-VERSION.
 stage_tool() {

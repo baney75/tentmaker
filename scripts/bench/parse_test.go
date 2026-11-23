@@ -81,6 +81,13 @@ func TestLoadRun(t *testing.T) {
 	if len(r.Missing) != 1 || !strings.Contains(r.Missing[0], "gh go-test cold 2") {
 		t.Fatalf("missing = %v, want the failed job's log", r.Missing)
 	}
+	// The API table shows the shared limit left, so a paced run is plain.
+	if a := r.Devices[0].API; a == nil || a.RateLeft != 800 || a.RateLimit != 1000 {
+		t.Fatalf("device API = %+v, want 800 of 1000 left", a)
+	}
+	if md := Markdown(Summarize(r)); !strings.Contains(md, "| 800 of 1000 |") {
+		t.Fatalf("the API calls table has no limit left:\n%s", md)
+	}
 }
 
 func find(t *testing.T, ss []Sample, w, p, round string, rep int) Sample {

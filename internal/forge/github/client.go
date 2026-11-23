@@ -302,7 +302,7 @@ func (c *Client) checkRate() error {
 
 // PollDelay implements core.PollPacer. While a rate limit answer's wait
 // runs it is the rest of that wait. While the limit is unknown, past its
-// reset or at least cheapFloor, it is 0. Below that, it spreads what is left
+// reset or at least CheapFloor, it is 0. Below that, it spreads what is left
 // above RateFloor over the time to the reset at PollCost a poll, at most
 // PacedMax and never past the reset.
 func (c *Client) PollDelay() time.Duration {
@@ -312,7 +312,7 @@ func (c *Client) PollDelay() time.Duration {
 	if now.Before(c.limitedUntil) {
 		return c.limitedUntil.Sub(now)
 	}
-	if c.rateLeft < 0 || !now.Before(c.rateSet) || c.rateLeft >= cheapFloor(c.rateMax) {
+	if c.rateLeft < 0 || !now.Before(c.rateSet) || c.rateLeft >= CheapFloor(c.rateMax) {
 		return 0
 	}
 	untilReset := c.rateSet.Sub(now)
@@ -343,15 +343,17 @@ func (c *Client) APIStats() core.APIStats {
 // GET, and a 304 doesn't count against the primary rate limit, so polling
 // unchanged repos is free while plenty of the limit is left. It is true
 // while the limit is unknown (no response yet), the last reading is at or
-// above cheapFloor, or that reading's reset time has passed.
+// above CheapFloor, or that reading's reset time has passed.
 func (c *Client) CheapPolls() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.rateLeft < 0 || c.rateLeft >= cheapFloor(c.rateMax) || !c.now().Before(c.rateSet)
+	return c.rateLeft < 0 || c.rateLeft >= CheapFloor(c.rateMax) || !c.now().Before(c.rateSet)
 }
 
-// cheapFloor is CheapPollMin or a quarter of limit, whichever is more.
-func cheapFloor(limit int) int {
+// CheapFloor is CheapPollMin or a quarter of limit, whichever is more:
+// below it, polls are paced (PollDelay). The bench waits for this much plus
+// its own need before it starts (scripts/bench quota).
+func CheapFloor(limit int) int {
 	if limit/4 > CheapPollMin {
 		return limit / 4
 	}
