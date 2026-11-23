@@ -167,3 +167,26 @@ func TestPackWorkTreeSubfolderUsesGit(t *testing.T) {
 		}
 	}
 }
+
+// Reached through a symlink, the subfolder is still found to be in the
+// work tree (review r2 sol-F2).
+func TestPackWorkTreeThroughASymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks need a privilege on Windows")
+	}
+	repo := t.TempDir()
+	os.Mkdir(filepath.Join(repo, ".git"), 0o755)
+	sub := filepath.Join(repo, "services", "api")
+	os.MkdirAll(sub, 0o755)
+	os.WriteFile(filepath.Join(sub, ".env"), []byte("SECRET=1"), 0o644)
+	alias := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(filepath.Join(repo, "services"), alias); err != nil {
+		t.Fatal(err)
+	}
+	asked := false
+	git := func(context.Context, string) ([]byte, error) { asked = true; return nil, nil }
+	n, err := PackWorkTree(context.Background(), io.Discard, filepath.Join(alias, "api"), git)
+	if err != nil || n != 0 || !asked {
+		t.Fatalf("packed %d, err %v, asked git %v", n, err, asked)
+	}
+}

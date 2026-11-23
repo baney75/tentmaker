@@ -66,7 +66,17 @@ type GitLister func(ctx context.Context, dir string) ([]byte, error)
 // subfolder of a work tree has none of its own, and walking it would send
 // files Git ignores, such as .env (review first-F1).
 func inWorkTree(dir string) bool {
-	for d := dir; ; d = filepath.Dir(d) {
+	// Through a symlink, the folders above dir on disk aren't the ones in
+	// its path (review sol-F2); a path that can't be resolved counts as in
+	// one, so Git decides.
+	real, err := filepath.EvalSymlinks(dir)
+	if err == nil {
+		real, err = filepath.Abs(real)
+	}
+	if err != nil {
+		return true
+	}
+	for d := real; ; d = filepath.Dir(d) {
 		if _, err := os.Lstat(filepath.Join(d, ".git")); err == nil {
 			return true
 		}
