@@ -121,11 +121,16 @@ job.memory), floor(Limit.CPUs / job.cpus), job.max_slots if > 0)`. Guards run be
 ceiling. The worker sets `ExecSpec.CPUCeiling` (and `DebugSpec.CPUCeiling`) to `Limit.CPUs` when
 the job starts (never below `job.cpus`, see `core.CPUCeiling`), so a job alone on the device gets
 every CPU the pool allows; jobs that start after `Limit` drops (battery, a profile change) get the
-lower ceiling. An executor honors it only where its `SetPoolLimit` caps all jobs together:
-linux-podman does; macos-tart and windows-job have no pool-wide cap and keep each job at
-`job.cpus`, or two jobs could use twice the pool. It fails closed: the worker records, per
+lower ceiling. An executor honors it only where its `SetPoolLimit` caps all jobs together, which
+it declares with `core.PoolCPUCapper` (`CapsPoolCPU() bool`): linux-podman does; macos-tart and
+windows-job have no pool-wide cap and keep each job at `job.cpus`, or two jobs could use twice the
+pool, so the worker leaves their ceiling at 0. It fails closed: the worker records, per
 executor, the `Limit.CPUs` its last `SetPoolLimit` applied, and when that call failed or applied
 another limit the ceiling is 0 (`job.cpus`), since nothing then caps the jobs together.
+`ExecSpec.TestWorkers`, exported to the job as `TENTMAKER_JOBS`, follows the CPUs the job starts
+with: `floor(core.CPUCeiling(Limits, CPUCeiling))`, at least 1. A job alone under the pool's cap
+is told the pool's whole CPUs; with a ceiling of 0 it is told `floor(job.cpus)`. Jobs that start
+while others run are told the same pool-wide number and split the pool by `CPUWeight`.
 Safety guards (free memory, free disk) set `Admit=false` (and `Evict=true` for
 `stop_below_disk`). Busy guards (`pause_when_running`, `max_load_per_cpu`) set `Busy`, which
 lowers `boost` to `everyday` and never blocks `everyday`; a busy probe that can't be read counts
@@ -970,6 +975,7 @@ type JobReporter interface {                  // a Forge that reports a finished
 }
 
 type DebugSpec struct { Limits Resources; CPUCeiling float64; Timeout time.Duration; MaxOutput int64 }
+type PoolCPUCapper interface { CapsPoolCPU() bool } // an Executor whose pool cap holds every job's CPU
 type DebugResult struct { ExitCode int; Output []byte; Truncated, TimedOut bool }
 type Debugger interface {                     // an Executor that can keep a failed job's sandbox
     Keep(ctx context.Context, name string) error

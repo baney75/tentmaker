@@ -33,6 +33,11 @@ func TestJobCPUCeilingIsThePoolLimit(t *testing.T) {
 	if spec.Limits.CPUs != jobCPUs {
 		t.Fatalf("reservation = %g CPUs, want job.cpus %g", spec.Limits.CPUs, jobCPUs)
 	}
+	// TENTMAKER_JOBS follows the ceiling, not job.cpus: a job alone sizes
+	// its parallelism to every CPU its unit allows.
+	if want := int(d.Limit.CPUs); spec.TestWorkers != want {
+		t.Fatalf("test workers = %d, want the ceiling %d (job.cpus is %g)", spec.TestWorkers, want, jobCPUs)
+	}
 
 	// Slots still count job.cpus: the pool's use is one job's reservation,
 	// not its ceiling, and the second slot stays free.
@@ -61,6 +66,9 @@ func TestJobCPUCeilingIsThePoolLimit(t *testing.T) {
 		spec, _ = w.ex.Spec(name)
 		if spec.CPUCeiling != jobCPUs {
 			t.Fatalf("%s: CPU ceiling after the drop = %g, want %g", name, spec.CPUCeiling, jobCPUs)
+		}
+		if want := int(jobCPUs); spec.TestWorkers != want {
+			t.Fatalf("%s: test workers after the drop = %d, want %d", name, spec.TestWorkers, want)
 		}
 	}
 }
@@ -93,8 +101,9 @@ func TestJobCPUCeilingFallsBackWhenThePoolCapFails(t *testing.T) {
 	if len(names) != 1 {
 		t.Fatalf("starts = %v, want one", names)
 	}
-	if spec, _ := w.ex.Spec(names[0]); spec.CPUCeiling != 0 {
-		t.Fatalf("CPU ceiling with no pool cap = %g, want 0 (job.cpus)", spec.CPUCeiling)
+	if spec, _ := w.ex.Spec(names[0]); spec.CPUCeiling != 0 || spec.TestWorkers != int(jobCPUs) {
+		t.Fatalf("with no pool cap: CPU ceiling %g, test workers %d; want 0 and job.cpus %g",
+			spec.CPUCeiling, spec.TestWorkers, jobCPUs)
 	}
 
 	w.ex.SetPoolLimitErr(nil)
@@ -106,7 +115,42 @@ func TestJobCPUCeilingFallsBackWhenThePoolCapFails(t *testing.T) {
 	if len(all) < 2 {
 		t.Fatalf("starts = %v, want one after the cap applied", all)
 	}
-	if spec, _ := w.ex.Spec(all[len(all)-1]); spec.CPUCeiling != d.Limit.CPUs {
-		t.Fatalf("CPU ceiling once the cap applied = %g, want %g", spec.CPUCeiling, d.Limit.CPUs)
+	if spec, _ := w.ex.Spec(all[len(all)-1]); spec.CPUCeiling != d.Limit.CPUs || spec.TestWorkers != int(d.Limit.CPUs) {
+		t.Fatalf("once the cap applied: CPU ceiling %g, test workers %d; want %g and %d",
+			spec.CPUCeiling, spec.TestWorkers, d.Limit.CPUs, int(d.Limit.CPUs))
+	}
+}
+
+// An executor with no pool-wide CPU cap (macos-tart, windows-job) holds each
+// job at job.cpus, so the worker gives it no ceiling and tells the job
+// job.cpus workers, even though its SetPoolLimit succeeds.
+func TestNoCPUCeilingWithoutAPoolWideCap(t *testing.T) {
+	r := newRig(t, runnerRepo(repoApp))
+	jobCPUs := r.cfg.Job.CPUs
+	w := r.addWorker("alpha", 2)
+	d := admit(2)
+	d.Limit.CPUs = 2 * jobCPUs
+	w.budget.set(d)
+	w.ex.SetCapsPoolCPU(false)
+
+	r.addJob(repoApp)
+	r.tick()
+	names := started(w.ex)
+	if len(names) != 1 {
+		t.Fatalf("starts = %v, want one", names)
+	}
+	if spec, _ := w.ex.Spec(names[0]); spec.CPUCeiling != 0 || spec.TestWorkers != int(jobCPUs) {
+		t.Fatalf("CPU ceiling %g, test workers %d; want 0 and job.cpus %g", spec.CPUCeiling, spec.TestWorkers, jobCPUs)
+	}
+}
+
+func TestTestWorkersAreTheWholeCPUsOfTheCeiling(t *testing.T) {
+	for _, tt := range []struct {
+		cpus, ceiling float64
+		want          int
+	}{{2, 0, 2}, {2, 4, 4}, {2, 1, 2}, {2, 7.5, 7}, {1.5, 0, 1}, {0.5, 0, 1}, {0.5, 0.75, 1}} {
+		if got := testWorkers(core.Resources{CPUs: tt.cpus}, tt.ceiling); got != tt.want {
+			t.Errorf("testWorkers(cpus %g, ceiling %g) = %d, want %d", tt.cpus, tt.ceiling, got, tt.want)
+		}
 	}
 }
