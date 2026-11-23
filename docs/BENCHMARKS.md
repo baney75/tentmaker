@@ -35,7 +35,7 @@ count, and a warm run that missed it is left out of every number.
 | Go test (this repo: gofmt, vet, go test -race) | 119.0 s | 30.0 s | 159.0 s | 33.0 s | 0.9x | 3 / 3 |
 | Go cross build (this repo, 6 targets) | 98.0 s | 21.0 s | 149.0 s | 8.0 s | 2.6x | 3 / 3 |
 | Node: tj/commander.js v15.1.0, npm ci and npm test | 21.0 s | 19.0 s | 19.0 s | 17.0 s | 1.1x | 3 / 3 |
-| Docker build, two stages (baseline: no layer cache yet) | 29.0 s | 29.0 s | 28.0 s | 4.0 s | 7.3x | 2 / 3 |
+| Docker build, two stages (Tentmaker keeps the layer cache; the hosted runner starts empty) | 29.0 s | 29.0 s | 28.0 s | 4.0 s | 7.3x | 2 / 3 |
 | Cache: 256 MiB blob save, then restore | 9.0 s | 9.0 s | 8.0 s | 3.0 s | 3.0x | 3 / 3 |
 
 Go used by each side (`go env GOVERSION`, every passing run):
@@ -159,7 +159,9 @@ hardware and workloads.
 - Docker: "customers have reported 2x to 40x improvements in build times" from their layer cache
   ([Docker builds](https://docs.blacksmith.sh/blacksmith-caching/docker-builds.md)).
 
-Tentmaker has no Docker layer cache yet; the Docker row above is the baseline for that work.
+Tentmaker keeps each repo's Docker layers on the device between jobs. The hosted runner starts
+every job with an empty layer cache and this bench gives it none, so the Docker row compares a
+cached build against an uncached one and is left out of the gate.
 
 ## Reproduce
 

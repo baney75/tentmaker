@@ -29,7 +29,7 @@ sudo tentmaker setup
 
 Your laptop and desktop sit idle most of the day. Hosted CI minutes cost money, and macOS minutes cost the most. Tentmaker gives CI a fixed slice of each machine you own, a bigger slice when the machine is plugged in, and nothing when the battery runs low. The fixed slice is reserved for CI, so it keeps running while you play a game or take a call; only the bigger slice gives way. Every job runs in a fresh sandbox that is thrown away afterwards, so a job can't leave anything behind for the next one or for you.
 
-**How fast:** with a warm cache, on a GitHub-hosted VM giving each Tentmaker job 2 CPUs where the hosted job gets 4, Tentmaker built a two-stage Docker image in 4 s against 29 s on GitHub's hosted runner, ran this repo's six-target cross build in 8 s against 21 s, restored a 256 MiB cache in 3 s against 9 s, and ran the Node test suite in 17 s against 19 s. This repo's Go tests, which are bound by CPU, took 33 s against 30 s, the one workload where the hosted runner still wins. Jobs started in a median 3 s (2 s hosted). Cold runs were slower, on half the CPUs. Both sides used the same Go, and every number is from one run on 2026-11-23; see [Benchmarks](docs/BENCHMARKS.md) for every number, the method and the limits.
+**How fast:** with a warm cache, on a GitHub-hosted VM giving each Tentmaker job 2 CPUs where the hosted job gets 4, Tentmaker ran this repo's six-target cross build in 8 s against 21 s on GitHub's hosted runner, restored a 256 MiB cache in 3 s against 9 s, and ran the Node test suite in 17 s against 19 s. Because it keeps Docker layers on the device, a rebuilt two-stage Docker image took 4 s, where the hosted runner, which keeps no layers between jobs, took 29 s. This repo's Go tests, which are bound by CPU, took 33 s against 30 s, the one workload where the hosted runner still wins. Jobs started in a median 3 s (2 s hosted). Cold runs were slower, on half the CPUs. Both sides used the same Go, and every number is from one run on 2026-11-23; see [Benchmarks](docs/BENCHMARKS.md) for every number, the method and the limits.
 
 Devices on one [Tailscale](https://tailscale.com) tailnet form a pool and share work. GitHub Actions jobs run on Tentmaker's ephemeral runners. Forgejo, Gitea and GitLab repos run in checks mode, which posts commit statuses.
 
@@ -47,7 +47,7 @@ On Windows, in an Administrator PowerShell:
 $env:TENTMAKER_YES='1'; $env:TENTMAKER_SETUP_ARGS='--repo-here --pr'; irm https://raw.githubusercontent.com/baney75/tentmaker/main/scripts/install.ps1 | iex
 ```
 
-It asks nothing. An agent adds `--json` (`sh -s -- --yes --json -- --repo-here --pr`, or `$env:TENTMAKER_JSON='1'`) and gets exactly one JSON line on stdout: `ok`, the `next` step, and how long each phase took. A failure is one line too, `{"ok":false,"error":...,"fix":...}`, with the command that fixes it. See [Install](docs/BENCHMARKS.md#install) for how long it takes.
+It asks nothing. An agent adds `--json` (`sh -s -- --yes --json -- --repo-here --pr`, or `$env:TENTMAKER_JSON='1'`) and gets exactly one JSON line on stdout: `ok`, the `next` step, and how long each phase took. A failure is one line too, `{"ok":false,"error":...,"fix":...}`, with the command that fixes it. See [Install time](docs/INSTALL-TIME.md) for how long it takes.
 
 What just happened:
 
