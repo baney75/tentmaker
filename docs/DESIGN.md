@@ -274,7 +274,11 @@ setup`), idempotent and safe to rerun. `Options.Phase func(name string)`, when s
 `Install` starts each of its phases; setup uses it for the `sandbox.<phase>` rows of its
 `timings`. On Linux the actions/runner download and extract run beside the phases after
 `runner`, and `Install` waits for them in `runner.wait`, before it returns; an error there stops
-`Install` with the same error as before.
+`Install` with the same error as before. Linux `Install` proves rootless podman works with
+`podman ps --all --quiet` as the runner (phase `podman.check`), which sets up podman's runtime
+(the pause process's user namespace, the store, the state database, conmon and the OCI runtime)
+and fails `Install` when any of it fails. Not `podman info`, which also runs `rpm -q -f` and
+`dpkg -S` for each helper binary only to print its package, about 5 s on GitHub's runners.
 
 - **linux-podman** (port of `fleet-ci-job`, `install.sh`): user `tentmaker-runner` with no sudo
   and no docker group; a root-owned runner template (actions/runner pinned version and sha256);

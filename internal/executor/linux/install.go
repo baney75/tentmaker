@@ -432,13 +432,13 @@ func Install(ctx context.Context, o Options) error {
 		{"systemctl", "--user", "daemon-reload"},
 		{"systemctl", "--user", "set-environment", "XDG_CONFIG_HOME=" + filepath.Join(e.root, ".config")},
 		{"systemctl", "--user", "restart", "podman.socket"},
-		{"podman", "info"},
+		podmanCheck,
 	} {
 		if args[0] == "podman" {
-			e.phase("podman.info")
+			e.phase("podman.check")
 		}
 		if err := run(e.asRunner(uid, 2*time.Minute, args...)); err != nil {
-			return fmt.Errorf("rootless podman for %s: %v", User, err)
+			return fmt.Errorf("rootless podman for %s does not work: %v", User, err)
 		}
 	}
 	e.phase("runner.wait")
@@ -467,6 +467,16 @@ func Install(ctx context.Context, o Options) error {
 	e.log.Info("installed", "executor", Name, "runner", pin.Version, "arch", pin.Arch)
 	return nil
 }
+
+// podmanCheck is the probe that the runner's rootless podman works. It sets
+// up podman's whole runtime as the runner: it joins the pause process's user
+// namespace, opens the store and its overlay driver and the state database,
+// and finds conmon and the OCI runtime, failing on any of them. Not podman
+// info: that does the same, then asks rpm and dpkg which package owns each
+// helper binary only to print it, which took about 5 s of every first
+// install on GitHub's hosted runners (dpkg -S reads every package's file
+// list, 0.6 to 1 s a binary).
+var podmanCheck = []string{"podman", "ps", "--all", "--quiet"}
 
 // phase reports the start of an install phase to Options.Phase.
 func (e *Executor) phase(name string) {

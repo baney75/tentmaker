@@ -9,6 +9,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -76,7 +77,7 @@ func TestInstall(t *testing.T) {
 	v.o.Phase = func(name string) { phases = append(phases, name) }
 	must(t, Install(ctx, v.o))
 	v.o.Phase = nil
-	if want := "user dirs runner files net user-manager podman podman.info runner.wait baseline"; strings.Join(phases, " ") != want {
+	if want := "user dirs runner files net user-manager podman podman.check runner.wait baseline"; strings.Join(phases, " ") != want {
 		t.Errorf("phases %v, want %s", phases, want)
 	}
 	cmds := strings.Join(v.f.commands(), "\n")
@@ -94,7 +95,7 @@ func TestInstall(t *testing.T) {
 		"systemctl start user@1234.service",
 		"--unit=" + PodnsUnit,
 		"systemctl --user restart podman.socket",
-		"podman info",
+		"podman ps --all --quiet",
 	} {
 		if !strings.Contains(cmds, s) {
 			t.Errorf("Install did not run %q", s)
@@ -102,8 +103,8 @@ func TestInstall(t *testing.T) {
 	}
 	// The manager restarts in podman's network namespace, and podman's
 	// namespaces exist before the first podman command.
-	if i, j := unitIndex(v.f, PodnsUnit), strings.Index(cmds, "podman info"); i < 0 || j < strings.Index(cmds, "--unit="+PodnsUnit) {
-		t.Errorf("podman info ran before %s", PodnsUnit)
+	if i, j := unitIndex(v.f, PodnsUnit), strings.Index(cmds, "podman ps --all --quiet"); i < 0 || j < strings.Index(cmds, "--unit="+PodnsUnit) {
+		t.Errorf("the podman check ran before %s", PodnsUnit)
 	}
 	if b, err := os.ReadFile(v.e.managerDropIn(testUID)); err != nil || !strings.Contains(string(b), "NetworkNamespacePath=") {
 		t.Errorf("Install left no manager drop-in: %q %v", b, err)
@@ -205,6 +206,45 @@ func TestInstall(t *testing.T) {
 	}
 	if len(v.f.fetches) != nf {
 		t.Error("rerun downloaded again")
+	}
+}
+
+// The podman check sets up rootless podman as the runner without podman
+// info, whose rpm and dpkg lookups of each helper's package took about 5 s
+// of every install on GitHub's hosted runners. It still fails closed.
+func TestInstallPodmanCheck(t *testing.T) {
+	ctx := context.Background()
+	v := newEnv(t)
+	v.hostFixture(t)
+	must(t, Install(ctx, v.o))
+	var checks []Cmd
+	for _, c := range v.f.cmds {
+		if slices.Contains(c.Args, "info") {
+			t.Errorf("Install ran %s", c)
+		}
+		if strings.HasSuffix(c.String(), " podman ps --all --quiet") {
+			checks = append(checks, c)
+		}
+	}
+	if len(checks) != 1 || checks[0].Path != "runuser" || !slices.Contains(checks[0].Args, User) || checks[0].Timeout <= 0 {
+		t.Fatalf("podman checks %v, want one as %s with a timeout", checks, User)
+	}
+
+	v = newEnv(t)
+	v.hostFixture(t)
+	ok := v.f.respond
+	v.f.respond = func(c Cmd) (Result, error) {
+		if strings.HasSuffix(c.String(), " podman ps --all --quiet") {
+			return Result{Code: 125, Stderr: "Error: cannot set up namespace"}, errors.New("runuser: exit status 125: Error: cannot set up namespace")
+		}
+		return ok(c)
+	}
+	err := Install(ctx, v.o)
+	if err == nil || !strings.Contains(err.Error(), "rootless podman for "+User+" does not work") || !strings.Contains(err.Error(), "cannot set up namespace") {
+		t.Fatalf("Install with broken podman: %v", err)
+	}
+	if _, err := os.Stat(v.e.baselinePath()); !errors.Is(err, os.ErrNotExist) {
+		t.Error("Install wrote the units baseline though podman does not work")
 	}
 }
 
