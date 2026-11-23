@@ -59,6 +59,8 @@ type fakeWorker struct {
 	specs []dispatch.SandboxSpec
 	sbx   map[string]dispatch.SandboxInfo
 	err   error
+	execs []string // the sandbox of each ExecSandbox call
+	exec  func(ctx context.Context, req core.SandboxExec, stdin io.Reader, stdout, stderr io.Writer) (int, error)
 }
 
 func (f *fakeWorker) StartSandbox(ctx context.Context, s dispatch.SandboxSpec) (dispatch.SandboxInfo, error) {
@@ -74,6 +76,13 @@ func (f *fakeWorker) StartSandbox(ctx context.Context, s dispatch.SandboxSpec) (
 	return i, nil
 }
 func (f *fakeWorker) ExecSandbox(ctx context.Context, name string, req core.SandboxExec, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
+	f.execs = append(f.execs, name)
+	if f.exec != nil {
+		return f.exec(ctx, req, stdin, stdout, stderr)
+	}
+	if stdin != nil {
+		io.Copy(io.Discard, stdin)
+	}
 	return 0, nil
 }
 func (f *fakeWorker) StopSandbox(ctx context.Context, name, why string) error {
@@ -201,5 +210,59 @@ func TestCopyOutArgvNeverPassesAnOption(t *testing.T) {
 		if strings.HasPrefix(argv[6], "-") {
 			t.Errorf("%q: the operand %q is an option", src, argv[6])
 		}
+	}
+}
+
+type countWriter struct{ n int64 }
+
+func (c *countWriter) Write(p []byte) (int, error) { c.n += int64(len(p)); return len(p), nil }
+
+// tar -c has no size limit; a copy out past MaxCopy is an error, never a
+// success, even when tar exits 0.
+func TestCopyOutStopsAtMaxCopy(t *testing.T) {
+	fw := &fakeWorker{sbx: map[string]dispatch.SandboxInfo{}}
+	m := New(Options{Worker: func() Worker { return fw }})
+	admin := Caller{Admin: true, ID: "0"}
+	bg := context.Background()
+	info, err := m.Create(bg, admin, CreateRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunk := make([]byte, 1<<20)
+	var stopped bool
+	fw.exec = func(ctx context.Context, req core.SandboxExec, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
+		// Like the executor: copy until a write fails, then report tar's
+		// own exit, which is 0 here.
+		for i := 0; i < MaxCopy/len(chunk)+8; i++ {
+			if _, err := stdout.Write(chunk); err != nil {
+				stopped = ctx.Err() != nil
+				return 0, nil
+			}
+		}
+		return 0, nil
+	}
+	var out countWriter
+	code, err := m.CopyOut(bg, admin, info.ID, "big", &out, io.Discard)
+	if err == nil || status(err) != http.StatusRequestEntityTooLarge || code != -1 {
+		t.Fatalf("a copy past MaxCopy: code %d err %v", code, err)
+	}
+	if out.n > MaxCopy {
+		t.Fatalf("%d bytes went out, more than MaxCopy", out.n)
+	}
+	if !stopped {
+		t.Fatal("the command was not told to stop")
+	}
+	// Exactly MaxCopy is fine.
+	fw.exec = func(ctx context.Context, req core.SandboxExec, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
+		for i := 0; i < MaxCopy/len(chunk); i++ {
+			if _, err := stdout.Write(chunk); err != nil {
+				return 0, err
+			}
+		}
+		return 0, nil
+	}
+	out = countWriter{}
+	if code, err := m.CopyOut(bg, admin, info.ID, "big", &out, io.Discard); err != nil || code != 0 || out.n != MaxCopy {
+		t.Fatalf("a copy of exactly MaxCopy: code %d err %v, %d bytes", code, err, out.n)
 	}
 }

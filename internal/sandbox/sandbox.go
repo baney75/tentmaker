@@ -24,6 +24,7 @@ import (
 	"path"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/baney75/tentmaker/internal/config"
@@ -424,7 +425,42 @@ func (m *Manager) CopyOut(ctx context.Context, c Caller, id, src string, out, st
 	if err != nil {
 		return -1, err
 	}
-	return w.ExecSandbox(ctx, id, core.SandboxExec{Argv: argv}, nil, out, stderr)
+	// tar -c has no size limit of its own: stop it at MaxCopy, and call
+	// that an error, never a success, whatever tar exits with.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	lw := &limitWriter{w: out, left: MaxCopy, over: cancel}
+	code, err := w.ExecSandbox(ctx, id, core.SandboxExec{Argv: argv}, nil, lw, stderr)
+	if lw.hit.Load() {
+		return -1, refuse(http.StatusRequestEntityTooLarge, "copy less at a time, or pack it smaller inside the sandbox first",
+			"copy out of %s stopped: a copy is limited to %s", id, config.Size(MaxCopy))
+	}
+	return code, err
+}
+
+// errCopyLimit is what a limitWriter answers once it is full.
+var errCopyLimit = errors.New("the copy limit was reached")
+
+// limitWriter passes at most left bytes to w. The write that would pass
+// the limit writes nothing, marks hit, calls over and fails, as does
+// every write after it.
+type limitWriter struct {
+	w    io.Writer
+	left int64
+	over func()
+	hit  atomic.Bool
+}
+
+func (l *limitWriter) Write(p []byte) (int, error) {
+	if l.hit.Load() || int64(len(p)) > l.left {
+		if !l.hit.Swap(true) {
+			l.over()
+		}
+		return 0, errCopyLimit
+	}
+	n, err := l.w.Write(p)
+	l.left -= int64(n)
+	return n, err
 }
 
 // MaxCopy bounds one copy either way.

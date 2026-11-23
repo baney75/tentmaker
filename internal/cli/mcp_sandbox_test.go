@@ -72,3 +72,18 @@ func TestTailBufferKeepsWholeRunes(t *testing.T) {
 		t.Fatalf("tail %q cut %d", tb.String(), tb.cut())
 	}
 }
+
+// The client stops a copy out at MaxCopy too, whatever the daemon sends.
+func TestCopyLimitFailsPastMaxCopy(t *testing.T) {
+	var got strings.Builder
+	cl := &copyLimit{w: &got, left: 5}
+	if n, err := cl.Write([]byte("abcd")); n != 4 || err != nil {
+		t.Fatalf("under the limit: %d %v", n, err)
+	}
+	if _, err := cl.Write([]byte("ef")); err == nil || !strings.Contains(err.Error(), "limit") {
+		t.Fatalf("past the limit: %v", err)
+	}
+	if got.String() != "abcd" {
+		t.Fatalf("passed %q", got.String())
+	}
+}

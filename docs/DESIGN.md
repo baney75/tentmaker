@@ -883,8 +883,11 @@ stream with no `x` frame broke. The 200 goes out with the first frame, so a refu
 output keeps its status. `POST /v1/sandboxes/{id}/files?path=DIR` takes a tar stream and unpacks
 it into DIR (made if missing) with `tar` run inside the sandbox as its user; `GET` with
 `path=PATH` answers a frame stream of `tar -c -f - -C DIR NAME` of PATH; a NAME that starts
-with a dash goes as `./NAME`, so no path is ever read as a tar option. The client extracts it with `os.Root`:
-only regular files and folders, never links, nothing outside the destination, at most 2 GiB.
+with a dash goes as `./NAME`, so no path is ever read as a tar option. The daemon stops a copy out at
+`MaxCopy` (2 GiB): it cancels the command and the `x` frame carries a 413 error, never a
+success, whatever tar exits with; the client counts too and fails past the same limit. The
+client extracts it with `os.Root`: only regular files and folders, never links, nothing outside
+the destination, at most 2 GiB.
 Errors are `{"error", "fix"}` with a status: 400 bad request, 403 not allowed, 404 no such
 sandbox, 409 no room or not running, 501 not supported, 503 no worker. A sandbox id is exactly
 `sbx-` and 12 lowercase hex digits (`sandbox.ValidID`, the executor's rule); the CLI, the MCP
