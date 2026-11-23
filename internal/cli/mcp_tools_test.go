@@ -17,7 +17,7 @@ import (
 
 // mcpSession runs `tentmaker mcp` on the fixture over pipes and returns a
 // tool caller. The session ends when the test does.
-func mcpSession(t *testing.T, f *fixture) func(name string, args map[string]any) (map[string]any, bool) {
+func mcpSession(t *testing.T, f *fixture, flags ...string) func(name string, args map[string]any) (map[string]any, bool) {
 	t.Helper()
 	inR, inW := io.Pipe()
 	outR, outW := io.Pipe()
@@ -25,7 +25,7 @@ func mcpSession(t *testing.T, f *fixture) func(name string, args map[string]any)
 	f.env.Stdout = outW
 	done := make(chan struct{})
 	go func() {
-		Run(f.env, []string{"mcp"})
+		Run(f.env, append([]string{"mcp"}, flags...))
 		outW.Close()
 		close(done)
 	}()

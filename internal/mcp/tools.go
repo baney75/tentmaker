@@ -601,11 +601,12 @@ var tools = []tool{
 		Title: "Copy files to or from a sandbox",
 		Description: "Copy a file or folder between this machine and a sandbox. Write the sandbox side as ID:PATH. " +
 			"Into a sandbox: from is a local path and to is ID:FOLDER; it lands in FOLDER under its own name. Out of " +
-			"a sandbox: from is ID:PATH and to is a local folder. Out of a sandbox, only regular files and folders " +
-			"are written, never links.",
+			"a sandbox: from is ID:PATH and to is a local folder under the folder this server was started with " +
+			"(its --root, by default its current folder); a relative to is taken from there, and any path outside it, " +
+			"after symlinks, is refused. Out of a sandbox, only regular files and folders are written, never links.",
 		Props: []prop{
 			{Name: "from", Type: "string", Required: true, Description: "A local path, or ID:PATH in a sandbox.", Check: nonEmpty},
-			{Name: "to", Type: "string", Required: true, Description: "ID:FOLDER in a sandbox, or a local folder.", Check: nonEmpty},
+			{Name: "to", Type: "string", Required: true, Description: "ID:FOLDER in a sandbox, or a local folder under the server's --root.", Check: nonEmpty},
 		},
 		run: func(ctx context.Context, c Controller, a args) (any, error) {
 			sc, err := sandboxes(c)

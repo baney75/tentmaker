@@ -5,7 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"math"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -294,12 +297,25 @@ func (c controller) WaitForRun(ctx context.Context, repo, sha, runURL string, ti
 
 func (a *app) cmdMCP(args []string) (any, error) {
 	f := a.flags("mcp", commands["mcp"].usage)
+	rootFlag := f.String("root", "", "the only folder sandbox_cp may copy files out of a sandbox into (default: the current folder)")
 	pos, err := a.parse(f, args)
 	if err != nil {
 		return nil, err
 	}
 	if len(pos) > 0 {
-		return nil, usage("usage: tentmaker mcp", "unexpected argument %q", pos[0])
+		return nil, usage("usage: tentmaker mcp [--root DIR]", "unexpected argument %q", pos[0])
+	}
+	root := *rootFlag
+	if root == "" {
+		if a.env.Getwd == nil {
+			return nil, usage("pass --root DIR", "the current folder is unknown")
+		}
+		if root, err = a.env.Getwd(); err != nil {
+			return nil, usage("pass --root DIR", "the current folder: %v", err)
+		}
+	}
+	if a.mcpRoot, err = resolveRoot(root); err != nil {
+		return nil, usage("pass --root with a folder that exists", "--root %s: %v", root, err)
 	}
 	// stdout is the protocol: nothing else may print there.
 	a.json = true
@@ -402,9 +418,88 @@ func (t *tailBuffer) String() string { return string(t.tail()) }
 // cut is how many bytes from the start were dropped.
 func (t *tailBuffer) cut() int64 { return t.total - int64(len(t.tail())) }
 
+// SandboxCopy confines a copy out of a sandbox to the server's --root: an
+// agent steered by text inside a sandbox must not be able to write host
+// files, least of all when the server runs as root.
 func (c controller) SandboxCopy(ctx context.Context, from, to string) (any, error) {
+	_, _, fromSandbox := splitRemote(from)
+	_, _, toSandbox := splitRemote(to)
+	if fromSandbox && !toSandbox {
+		dst, err := underRoot(c.a.mcpRoot, to)
+		if err != nil {
+			return nil, err
+		}
+		to = dst
+	}
 	v, err := c.a.sandboxCopy(ctx, from, to)
 	return v, mcpErr(err)
+}
+
+// resolveRoot is dir made absolute with its symlinks resolved; it must be
+// a folder.
+func resolveRoot(dir string) (string, error) {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return "", err
+	}
+	real, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return "", err
+	}
+	st, err := os.Stat(real)
+	if err != nil {
+		return "", err
+	}
+	if !st.IsDir() {
+		return "", errors.New("not a folder")
+	}
+	return real, nil
+}
+
+// underRoot resolves dst (relative to root when it isn't absolute) with
+// the symlinks of the part that exists, and refuses it unless it is root
+// or a folder under it. What doesn't exist yet can't hold a symlink, so
+// the answer is where the copy lands; the copy itself then writes only
+// below it, through os.Root, and replaces an existing file there instead
+// of writing through it.
+func underRoot(root, dst string) (string, error) {
+	if root == "" {
+		return "", errors.New("this MCP server has no folder to copy into; start it with tentmaker mcp --root DIR")
+	}
+	refuse := func() error {
+		return fmt.Errorf("sandbox_cp writes only under %s, the folder this MCP server was started with (--root); %q is outside it", root, dst)
+	}
+	p := dst
+	if !filepath.IsAbs(p) {
+		p = filepath.Join(root, p)
+	}
+	p = filepath.Clean(p)
+	var rest []string
+	for {
+		_, err := os.Lstat(p)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			return "", fmt.Errorf("%s: %v", dst, err)
+		}
+		parent := filepath.Dir(p)
+		if parent == p {
+			return "", refuse()
+		}
+		rest = append([]string{filepath.Base(p)}, rest...)
+		p = parent
+	}
+	real, err := filepath.EvalSymlinks(p)
+	if err != nil {
+		return "", fmt.Errorf("%s: %v", dst, err)
+	}
+	full := filepath.Join(append([]string{real}, rest...)...)
+	rel, err := filepath.Rel(root, full)
+	if err != nil || (rel != "." && !filepath.IsLocal(rel)) {
+		return "", refuse()
+	}
+	return full, nil
 }
 
 func (c controller) SandboxList(ctx context.Context) (any, error) {

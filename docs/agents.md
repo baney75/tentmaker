@@ -68,6 +68,12 @@ Without a terminal, install.sh runs sudo with `-n`, so it fails fast instead of 
 claude mcp add tentmaker -- tentmaker mcp
 ```
 
+`--root DIR` names the one folder `sandbox_cp` may copy files out of a sandbox into. It defaults to the folder the server starts in, which for Claude Code is the project you opened. Pin it when that isn't what you want:
+
+```sh
+claude mcp add tentmaker -- tentmaker mcp --root /home/alice/src/myproject
+```
+
 | Tool | Changes the device | What it does |
 | --- | --- | --- |
 | `status` | no | This device's profile and why, free slots, running jobs, power, guards, version. Call it first. |
@@ -93,11 +99,13 @@ claude mcp add tentmaker -- tentmaker mcp
 | `debug_exec` | yes, in the kept sandbox | Run one `command` in a failed job's kept sandbox on this device: `id`, `timeout_s` (default 60, at most 600), `max_bytes` (default 65536, at most 1 MiB). Returns `exit_code`, `output`, `truncated`, `timed_out`. |
 | `sandbox_create` | starts a sandbox | A throwaway machine on this device: `os`, `cpus`, `memory`, `ttl` (default 30m), `copy_dir` (an absolute local folder to put in its work folder). Returns its `id`. |
 | `sandbox_exec` | in the sandbox | Run `command` (an argv array) in sandbox `id`, with optional `dir`, `timeout_s` (whole seconds; omit to run until the sandbox expires) and `stdin`. Returns `exit_code`, `stdout` and `stderr`: the last 64 KiB of each, with `stdout_cut_bytes` and `stderr_cut_bytes` saying how much was dropped. |
-| `sandbox_cp` | in the sandbox or locally | Copy `from` to `to`; one of them is `ID:PATH`. |
+| `sandbox_cp` | in the sandbox, or under `--root` | Copy `from` to `to`; one of them is `ID:PATH`. Out of a sandbox, `to` must be a folder under the server's `--root` (a relative `to` starts there); any other path is refused after symlinks are resolved. |
 | `sandbox_ls` | no | Your sandboxes, with their size and when they expire. |
 | `sandbox_rm` | ends the sandbox | Remove a sandbox now. |
 
-Tools that change the device need the MCP server process to run as root or Administrator. Run as a normal user, they return an error saying so, and the read tools still work. For those changes, an agent can fall back to the CLI with `sudo`. The sandbox tools don't need root: they work for any account listed in `[sandbox] users` in the config (root and Administrator always may).
+Tools that change the device need the MCP server process to run as root or Administrator. Run as a normal user, they return an error saying so, and the read tools still work. For those changes, an agent can fall back to the CLI with `sudo`. The sandbox tools don't need root: they work for any account listed in `[sandbox] users` in the config (root and Administrator always may). Prefer that: run the server as your own account and add it to `[sandbox] users`.
+
+Text inside a sandbox can steer an agent, so treat what comes out of one as untrusted. That is why `sandbox_cp` writes only under `--root`: an agent told to copy a file over `~/.bashrc` or `/etc/passwd` gets a refusal, even when the server runs as root. Inside the root, the copy replaces a symlink or an existing file instead of writing through it, so it never changes a file outside the root.
 
 ## The agent loop
 

@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -85,5 +87,111 @@ func TestCopyLimitFailsPastMaxCopy(t *testing.T) {
 	}
 	if got.String() != "abcd" {
 		t.Fatalf("passed %q", got.String())
+	}
+}
+
+// sandbox_cp out of a sandbox writes only under the server's --root, with
+// symlinks resolved, and never replaces a file outside it: an agent
+// steered by text in a sandbox must not overwrite host files, least of all
+// as root.
+func TestMCPSandboxCopyOutStaysUnderRoot(t *testing.T) {
+	f := newFixture(t)
+	serveSandboxes(t, f, control.Caller{Admin: true, ID: "0"})
+	root := t.TempDir()
+	outside := t.TempDir()
+	victim := filepath.Join(outside, "notes.txt")
+	if err := os.WriteFile(victim, []byte("keep me\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// root/link points outside; root/trap/inbox/notes.txt is a symlink to
+	// the victim.
+	if err := os.Symlink(outside, filepath.Join(root, "link")); err != nil {
+		t.Skip("no symlinks here:", err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "trap", "inbox"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(victim, filepath.Join(root, "trap", "inbox", "notes.txt")); err != nil {
+		t.Fatal(err)
+	}
+	call := mcpSession(t, f, "--root", root)
+	res, ok := call("sandbox_create", map[string]any{})
+	if !ok {
+		t.Fatalf("create: %s", mustJSON(res))
+	}
+	id := res["structuredContent"].(map[string]any)["id"].(string)
+	local := filepath.Join(t.TempDir(), "notes.txt")
+	os.WriteFile(local, []byte("from the sandbox\n"), 0o644)
+	if res, ok := call("sandbox_cp", map[string]any{"from": local, "to": id + ":inbox"}); !ok {
+		t.Fatalf("cp in: %s", mustJSON(res))
+	}
+
+	for _, to := range []string{
+		outside,
+		filepath.Join(outside, "new"),
+		"../" + filepath.Base(outside),
+		"link",
+		"link/deeper/still",
+		filepath.Join(root, "link"),
+		"/",
+	} {
+		res, ok := call("sandbox_cp", map[string]any{"from": id + ":inbox", "to": to})
+		if ok || !strings.Contains(mustJSON(res), "writes only under") {
+			t.Errorf("cp out to %q: ok %v %s", to, ok, mustJSON(res))
+		}
+	}
+	if b, _ := os.ReadFile(victim); string(b) != "keep me\n" {
+		t.Fatalf("a file outside the root was replaced: %q", b)
+	}
+	if ents, _ := os.ReadDir(outside); len(ents) != 1 {
+		t.Fatalf("something was written outside the root: %v", ents)
+	}
+
+	// Under the root, relative or absolute, it lands.
+	for to, landed := range map[string]string{
+		"out":                      filepath.Join(root, "out", "inbox", "notes.txt"),
+		filepath.Join(root, "abs"): filepath.Join(root, "abs", "inbox", "notes.txt"),
+		".":                        filepath.Join(root, "inbox", "notes.txt"),
+		"a/../b":                   filepath.Join(root, "b", "inbox", "notes.txt"),
+	} {
+		if res, ok := call("sandbox_cp", map[string]any{"from": id + ":inbox", "to": to}); !ok {
+			t.Fatalf("cp out to %q: %s", to, mustJSON(res))
+		}
+		if b, err := os.ReadFile(landed); err != nil || string(b) != "from the sandbox\n" {
+			t.Fatalf("cp out to %q: %s holds %q %v", to, landed, b, err)
+		}
+	}
+	// A symlink at a name the copy writes is replaced, not written through.
+	if res, ok := call("sandbox_cp", map[string]any{"from": id + ":inbox", "to": "trap"}); !ok {
+		t.Fatalf("cp out to trap: %s", mustJSON(res))
+	}
+	if b, _ := os.ReadFile(victim); string(b) != "keep me\n" {
+		t.Fatalf("the copy wrote through a symlink to %s: %q", victim, b)
+	}
+	if st, err := os.Lstat(filepath.Join(root, "trap", "inbox", "notes.txt")); err != nil || !st.Mode().IsRegular() {
+		t.Fatalf("trap/inbox/notes.txt: %v %v", st, err)
+	}
+}
+
+// With no --root, the root is the folder the server started in.
+func TestMCPSandboxCopyRootDefaultsToTheCurrentFolder(t *testing.T) {
+	f := newFixture(t)
+	serveSandboxes(t, f, control.Caller{Admin: true, ID: "0"})
+	wd := t.TempDir()
+	f.env.Getwd = func() (string, error) { return wd, nil }
+	call := mcpSession(t, f)
+	res, _ := call("sandbox_create", map[string]any{})
+	id := res["structuredContent"].(map[string]any)["id"].(string)
+	local := filepath.Join(t.TempDir(), "a.txt")
+	os.WriteFile(local, []byte("a"), 0o644)
+	call("sandbox_cp", map[string]any{"from": local, "to": id + ":in"})
+	if res, ok := call("sandbox_cp", map[string]any{"from": id + ":in", "to": "got"}); !ok {
+		t.Fatalf("cp out: %s", mustJSON(res))
+	}
+	if b, err := os.ReadFile(filepath.Join(wd, "got", "in", "a.txt")); err != nil || string(b) != "a" {
+		t.Fatalf("landed %q %v", b, err)
+	}
+	if res, ok := call("sandbox_cp", map[string]any{"from": id + ":in", "to": t.TempDir()}); ok {
+		t.Fatalf("cp out outside the current folder: %s", mustJSON(res))
 	}
 }
