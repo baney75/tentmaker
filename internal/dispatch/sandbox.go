@@ -127,8 +127,9 @@ func (w *Worker) StartSandbox(ctx context.Context, spec SandboxSpec) (SandboxInf
 		w.log.Error("state not saved before a sandbox start", "error", err)
 	}
 
-	execSpec := core.ExecSpec{Kind: core.KindSandbox, Name: spec.Name, Platform: plat, Limits: limits,
-		MaxDuration: spec.TTL, TestWorkers: max(1, int(math.Floor(limits.CPUs)))}
+	// No TestWorkers: only the idle holder would see TENTMAKER_JOBS, never
+	// a command run in the sandbox.
+	execSpec := core.ExecSpec{Kind: core.KindSandbox, Name: spec.Name, Platform: plat, Limits: limits, MaxDuration: spec.TTL}
 	sctx, cancel := context.WithTimeout(ctx, startTimeout)
 	err := e.ex.Start(sctx, execSpec)
 	cancel()

@@ -49,7 +49,7 @@ func TestSandboxCountsAgainstTheBudget(t *testing.T) {
 		t.Fatalf("expires %v", info.Expires)
 	}
 	runs := wr.ex.Runs()
-	if runs["sbx-000000000001"].Spec.Kind != core.KindSandbox || runs["sbx-000000000001"].Spec.MaxDuration != 30*time.Minute {
+	if sp := runs["sbx-000000000001"].Spec; sp.Kind != core.KindSandbox || sp.MaxDuration != 30*time.Minute || sp.TestWorkers != 0 {
 		t.Fatalf("executor got %+v", runs["sbx-000000000001"].Spec)
 	}
 	// Twice a job's memory takes two slots; 1 + 2 fits in 3.
