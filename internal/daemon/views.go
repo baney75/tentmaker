@@ -103,7 +103,20 @@ func (v viewsSource) PageInput(ctx context.Context) (observe.PageInput, error) {
 
 func (v viewsSource) runs(ctx context.Context, q runs.Query) (runs.Answer, error) {
 	if v.local {
-		return v.d.localRuns(q), nil
+		// A broker here also keeps forge reports for jobs other devices
+		// ran; a caller this device admits may not be one they admit
+		// (review sol-F1). Keep this device's records before the limit.
+		limit := q.Limit
+		q.Limit = 0
+		a := v.d.localRuns(q)
+		own := a.Records[:0:0]
+		for _, r := range a.Records {
+			if r.Device == v.d.device() {
+				own = append(own, r)
+			}
+		}
+		a.Records = runs.Apply(own, runs.Query{Limit: limit})
+		return a, nil
 	}
 	return ctlHandler{v.d}.Runs(ctx, q)
 }

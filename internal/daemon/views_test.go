@@ -262,6 +262,12 @@ func TestLocalViewsServeThisDeviceAlone(t *testing.T) {
 	h := r.d.currentHistory()
 	h.JobEnded(runs.Record{ID: "tm-box-1", Kind: core.KindCheck, Repo: "baney75/app", Device: "box",
 		Conclusion: runs.Failure, StartedAt: time.Now(), EndedAt: time.Now()}, nil, nil)
+	// A failed forge report this broker kept for a job another device ran
+	// stays off this device's page (review sol-F1).
+	h.ForgeReport(runs.ForgeReport{ID: "tm-peer-1", Device: "peer", Repo: "baney75/app", Conclusion: "failure"})
+	if _, ok := h.store.Get("tm-peer-1"); !ok {
+		t.Fatal("the broker kept no record of the peer's job; the test proves nothing")
+	}
 	in, err := viewsSource{d: r.d, local: true}.PageInput(context.Background())
 	if err != nil {
 		t.Fatal(err)
