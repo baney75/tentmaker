@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/baney75/tentmaker/internal/budget"
 	"github.com/baney75/tentmaker/internal/config"
 	"github.com/baney75/tentmaker/internal/core"
 )
@@ -75,6 +76,11 @@ type WakeInfo struct {
 	Platforms []core.Platform `json:"platforms,omitempty"`
 	// Slots is how many jobs its budget fits when it is plugged in.
 	Slots int `json:"slots"`
+	// Off is its schedule's "off" windows, read at UTCOffsetS seconds east
+	// of UTC, so a peer never wakes it into a window that admits no work
+	// (review second-F6).
+	Off        []config.Window `json:"off,omitempty"`
+	UTCOffsetS int             `json:"utc_offset_s,omitempty"`
 }
 
 // WakeNeed is a queued job that no awake device can take, which a broker
@@ -99,7 +105,10 @@ type WakeRecord struct {
 	// OnlineAfterS is how long the device took to answer after the wake.
 	OnlineAfterS int64 `json:"online_after_s,omitempty"`
 	// Misses counts failed and timed out wakes in a row.
-	Misses      int       `json:"misses"`
+	Misses int `json:"misses"`
+	// repeats counts wakes in a row for the same job that came online and
+	// didn't take it; they hold the backoff when Misses clear.
+	repeats     int
 	NextAllowed time.Time `json:"next_allowed"`
 }
 
@@ -167,11 +176,22 @@ func (l *WakeLog) attempt(device, job, sender, result, errText string, now time.
 		r = &WakeRecord{Device: device}
 		l.recs[device] = r
 	}
+	// Woken for this job already, it came online and didn't take it (a
+	// guard, a schedule it changed): that is a miss too, so the backoff
+	// grows and it isn't woken every wakeEvery all night (review
+	// second-F6). Online for another job, it proved it wakes: start over.
+	if r.Result == WakeOnline {
+		if r.Job == job {
+			r.repeats++
+		} else {
+			r.repeats = 0
+		}
+	}
 	r.LastWake, r.Job, r.Sender, r.Result, r.Error, r.OnlineAfterS = now, job, sender, result, errText, 0
 	if result == WakeFailed {
 		r.Misses++
 	}
-	r.NextAllowed = now.Add(backoff(r.Misses))
+	r.NextAllowed = now.Add(backoff(r.Misses + r.repeats))
 	l.counts[result]++
 }
 
@@ -187,14 +207,14 @@ func (l *WakeLog) settle(now time.Time, seen func(device string) time.Time) {
 		if at := seen(d); at.After(r.LastWake) {
 			r.Result, r.Misses = WakeOnline, 0
 			r.OnlineAfterS = int64(at.Sub(r.LastWake).Seconds())
-			r.NextAllowed = r.LastWake.Add(wakeEvery)
+			r.NextAllowed = r.LastWake.Add(backoff(r.repeats))
 			l.counts[WakeOnline]++
 			continue
 		}
 		if now.Sub(r.LastWake) >= wakeWait {
 			r.Result = WakeTimeout
 			r.Misses++
-			r.NextAllowed = r.LastWake.Add(backoff(r.Misses))
+			r.NextAllowed = r.LastWake.Add(backoff(r.Misses + r.repeats))
 			l.counts[WakeTimeout]++
 		}
 	}
@@ -393,6 +413,8 @@ func whyNotWake(d knownDevice, now time.Time) string {
 		return "its adapter can't wake it: " + w.LAN.Note
 	case w.Slots < 1:
 		return "its budget fits no job"
+	case budget.OffAt(w.Off, w.UTCOffsetS, now):
+		return "its schedule is off now"
 	case len(w.Platforms) == 0:
 		return "it reported no platforms it can run"
 	case now.Sub(d.LastSeen) > wakeRecent:

@@ -1168,7 +1168,7 @@ on every 30 s discovery (the heartbeat) each device reads `Options.Wake` and ann
 in its `/v1/hello` (`wake`, absent on an older Tentmaker). The daemon fills it: the LAN interface
 from `ProbeLAN`, power from the budget's power source, `OptOut` from `mesh.wake = false`,
 `DoNotDisturb` while `tentmaker pause` holds the worker, its worker labels and executor platforms,
-and `budget.PluggedSlots`. `ProbeLAN` keeps interfaces that are up, broadcast capable, not
+`budget.PluggedSlots`, and its schedule's `off` windows with its UTC offset. `ProbeLAN` keeps interfaces that are up, broadcast capable, not
 loopback or point to point, with a globally administered unicast MAC and a private IPv4 address
 (/8 to /30), and prefers wired, then wakeable. On Linux an interface is physical when
 `/sys/class/net/<if>/device` exists, wireless when it has `wireless` or `phy80211`, and wakeable
@@ -1186,13 +1186,16 @@ until its view is fresh: its first discovery is at least 75 s old and its last o
 old, so a restart doesn't read every device as asleep. For each waiting job, oldest first, it
 picks the most recently seen device that is asleep (not seen in 75 s) and could wake: it sent
 wake facts, has not opted out, is not paused, was on AC power when last seen (battery or unknown
-power is never woken), has a MAC and subnet, is wakeable, fits at least one job, was seen in the
-last 7 days, has platforms and labels that fit the job, and its rate limit allows. A device
+power is never woken), has a MAC and subnet, is wakeable, fits at least one job, is not in an `off` schedule window now
+(`budget.OffAt`, read at the offset it announced; review second-F6), was seen in the last 7 days, has platforms and labels that fit the job, and its rate limit allows. A device
 already woken and not yet back covers up to its `Slots` jobs, so one job wakes one device.
 
 Rate limits: at most one wake per device per 10 minutes. A device that is not seen again within
 3 minutes of a sent wake records `timeout`, and its next wake waits 10 minutes doubled per miss in
-a row, at most 4 hours; seeing it again records `online` and clears the misses.
+a row, at most 4 hours; seeing it again records `online` and clears the misses. A device woken
+again for the same job it came online for and didn't take (a guard, a changed schedule) counts a
+repeat, and repeats double the wait the same way until a wake for another job (review second-F6),
+so a device that won't take the work isn't woken every 10 minutes all night.
 
 To send, the deciding device uses its own UDP sender when it shares the sleeper's subnet;
 otherwise it posts `POST /v1/wake {device}` to up to 3 awake peers on that subnet, fastest first.
