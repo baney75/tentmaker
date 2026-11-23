@@ -592,3 +592,33 @@ func TestFormatFloat(t *testing.T) {
 		}
 	}
 }
+
+func TestMetricsBuildCache(t *testing.T) {
+	// A device that serves no build cache reports none of its families.
+	for _, s := range parseText(t, string(Metrics(MetricsInput{Now: fixtureNow, Self: laptop()}))) {
+		if strings.HasPrefix(s.name, "tentmaker_build_cache") {
+			t.Fatalf("no build cache, but %s", s.name)
+		}
+	}
+	in := MetricsInput{Now: fixtureNow, Self: laptop(), BuildCache: []BuildCacheCounts{
+		{Tool: "bazel", Hits: 7, Misses: 2, Stored: 3, NotStored: 1, BytesServed: 1000, BytesStored: 500},
+		{Tool: "turbo"},
+	}}
+	all := parseText(t, string(Metrics(in)))
+	for _, c := range []struct {
+		name, k1, v1, k2, v2 string
+		want                 float64
+	}{
+		{"tentmaker_build_cache_requests_total", "tool", "bazel", "result", "hit", 7},
+		{"tentmaker_build_cache_requests_total", "tool", "bazel", "result", "miss", 2},
+		{"tentmaker_build_cache_requests_total", "tool", "bazel", "result", "stored", 3},
+		{"tentmaker_build_cache_requests_total", "tool", "bazel", "result", "not_stored", 1},
+		{"tentmaker_build_cache_requests_total", "tool", "turbo", "result", "hit", 0},
+		{"tentmaker_build_cache_bytes_total", "tool", "bazel", "direction", "served", 1000},
+		{"tentmaker_build_cache_bytes_total", "tool", "bazel", "direction", "stored", 500},
+	} {
+		if got := value(t, all, c.name, c.k1, c.v1, c.k2, c.v2); got != c.want {
+			t.Errorf("%s{%s=%s,%s=%s} = %v, want %v", c.name, c.k1, c.v1, c.k2, c.v2, got, c.want)
+		}
+	}
+}

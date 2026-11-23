@@ -32,6 +32,11 @@
 //
 // Everything else under /twirp/ (artifacts) goes unchanged to
 // results-receiver.actions.githubusercontent.com.
+//
+// The same listener serves the build caches (Options.Build, internal/
+// buildcache: Bazel, Gradle and Turborepo) to the same grants: a job reads
+// its repo's build cache while it holds Read, and writes it only when it
+// could save an Actions cache entry now (confirmed, Write, not held).
 package actionscache
 
 import (
@@ -51,6 +56,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/baney75/tentmaker/internal/buildcache"
 	"github.com/baney75/tentmaker/internal/core"
 	"github.com/baney75/tentmaker/internal/repocache"
 )
@@ -142,8 +148,11 @@ type Options struct {
 	JobOf    func(remote, local netip.AddrPort, jobs []string) (string, bool)
 	MaxEntry int64 // 0 means DefaultMaxEntry
 	MaxJob   int64 // 0 means DefaultMaxJob
-	Log      *slog.Logger
-	Now      func() time.Time
+	// Build serves the build cache paths (buildcache.Owns) to the same
+	// grants; nil serves none.
+	Build *buildcache.Cache
+	Log   *slog.Logger
+	Now   func() time.Time
 }
 
 type grant struct {
@@ -443,6 +452,8 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.upload(w, r, strings.TrimPrefix(p, uploadPrefix))
 	case strings.HasPrefix(p, blobPrefix):
 		s.download(w, r, strings.TrimPrefix(p, blobPrefix))
+	case s.o.Build != nil && buildcache.Owns(p):
+		s.build(w, r)
 	default:
 		http.NotFound(w, r)
 	}
@@ -522,6 +533,39 @@ func (s *Service) passthrough(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), proxyTimeout)
 	defer cancel()
 	s.proxy.ServeHTTP(w, r.WithContext(ctx))
+}
+
+// build hands a build cache request to Options.Build with what the
+// connection's job may do. No job, or no read right, is 404: a miss.
+func (s *Service) build(w http.ResponseWriter, r *http.Request) {
+	g := s.jobOf(r)
+	if g == nil || g.Access < Read || g.Store == nil {
+		http.NotFound(w, r)
+		return
+	}
+	rk := repoKey(g.Repo)
+	if rk == "" {
+		http.NotFound(w, r)
+		return
+	}
+	st, repo, job := g.Store, g.Repo, g.Job
+	s.o.Build.Serve(w, r, buildcache.Caller{
+		Repo: rk,
+		Open: func(create bool) (*os.Root, error) { return st.ActionsRoot(repo, create) },
+		// The job's grant as it is now: Limit, Confirm and Revoke replace it.
+		// The store has one scope per repo, which every branch reads, so only
+		// a push to the default branch may fill it: a feature branch writing
+		// here would reach main (review first-F1).
+		MayWrite: func() bool {
+			ng := s.grantOf(job)
+			if ng == nil || ng.Repo != repo || ng.Ref == "" || ng.Ref != ng.Default {
+				return false
+			}
+			ok, _ := s.mayWrite(ng)
+			return ok
+		},
+		Budget: budgetOf(st) / 2,
+	})
 }
 
 func randomHex(n int) (string, error) {

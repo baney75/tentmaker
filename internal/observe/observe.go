@@ -55,6 +55,17 @@ type MetricsInput struct {
 	Self Device
 	// Jobs are this device's job counters since the daemon started.
 	Jobs JobCounts
+	// BuildCache are the build cache's counters per tool since the daemon
+	// started (internal/buildcache); none when the device serves none.
+	BuildCache []BuildCacheCounts
+}
+
+// BuildCacheCounts are one tool's build cache counters.
+type BuildCacheCounts struct {
+	Tool                     string
+	Hits, Misses             int64
+	Stored, NotStored        int64
+	BytesServed, BytesStored int64
 }
 
 // PageInput is what WritePage reads.

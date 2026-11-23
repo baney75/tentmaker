@@ -18,6 +18,7 @@ import (
 
 	"github.com/baney75/tentmaker/internal/actionscache"
 	"github.com/baney75/tentmaker/internal/budget"
+	"github.com/baney75/tentmaker/internal/buildcache"
 	"github.com/baney75/tentmaker/internal/checks"
 	"github.com/baney75/tentmaker/internal/config"
 	"github.com/baney75/tentmaker/internal/control"
@@ -319,6 +320,7 @@ type Daemon struct {
 	relAddr string
 	metAddr string
 	actions *actionscache.Service // nil when CacheAddr is "-"
+	build   *buildcache.Cache     // served by actions; nil with it
 	// tally keeps the job counters /metrics exports. It lives as long as
 	// the daemon, so a rebuilt history (apply) never resets them.
 	tally    *observe.Tally
@@ -345,7 +347,8 @@ func New(o Options) *Daemon {
 	}
 	// Only the Linux executor can name a job by its connection.
 	if o.CacheAddr != "-" && runtime.GOOS == "linux" {
-		d.actions = actionscache.New(actionscache.Options{Log: o.Log, JobOf: d.cacheJobOf()})
+		d.build = buildcache.New(buildcache.Options{Log: o.Log})
+		d.actions = actionscache.New(actionscache.Options{Log: o.Log, JobOf: d.cacheJobOf(), Build: d.build})
 	}
 	d.sandboxes = sandbox.New(sandbox.Options{
 		Worker: func() sandbox.Worker {
