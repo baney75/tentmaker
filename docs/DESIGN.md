@@ -841,7 +841,10 @@ exit code. The holder can end before its commands (its `RuntimeMaxSec`, a kill f
 before anything else; only then does `Clean` revert the slice's runtime drop-in, remove the limits
 file, the namespace and the folder. `Reset` runs only with no job, so it stops any
 `tentmaker-exec-*` unit and `tentmaker-sbx-*.slice` left, refuses while any still runs, and
-reverts their drop-ins (sol-F3, first-F2).
+reverts their drop-ins (sol-F3, first-F2). `Exec` is admitted before its checks, and `Stop` or
+`Clean` first marks the sandbox closing, which refuses any new `Exec`; it then stops the slice again
+until every `Exec` admitted before has returned (at most 2 minutes), so no command starts after the
+last check that the slice is empty (review r2 sol-F1).
 
 **macOS and Windows** executors don't implement `core.Sandboxer` yet, so a request for those
 OSes is refused with "can't hold sandboxes yet".

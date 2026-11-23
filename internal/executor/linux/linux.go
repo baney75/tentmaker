@@ -155,6 +155,10 @@ type Executor struct {
 	// job starts; starting names the jobs whose Start is in flight.
 	podMu    sync.Mutex
 	starting map[string]bool
+	// sbxMu guards gates, which order each sandbox's command launches
+	// against its teardown (sandbox.go).
+	sbxMu sync.Mutex
+	gates map[string]*sbxGate
 	// patchMu guards the Actions cache patch state (patch.go).
 	patchMu        sync.Mutex
 	patchFor       string // the template the result is for
@@ -837,7 +841,7 @@ func (e *Executor) Stop(ctx context.Context, name string) error {
 	if isSandboxName(name) {
 		// The slice holds the holder and every command; stopping it ends
 		// them all, and a sandbox has stopped only once it is empty.
-		if err := e.stopSlice(ctx, name); err != nil {
+		if err := e.settleSandbox(ctx, name); err != nil {
 			return err
 		}
 	}
@@ -871,7 +875,7 @@ func (e *Executor) Clean(ctx context.Context, name string) error {
 	if isSandboxName(name) {
 		// Its holder ended, but its commands may not have: nothing they
 		// use (limits, namespace, folder) goes until the slice is empty.
-		if err := e.stopSlice(ctx, name); err != nil {
+		if err := e.settleSandbox(ctx, name); err != nil {
 			return err
 		}
 	}
@@ -894,6 +898,7 @@ func (e *Executor) Clean(ctx context.Context, name string) error {
 	if err := e.removeJobDir(ctx, e.jobDir(name)); err != nil {
 		return err
 	}
+	e.dropGate(name)
 	if cached {
 		e.dropSlot(name)
 		evicted, err := e.cache.Done(core.CacheRepo{Forge: rec.Forge, Repo: rec.Repo})

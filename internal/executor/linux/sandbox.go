@@ -68,6 +68,106 @@ func (e *Executor) sandboxUnits(ctx context.Context, patterns ...string) (all, l
 // command in it, and confirms nothing in it still runs. The holder can end
 // before its commands (its RuntimeMaxSec, a kill from inside), so its
 // state alone says nothing about them.
+// sbxGate orders a sandbox's command launches against its teardown. Exec
+// checks the sandbox, then starts a unit in its slice; a stop that lands
+// between the two would find the slice empty, and the unit started after it
+// would outlive the sandbox's limits, namespace and folder. So a teardown
+// marks the sandbox closing, which refuses new commands, and stops the
+// slice until every command admitted before has returned.
+type sbxGate struct {
+	closing bool
+	execs   int
+	idle    chan struct{} // closed once closing and execs is 0
+}
+
+// beginExec admits one command to sandbox name, or refuses one that is
+// stopping. done ends the admission.
+func (e *Executor) beginExec(name string) (done func(), err error) {
+	e.sbxMu.Lock()
+	defer e.sbxMu.Unlock()
+	g := e.gateLocked(name)
+	if g.closing {
+		return nil, fmt.Errorf("sandbox %s is stopping", name)
+	}
+	g.execs++
+	return func() {
+		e.sbxMu.Lock()
+		defer e.sbxMu.Unlock()
+		g.execs--
+		if g.closing && g.execs == 0 {
+			close(g.idle)
+		}
+	}, nil
+}
+
+func (e *Executor) gateLocked(name string) *sbxGate {
+	if e.gates == nil {
+		e.gates = map[string]*sbxGate{}
+	}
+	g := e.gates[name]
+	if g == nil {
+		g = &sbxGate{}
+		e.gates[name] = g
+	}
+	return g
+}
+
+// closeGate marks sandbox name closing and returns a channel closed once
+// no command admitted before is still in Exec.
+func (e *Executor) closeGate(name string) <-chan struct{} {
+	e.sbxMu.Lock()
+	defer e.sbxMu.Unlock()
+	g := e.gateLocked(name)
+	if !g.closing {
+		g.closing = true
+		g.idle = make(chan struct{})
+		if g.execs == 0 {
+			close(g.idle)
+		}
+	}
+	return g.idle
+}
+
+// dropGate forgets sandbox name once Clean has removed it. An Exec after
+// this finds no holder and refuses.
+func (e *Executor) dropGate(name string) {
+	e.sbxMu.Lock()
+	delete(e.gates, name)
+	e.sbxMu.Unlock()
+}
+
+// settleWait bounds how long a teardown waits for admitted commands.
+const settleWait = 2 * time.Minute
+
+// settleSandbox closes sandbox name to new commands and stops its slice
+// until every command admitted before has returned, so none starts after
+// the last check that the slice is empty.
+func (e *Executor) settleSandbox(ctx context.Context, name string) error {
+	idle := e.closeGate(name)
+	deadline := time.NewTimer(settleWait)
+	defer deadline.Stop()
+	for {
+		err := e.stopSlice(ctx, name)
+		select {
+		case <-idle:
+			// Nothing can launch now; one more stop and check is final.
+			return e.stopSlice(ctx, name)
+		default:
+		}
+		if err != nil {
+			return err
+		}
+		select {
+		case <-idle:
+		case <-time.After(250 * time.Millisecond):
+		case <-deadline.C:
+			return fmt.Errorf("sandbox %s: a command was still starting after %s", name, settleWait)
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+}
+
 func (e *Executor) stopSlice(ctx context.Context, name string) error {
 	e.h.Run(ctx, Cmd{Path: "systemctl", Args: []string{"stop", sandboxSlice(name)}, Timeout: 90 * time.Second})
 	_, live, err := e.sandboxUnits(ctx, ExecPrefix+name+"-*", sandboxSlice(name))
@@ -149,6 +249,13 @@ func (e *Executor) Exec(ctx context.Context, name string, req core.SandboxExec, 
 	if _, err := req.WorkDir(); err != nil {
 		return -1, err
 	}
+	// Admitted before the checks below, so a teardown that starts after
+	// them still waits for this launch (review sol-F1).
+	done, err := e.beginExec(name)
+	if err != nil {
+		return -1, err
+	}
+	defer done()
 	st, err := e.State(ctx, name)
 	if err != nil {
 		return -1, err

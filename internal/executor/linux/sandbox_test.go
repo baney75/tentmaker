@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -475,5 +476,100 @@ func TestSandboxExecCutOffIsAnError(t *testing.T) {
 	}
 	if code, err := v.e.Exec(context.Background(), sbx, req, nil, io.Discard, io.Discard); err != nil || code != 3 {
 		t.Fatalf("a command's own exit returned %d, %v", code, err)
+	}
+}
+
+// A command whose launch passed Exec's checks before a Stop, and whose unit
+// starts only after Stop found the slice empty, must not outlive the Stop:
+// Stop waits for it and stops the slice again (review sol-F1). A command
+// asked for once Stop has begun is refused.
+func TestSandboxStopWaitsForALaunchInFlight(t *testing.T) {
+	v := newEnv(t)
+	v.installed(t)
+	if err := v.e.Start(context.Background(), sandboxSpec()); err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	stopped, live := false, false
+	emptyChecked := make(chan struct{}) // Stop's first empty-slice check
+	killed := make(chan struct{})       // a slice stop after the unit started
+	var once, killOnce sync.Once
+	v.f.respond = func(c Cmd) (Result, error) {
+		if c.Path == "systemctl" && len(c.Args) > 0 {
+			mu.Lock()
+			defer mu.Unlock()
+			switch c.Args[0] {
+			case "show":
+				if slices.Contains(c.Args, unitName(sbx)) {
+					if stopped {
+						return Result{Stdout: "ActiveState=inactive\nLoadState=loaded\n"}, nil
+					}
+					return Result{Stdout: "ActiveState=active\nLoadState=loaded\n"}, nil
+				}
+			case "stop":
+				if slices.Contains(c.Args, sandboxSlice(sbx)) {
+					stopped = true
+					if live {
+						live = false
+						killOnce.Do(func() { close(killed) })
+					}
+				}
+			case "list-units":
+				if slices.Contains(c.Args, "--type=service,slice") {
+					if live {
+						return Result{Stdout: ExecPrefix + sbx + "-0a0b0c0d0e0f.service loaded active running Command\n"}, nil
+					}
+					if stopped {
+						once.Do(func() { close(emptyChecked) })
+					}
+					return Result{}, nil
+				}
+			}
+		}
+		return running(c)
+	}
+	launch := make(chan struct{})
+	streamFn = func(c Cmd, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
+		// Paused between the checks and the unit's start until Stop has
+		// found the slice empty; then the unit starts and runs until the
+		// slice is stopped.
+		close(launch)
+		<-emptyChecked
+		mu.Lock()
+		live = true
+		mu.Unlock()
+		select {
+		case <-killed:
+			return -1, errors.New("systemd-run: unit stopped")
+		case <-time.After(10 * time.Second):
+			return 0, nil
+		}
+	}
+	defer func() { streamFn = nil }()
+	execErr := make(chan error, 1)
+	go func() {
+		_, err := v.e.Exec(context.Background(), sbx, core.SandboxExec{Argv: []string{"sleep", "1000"}}, nil, io.Discard, io.Discard)
+		execErr <- err
+	}()
+	<-launch
+	if err := v.e.Stop(context.Background(), sbx); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	stillLive := live
+	mu.Unlock()
+	if stillLive {
+		t.Fatal("Stop returned while a command it raced still runs in the slice")
+	}
+	select {
+	case err := <-execErr:
+		if err == nil {
+			t.Fatal("a command cut off by Stop reported success")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Exec did not return after Stop")
+	}
+	if _, err := v.e.Exec(context.Background(), sbx, core.SandboxExec{Argv: []string{"true"}}, nil, io.Discard, io.Discard); err == nil || !strings.Contains(err.Error(), "stopping") {
+		t.Fatalf("an Exec after Stop: %v", err)
 	}
 }
