@@ -204,18 +204,34 @@ jobs:
           test "$rc" = 1 && jq -e '.fix | test("sandbox")' "$RUNNER_TEMP/sbx-refused.json" >/dev/null ||
             { echo "::error::an unlisted user was not refused with a fix"; exit 1; }
 
-          t0=$(ms)
-          sudo tentmaker sandbox create --ttl 10m --json | tee "$RUNNER_TEMP/sbx.json"
+          # create OUT [ARGS...] retries only the refusals that pass on their
+          # own: no budget decision yet, a reset under way, or a repo cache
+          # held until the next idle reset. began is when the attempt that
+          # worked started, so the times below measure a create, not the wait.
+          create() {
+            local out=$1; shift
+            for _ in $(seq 60); do
+              began=$(ms)
+              if sudo tentmaker sandbox create --ttl 10m "$@" --json >"$out"; then cat "$out"; return 0; fi
+              cat "$out"
+              jq -e '.error | test("not been decided|resetting|cache")' "$out" >/dev/null || return 1
+              sleep 2
+            done
+            return 1
+          }
+          create "$RUNNER_TEMP/sbx.json"
           t1=$(ms)
+          t0=$began
           id=$(jq -r .id "$RUNNER_TEMP/sbx.json")
           out=$(sudo tentmaker sandbox exec "$id" -- echo hello)
           t2=$(ms)
           test "$out" = hello || { echo "::error::first exec said $out"; exit 1; }
           sudo tentmaker sandbox rm "$id" --json | jq -e '.removed == [$id]' --arg id "$id" >/dev/null
           # Second run: --copy of the work tree, then the rest.
-          t3=$(ms)
-          id=$(sudo tentmaker sandbox create --ttl 10m --copy . --json | jq -r .id)
+          create "$RUNNER_TEMP/sbx2.json" --copy .
           t4=$(ms)
+          t3=$began
+          id=$(jq -r .id "$RUNNER_TEMP/sbx2.json")
           sudo tentmaker sandbox exec "$id" -- true
           t5=$(ms)
           {
