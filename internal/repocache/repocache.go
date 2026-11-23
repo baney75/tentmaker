@@ -282,11 +282,45 @@ func (s *Store) evictLocked(idx *index) ([]string, error) {
 			}
 			return keys[a] < keys[b]
 		})
+		name := func(k string) string {
+			if r := idx.Repos[k].Repo; r != "" {
+				return r
+			}
+			return k
+		}
+		// Container stores go first, least recently used first: their
+		// images can be pulled again, and a repo's own store must not push
+		// its build cache out.
 		for _, k := range keys {
 			if total <= s.o.Max {
 				break
 			}
-			if inUse[k] {
+			dir := s.containersKeyDir(k)
+			if _, err := os.Lstat(dir); inUse[k] || err != nil {
+				continue
+			}
+			n := usage(dir)
+			if err := os.RemoveAll(dir); err != nil {
+				_ = s.save(idx)
+				return evicted, fmt.Errorf("repo cache: evict %s's container store: %w", k, err)
+			}
+			total -= n
+			e := idx.Repos[k]
+			if e.Bytes -= n; e.Bytes < 0 {
+				e.Bytes = 0
+			}
+			if _, err := os.Lstat(filepath.Join(s.o.Root, k)); errors.Is(err, fs.ErrNotExist) {
+				evicted = append(evicted, name(k))
+				delete(idx.Repos, k)
+			} else {
+				evicted = append(evicted, name(k)+" (container store)")
+			}
+		}
+		for _, k := range keys {
+			if total <= s.o.Max {
+				break
+			}
+			if inUse[k] || idx.Repos[k] == nil {
 				continue
 			}
 			e := idx.Repos[k]
@@ -297,11 +331,7 @@ func (s *Store) evictLocked(idx *index) ([]string, error) {
 				}
 			}
 			total -= e.Bytes
-			name := e.Repo
-			if name == "" {
-				name = k
-			}
-			evicted = append(evicted, name)
+			evicted = append(evicted, name(k))
 			delete(idx.Repos, k)
 		}
 	}

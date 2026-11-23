@@ -307,8 +307,10 @@ one runs cold at `jobs/<name>` as before.
   removed after it is gone; `List` reports jobs by name, and a slot folder no record claims by its
   own name so it gets cleaned. `Reset` drops every slot and keeps the caches.
 - Cap: `cache_max` (default 10 GiB, 0 turns caches off). After each job's `Clean` the store
-  measures that repo (its cache folder and its container store) and deletes whole repos, both
-  folders, least recently used first, until the total fits; a repo with a slot record or a bound
+  measures that repo (its cache folder and its container store), so images count against the
+  cap like the cache folders do. Until the total fits it deletes container stores first, least
+  recently used first (images can be pulled again, so a repo's own store never pushes its build
+  cache out), then whole repos, both folders, least recently used first; a repo with a slot record or a bound
   container store is never deleted, and when either can't be read nothing is. `Reset` evicts
   again once the store is unbound.
 - A cache that can't be prepared leaves the job cold (a warning), never failed.

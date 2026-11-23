@@ -317,3 +317,35 @@ func TestEvictCountsAndRemovesContainerStores(t *testing.T) {
 		t.Fatalf("the evicted repo's container store is still there: %v", err)
 	}
 }
+
+// A repo whose container store alone passes the cap loses the store, not
+// its build cache: images can be pulled again.
+func TestEvictTakesContainerStoresBeforeCaches(t *testing.T) {
+	s, _ := newStore(t, 5<<20, func() (map[string]bool, error) { return map[string]bool{}, nil })
+	dir, err := s.Prepare(repo("acme/app"), os.Getuid(), os.Getgid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fill(t, dir, 1<<20)
+	store, err := s.PrepareContainers(repo("acme/app"), os.Getuid(), os.Getgid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fill(t, store, 5<<20)
+	got, err := s.Done(repo("acme/app"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0] != "acme/app (container store)" {
+		t.Fatalf("evicted %v, want acme/app's container store", got)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "blob")); err != nil {
+		t.Fatalf("the repo's build cache was evicted: %v", err)
+	}
+	if _, err := os.Stat(store); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the container store survived: %v", err)
+	}
+	if n := s.Size(repo("acme/app")); n <= 0 || n >= 2<<20 {
+		t.Fatalf("size %d after the store went, want the cache folder's", n)
+	}
+}
