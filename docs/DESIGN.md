@@ -894,8 +894,11 @@ tools and the Manager refuse any other string before it reaches a URL or a unit 
 --copy DIR` sends DIR's working tree: in a Git work tree the files `git ls-files -z --cached
 --others --exclude-standard` lists, read from disk (so uncommitted changes and untracked,
 non-ignored files, and no `.git`); elsewhere the whole folder. A failed copy removes the
-sandbox. `exec` streams and exits with the command's code; with `--json` (and over MCP) it keeps
-up to 1 MiB of each stream and says when it cut one. The MCP tool's `timeout_s` is a whole number of seconds from 0
+sandbox. `exec` streams and exits with the command's code; with `--json` it keeps up to 1 MiB of
+each stream and says when it cut one. Over MCP, `sandbox_exec` keeps the last 64 KiB of each
+stream (the end is where an error usually is), starting on a UTF-8 boundary, and answers
+`stdout_cut_bytes` and `stderr_cut_bytes` with how many bytes it dropped from the start, so the
+answer fits a model's context. The MCP tool's `timeout_s` is a whole number of seconds from 0
 (until the sandbox expires) to 604800; a fraction or a negative is refused, never truncated,
 since 0.5 would become 0, which means no limit.
 

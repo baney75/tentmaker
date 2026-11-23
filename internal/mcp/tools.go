@@ -576,8 +576,8 @@ var tools = []tool{
 	{
 		Name:  "sandbox_exec",
 		Title: "Run a command in a sandbox",
-		Description: "Run one command in a sandbox and return its exit_code, stdout and stderr (each capped at 1 MiB; " +
-			"*_truncated says when). The command is argv, not a shell line: use [\"sh\", \"-c\", \"...\"] for pipes. " +
+		Description: "Run one command in a sandbox and return its exit_code, stdout and stderr. Each stream keeps its " +
+			"last 64 KiB; stdout_cut_bytes and stderr_cut_bytes say how many bytes were dropped from the start. The command is argv, not a shell line: use [\"sh\", \"-c\", \"...\"] for pipes. " +
 			"It runs in the sandbox's work folder unless dir says otherwise, and stops at timeout_s or when the " +
 			"sandbox expires. A non-zero exit_code is a normal result, not a tool error.",
 		Props: []prop{

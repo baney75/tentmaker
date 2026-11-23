@@ -8,6 +8,7 @@ import (
 	"math"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/baney75/tentmaker/internal/control"
 	"github.com/baney75/tentmaker/internal/forge/github"
@@ -335,9 +336,71 @@ func (c controller) SandboxExec(ctx context.Context, id string, argv []string, d
 	if stdin != "" {
 		in = strings.NewReader(stdin)
 	}
-	v, err := c.a.sandboxExecCollect(ctx, id, sandbox.ExecRequest{Argv: argv, Dir: dir, TimeoutS: int64(timeoutS)}, in)
-	return v, mcpErr(err)
+	start := time.Now()
+	out, errs := &tailBuffer{max: mcpMaxOutput}, &tailBuffer{max: mcpMaxOutput}
+	e, err := c.a.sandboxExec(ctx, id, sandbox.ExecRequest{Argv: argv, Dir: dir, TimeoutS: int64(timeoutS)}, in, out, errs)
+	if err != nil {
+		return nil, mcpErr(err)
+	}
+	v := mcpExecView{ID: id, ExitCode: e.ExitCode, Stdout: out.String(), Stderr: errs.String(),
+		StdoutCutBytes: out.cut(), StderrCutBytes: errs.cut(), Seconds: time.Since(start).Seconds()}
+	if v.StdoutCutBytes > 0 || v.StderrCutBytes > 0 {
+		v.Note = fmt.Sprintf("output was cut to the last %d KiB of each stream (stdout_cut_bytes and stderr_cut_bytes say how much was dropped from the start); "+
+			"write long output to a file in the sandbox and read the part you need, or copy it out with sandbox_cp", mcpMaxOutput>>10)
+	}
+	return v, nil
 }
+
+// mcpMaxOutput caps each stream sandbox_exec returns to an agent: enough
+// for a test failure or a build error, small enough for a model's context.
+const mcpMaxOutput = 64 << 10
+
+// mcpExecView is sandbox_exec's answer.
+type mcpExecView struct {
+	ID             string  `json:"id"`
+	ExitCode       int     `json:"exit_code"`
+	Stdout         string  `json:"stdout"`
+	Stderr         string  `json:"stderr"`
+	StdoutCutBytes int64   `json:"stdout_cut_bytes,omitempty"`
+	StderrCutBytes int64   `json:"stderr_cut_bytes,omitempty"`
+	Seconds        float64 `json:"seconds"`
+	Note           string  `json:"note,omitempty"`
+}
+
+// tailBuffer keeps the last max bytes written to it and counts the rest:
+// the end of a command's output is where its error usually is.
+type tailBuffer struct {
+	max   int
+	b     []byte
+	total int64
+}
+
+func (t *tailBuffer) Write(p []byte) (int, error) {
+	t.total += int64(len(p))
+	t.b = append(t.b, p...)
+	// Trim in batches so a stream of small writes stays linear.
+	if len(t.b) > 2*t.max {
+		t.b = append(t.b[:0], t.b[len(t.b)-t.max:]...)
+	}
+	return len(p), nil
+}
+
+// tail is what the buffer keeps, starting on a UTF-8 boundary.
+func (t *tailBuffer) tail() []byte {
+	b := t.b
+	if len(b) > t.max {
+		b = b[len(b)-t.max:]
+		for i := 0; i < utf8.UTFMax && len(b) > 0 && !utf8.RuneStart(b[0]); i++ {
+			b = b[1:]
+		}
+	}
+	return b
+}
+
+func (t *tailBuffer) String() string { return string(t.tail()) }
+
+// cut is how many bytes from the start were dropped.
+func (t *tailBuffer) cut() int64 { return t.total - int64(len(t.tail())) }
 
 func (c controller) SandboxCopy(ctx context.Context, from, to string) (any, error) {
 	v, err := c.a.sandboxCopy(ctx, from, to)

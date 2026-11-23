@@ -51,7 +51,8 @@ const (
 	// sandboxExecLimit bounds an exec with no --timeout: the longest time
 	// to live the config allows, and a minute.
 	sandboxExecLimit = 7*24*time.Hour + time.Minute
-	// maxJSONOutput caps each stream an exec with --json (or MCP) keeps.
+	// maxJSONOutput caps each stream an exec with --json keeps (MCP keeps
+	// mcpMaxOutput of the tail).
 	maxJSONOutput = 1 << 20
 )
 
