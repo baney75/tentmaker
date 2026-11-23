@@ -479,10 +479,8 @@ func TestSandboxExecCutOffIsAnError(t *testing.T) {
 	}
 }
 
-// A command whose launch passed Exec's checks before a Stop, and whose unit
-// starts only after Stop found the slice empty, must not outlive the Stop:
-// Stop waits for it and stops the slice again (review sol-F1). A command
-// asked for once Stop has begun is refused.
+// A command whose unit starts after Stop found the slice empty must not
+// outlive the Stop, and one asked for after it is refused (review sol-F1).
 func TestSandboxStopWaitsForALaunchInFlight(t *testing.T) {
 	v := newEnv(t)
 	v.installed(t)
@@ -530,9 +528,6 @@ func TestSandboxStopWaitsForALaunchInFlight(t *testing.T) {
 	}
 	launch := make(chan struct{})
 	streamFn = func(c Cmd, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
-		// Paused between the checks and the unit's start until Stop has
-		// found the slice empty; then the unit starts and runs until the
-		// slice is stopped.
 		close(launch)
 		<-emptyChecked
 		mu.Lock()
@@ -555,19 +550,13 @@ func TestSandboxStopWaitsForALaunchInFlight(t *testing.T) {
 	if err := v.e.Stop(context.Background(), sbx); err != nil {
 		t.Fatal(err)
 	}
-	mu.Lock()
-	stillLive := live
-	mu.Unlock()
-	if stillLive {
+	select {
+	case <-killed:
+	default:
 		t.Fatal("Stop returned while a command it raced still runs in the slice")
 	}
-	select {
-	case err := <-execErr:
-		if err == nil {
-			t.Fatal("a command cut off by Stop reported success")
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("Exec did not return after Stop")
+	if err := <-execErr; err == nil {
+		t.Fatal("a command cut off by Stop reported success")
 	}
 	if _, err := v.e.Exec(context.Background(), sbx, core.SandboxExec{Argv: []string{"true"}}, nil, io.Discard, io.Discard); err == nil || !strings.Contains(err.Error(), "stopping") {
 		t.Fatalf("an Exec after Stop: %v", err)

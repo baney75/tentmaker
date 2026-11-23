@@ -155,10 +155,8 @@ type Executor struct {
 	// job starts; starting names the jobs whose Start is in flight.
 	podMu    sync.Mutex
 	starting map[string]bool
-	// sbxMu guards gates, which order each sandbox's command launches
-	// against its teardown (sandbox.go).
-	sbxMu sync.Mutex
-	gates map[string]*sbxGate
+	sbxMu    sync.Mutex // guards gates (sandbox.go)
+	gates    map[string]*sbxGate
 	// patchMu guards the Actions cache patch state (patch.go).
 	patchMu        sync.Mutex
 	patchFor       string // the template the result is for
