@@ -291,6 +291,7 @@ func TestWhyNotWake(t *testing.T) {
 	}{
 		{"fits", func(w *WakeInfo) {}, time.Hour, ""},
 		{"battery", func(w *WakeInfo) { w.Power = &core.PowerState{Known: true, HasBattery: true, BatteryPercent: 90} }, time.Hour, "on battery"},
+		{"desktop with no AC entry", func(w *WakeInfo) { w.Power = &core.PowerState{Known: true} }, time.Hour, ""},
 		{"power unknown", func(w *WakeInfo) { w.Power = &core.PowerState{} }, time.Hour, "power state was unknown"},
 		{"power unread", func(w *WakeInfo) { w.Power = nil }, time.Hour, "power state was unknown"},
 		{"do not disturb", func(w *WakeInfo) { w.DoNotDisturb = true }, time.Hour, "do not disturb"},

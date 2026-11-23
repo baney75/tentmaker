@@ -405,7 +405,9 @@ func whyNotWake(d knownDevice, now time.Time) string {
 		return "its owner paused it (do not disturb)"
 	case w.Power == nil || !w.Power.Known:
 		return "its power state was unknown when last seen"
-	case !w.Power.OnAC:
+	case w.Power.HasBattery && !w.Power.OnAC:
+		// No battery is mains power, as the budget reads it: many desktops
+		// have no AC supply entry at all (review second-F7).
 		return "it was on battery when last seen"
 	case w.LAN.MAC == "" || w.LAN.Subnet == "":
 		return "it reported no LAN interface"

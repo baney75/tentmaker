@@ -1185,8 +1185,8 @@ A device with a broker and `Options.WakeNeeds` runs the wake loop every 5 s. It 
 until its view is fresh: its first discovery is at least 75 s old and its last one at most 60 s
 old, so a restart doesn't read every device as asleep. For each waiting job, oldest first, it
 picks the most recently seen device that is asleep (not seen in 75 s) and could wake: it sent
-wake facts, has not opted out, is not paused, was on AC power when last seen (battery or unknown
-power is never woken), has a MAC and subnet, is wakeable, fits at least one job, is not in an `off` schedule window now
+wake facts, has not opted out, is not paused, was on AC power when last seen (a device with no
+battery counts as on AC, as the budget reads it; battery or unknown power is never woken), has a MAC and subnet, is wakeable, fits at least one job, is not in an `off` schedule window now
 (`budget.OffAt`, read at the offset it announced; review second-F6), was seen in the last 7 days, has platforms and labels that fit the job, and its rate limit allows. A device
 already woken and not yet back covers up to its `Slots` jobs, so one job wakes one device.
 
