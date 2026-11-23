@@ -97,6 +97,26 @@ func TestSandboxCountsAgainstTheBudget(t *testing.T) {
 	}
 }
 
+// A sandbox removed since the last tick frees its slot for the next one at
+// once: the tick's "every slot in use" is stale, and admission counts live.
+func TestSandboxSlotFreesBeforeTheNextTick(t *testing.T) {
+	r := newRig(t, runnerRepo(repoApp))
+	wr := r.addWorker("w1", 1)
+	r.tick()
+	if _, err := wr.w.StartSandbox(bg, sbxSpec("sbx-000000000001")); err != nil {
+		t.Fatal(err)
+	}
+	r.tick() // decides with the one slot in use
+	_, err := wr.w.StartSandbox(bg, sbxSpec("sbx-000000000002"))
+	noRoom(t, err, "")
+	if err := wr.w.StopSandbox(bg, "sbx-000000000001", "removed"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := wr.w.StartSandbox(bg, sbxSpec("sbx-000000000002")); err != nil {
+		t.Fatalf("a freed slot was refused before the next tick: %v", err)
+	}
+}
+
 func TestSandboxRefusalsFailClosed(t *testing.T) {
 	r := newRig(t)
 	wr := r.addWorker("w1", 2)

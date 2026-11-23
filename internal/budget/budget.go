@@ -164,9 +164,11 @@ func (e *Engine) Decide(ctx context.Context, now time.Time, running int) core.De
 			guards.FormatBytes(d.Limit.MemoryBytes), d.Limit.CPUs, guards.FormatBytes(int64(e.cfg.Job.Memory)), e.cfg.Job.CPUs)
 	}
 
+	open := d.Admit && !d.Evict
 	if running >= d.Slots {
 		d.Admit = false
 		if d.Slots > 0 {
+			d.Full = open
 			why("%d of %d slots in use", running, d.Slots)
 		}
 	}

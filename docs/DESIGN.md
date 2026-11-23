@@ -146,7 +146,8 @@ Safety guards (free memory, free disk) set `Admit=false` (and `Evict=true` for
 `stop_below_disk`). Busy guards (`pause_when_running`, `max_load_per_cpu`) set `Busy`, which
 lowers `boost` to `everyday` and never blocks `everyday`; a busy probe that can't be read counts
 as busy. `Admit` is also false when
-`running >= Slots`. Every downgrade appends a plain reason, like "on battery at 31%, below 40%" or
+`running >= Slots`; when that is the only reason, `Full` is set, and a sandbox create counts the
+slots in use live instead, so a sandbox removed since the last tick frees its slot at once. Every downgrade appends a plain reason, like "on battery at 31%, below 40%" or
 "steam.exe is running". A boost profile with zero memory means "same as everyday".
 
 Power per OS: Linux reads `/sys/class/power_supply/*/{type,online,capacity}` (Mains online, or no

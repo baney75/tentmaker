@@ -74,6 +74,7 @@ type tc struct {
 	slots   int
 	admit   bool
 	evict   bool
+	full    bool
 	reasons []string // each must appear in some reason, in order
 	quiet   bool     // no reasons at all
 }
@@ -272,7 +273,7 @@ func TestDecide(t *testing.T) {
 		{name: "busy load drops boost and full everyday slots refuse", power: desktop, running: 2,
 			cfg:     func(c *config.Config) { c.Guards.MaxLoadPerCPU = 1 },
 			probe:   func(f *guards.Fake) { f.Load = 3 },
-			profile: Everyday, limit: everyday, slots: 2, admit: false,
+			profile: Everyday, limit: everyday, slots: 2, admit: false, full: true,
 			reasons: []string{"load 3.00 per CPU", "reserved everyday budget", "2 of 2 slots in use"}},
 		{name: "busy and low memory still refuses", power: desktop,
 			cfg:     func(c *config.Config) { c.Guards.PauseWhenRunning = []string{"zoom"} },
@@ -290,9 +291,9 @@ func TestDecide(t *testing.T) {
 		{name: "running below slots admits", power: desktop, running: 3,
 			profile: Boost, limit: boost, slots: 4, admit: true, quiet: true},
 		{name: "running equal to slots", power: desktop, running: 4,
-			profile: Boost, limit: boost, slots: 4, admit: false, reasons: []string{"4 of 4 slots in use"}},
+			profile: Boost, limit: boost, slots: 4, admit: false, full: true, reasons: []string{"4 of 4 slots in use"}},
 		{name: "running above slots after a downgrade", power: battery(80), running: 3,
-			profile: Everyday, limit: everyday, slots: 2, admit: false, evict: false, reasons: []string{"3 of 2 slots in use"}},
+			profile: Everyday, limit: everyday, slots: 2, admit: false, evict: false, full: true, reasons: []string{"3 of 2 slots in use"}},
 		{name: "max_slots caps", power: desktop, cfg: func(c *config.Config) { c.Job.MaxSlots = 1 },
 			profile: Boost, limit: boost, slots: 1, admit: true},
 		{name: "cpu bound slots", power: desktop, cfg: func(c *config.Config) { c.Budget.Boost.CPUs = 3 },
@@ -329,6 +330,9 @@ func runCase(t *testing.T, tt tc) {
 		now = noon
 	}
 	d := New(cfg, tt.power, tt.idle, probe).WithLocation(zone).Decide(context.Background(), now, tt.running)
+	if d.Full != tt.full {
+		t.Errorf("full %v, want %v (only full slots may set it)", d.Full, tt.full)
+	}
 	if d.Profile != tt.profile || d.Slots != tt.slots || d.Admit != tt.admit || d.Evict != tt.evict {
 		t.Fatalf("got profile=%s slots=%d admit=%v evict=%v, want %s %d %v %v; reasons %q",
 			d.Profile, d.Slots, d.Admit, d.Evict, tt.profile, tt.slots, tt.admit, tt.evict, d.Reasons)
