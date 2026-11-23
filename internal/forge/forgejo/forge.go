@@ -3,6 +3,7 @@ package forgejo
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sort"
@@ -261,7 +262,7 @@ type apiRepo struct {
 }
 
 // CheckRepo reads visibility, the default branch and what the token and
-// forge can do. Only an unreadable repo is an error.
+// forge can do. Only an unreadable repo or a rate limit is an error.
 func (c *Client) CheckRepo(ctx context.Context, repo string) (core.RepoInfo, error) {
 	rp, err := repoPath(repo)
 	if err != nil {
@@ -294,13 +295,18 @@ func (c *Client) CheckRepo(ctx context.Context, repo string) (core.RepoInfo, err
 	case Forgejo:
 		var discard json.RawMessage
 		if err := c.getJSON(ctx, rp+"/actions/runners", &discard); err != nil {
+			if errors.Is(err, core.ErrRateLimited) {
+				return core.RepoInfo{}, err // says nothing about the token
+			}
 			if statusOf(err) == http.StatusNotFound {
 				info.Problems = append(info.Problems, fmt.Sprintf("%s: this Forgejo has no runner registration API (it needs Forgejo 15 or later); use mode = \"checks\" or upgrade", repo))
 			} else {
 				info.Problems = append(info.Problems, fmt.Sprintf("%s: cannot read the repo's runners: %v", repo, err))
 			}
 		}
-		if _, err := c.forgejoJobs(ctx, rp); err != nil {
+		if _, err := c.forgejoJobs(ctx, rp); errors.Is(err, core.ErrRateLimited) {
+			return core.RepoInfo{}, err
+		} else if err != nil {
 			info.Problems = append(info.Problems, fmt.Sprintf("%s: cannot read waiting jobs: %v", repo, err))
 		}
 	}

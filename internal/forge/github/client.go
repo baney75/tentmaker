@@ -281,16 +281,7 @@ func cleanPath(p string) string {
 
 // RateLimitError is a call refused because the rate limit is used up. It
 // matches core.ErrRateLimited.
-type RateLimitError struct {
-	Until time.Time
-}
-
-func (e *RateLimitError) Error() string {
-	return "github: the API rate limit is used up until " + e.Until.UTC().Format(time.RFC3339)
-}
-
-// Is lets errors.Is(err, core.ErrRateLimited) match.
-func (e *RateLimitError) Is(target error) bool { return target == core.ErrRateLimited }
+type RateLimitError = core.RateLimitError
 
 // checkRate refuses a call, without sending it, while a rate limit answer's
 // wait runs or the primary limit reads 0 before its reset.
@@ -304,7 +295,7 @@ func (c *Client) checkRate() error {
 	}
 	if now.Before(until) {
 		c.stats.RateLimited++
-		return &RateLimitError{Until: until}
+		return &RateLimitError{Forge: "github", Until: until}
 	}
 	return nil
 }
@@ -387,23 +378,33 @@ func (c *Client) noteRate(h http.Header) {
 
 // rateLimited reports whether a 403/429 is a rate limit, and how long to wait.
 func (c *Client) rateLimited(status int, h http.Header, body []byte) (time.Duration, bool) {
+	return RateLimitWait(status, h, body, c.now())
+}
+
+// RateLimitWait reports whether a GitHub answer is a rate limit refusal and
+// how long to wait before trying again. GitHub refuses with 403 or 429. The
+// primary limit says X-RateLimit-Remaining: 0 and resets at
+// X-RateLimit-Reset; a secondary limit says Retry-After, or only "rate
+// limit" in the message, and then the wait is at least a minute. Any other
+// 403 is a permission refusal and is not a rate limit.
+func RateLimitWait(status int, h http.Header, body []byte, now time.Time) (time.Duration, bool) {
 	if status != http.StatusTooManyRequests && status != http.StatusForbidden {
 		return 0, false
 	}
 	if s := h.Get("Retry-After"); s != "" {
-		if n, err := strconv.Atoi(s); err == nil {
-			return time.Duration(n) * time.Second, true
+		if n, err := strconv.Atoi(s); err == nil && n >= 0 {
+			return time.Duration(max(n, 1)) * time.Second, true
 		}
 	}
 	if h.Get("X-RateLimit-Remaining") == "0" {
 		reset, _ := strconv.ParseInt(h.Get("X-RateLimit-Reset"), 10, 64)
-		if d := time.Unix(reset, 0).Sub(c.now()); d > 0 {
+		if d := time.Unix(reset, 0).Sub(now); d > 0 {
 			return d, true
 		}
 		return time.Second, true
 	}
 	if status == http.StatusTooManyRequests || bytes.Contains(bytes.ToLower(body), []byte("rate limit")) {
-		return time.Minute, true
+		return core.RateLimitUnknownWait, true
 	}
 	return 0, false
 }
@@ -418,6 +419,7 @@ func (c *Client) do(ctx context.Context, r request) (response, error) {
 		payload = b
 	}
 	var lastErr error
+	var limited time.Duration // the last answer was a rate limit with this wait
 	for try := 0; try < Tries; try++ {
 		if try > 0 {
 			c.log.Debug("github retry", "method", r.method, "path", cleanPath(r.path), "try", try+1)
@@ -430,6 +432,10 @@ func (c *Client) do(ctx context.Context, r request) (response, error) {
 			return resp, nil
 		}
 		lastErr = err
+		limited = 0
+		if wait > 0 && (resp.status == http.StatusForbidden || resp.status == http.StatusTooManyRequests) {
+			limited = wait // once waits on a 403 or 429 only for a rate limit
+		}
 		if ctx.Err() != nil {
 			return response{}, lastErr
 		}
@@ -443,7 +449,7 @@ func (c *Client) do(ctx context.Context, r request) (response, error) {
 				c.limitedUntil = until
 			}
 			c.mu.Unlock()
-			return response{}, fmt.Errorf("%w (%w)", lastErr, &RateLimitError{Until: until})
+			return response{}, &RateLimitError{Forge: "github", Until: until, Err: lastErr}
 		}
 		if wait < 0 || try == Tries-1 {
 			break
@@ -454,6 +460,11 @@ func (c *Client) do(ctx context.Context, r request) (response, error) {
 		if err := c.sleep(ctx, wait); err != nil {
 			return response{}, lastErr
 		}
+	}
+	if limited > 0 {
+		// Every try was a short rate limit wait: still a rate limit, not
+		// the permission refusal a bare 403 reads as.
+		return response{}, &RateLimitError{Forge: "github", Until: c.now().Add(limited), Err: lastErr}
 	}
 	return response{}, lastErr
 }
@@ -597,6 +608,9 @@ func (c *Client) getJSON(ctx context.Context, path string, conditional bool, v a
 
 func (c *Client) send(ctx context.Context, method, path string, body any, ok ...int) (response, error) {
 	res, err := c.do(ctx, request{method: method, path: path, body: body})
+	if errors.Is(err, core.ErrRateLimited) {
+		return res, err // a rate limited 403 is never the 403 a caller expects
+	}
 	for _, s := range ok {
 		if res.status == s || (err != nil && statusOf(err) == s) {
 			return res, nil

@@ -5,7 +5,10 @@ This file is the contract for `internal/cli`, `internal/daemon`, `internal/contr
 any command change.
 
 Every command that prints takes `--json` and then prints exactly one JSON object on stdout
-(errors too: `{"ok": false, "error": "...", "fix": "..."}`) and nothing else. When stdout is not a
+(errors too: `{"ok": false, "error": "...", "fix": "..."}`) and nothing else. When a forge's rate
+limit refused a call, the error also has `retry_after_s`: wait that many seconds and run the same
+command again. The error then says so ("GitHub rate limit reached for this token; it resets at
+05:18 UTC (in 12 min)") and the fix says the token is fine, never to make a new one. When stdout is not a
 terminal (a pipe, a file, an agent) the object is on one line; on a terminal it is indented, unless
 `TENTMAKER_JSON_ONELINE` is set (the installers set it, since an agent's terminal is often a pty). Every command and subcommand
 takes `--help`, which prints its usage and exits 0. Exit codes: 0 ok, 1 failed,
@@ -39,7 +42,8 @@ tentmaker migrate --pr [PATH] [--platform linux|macos|windows] [--all]
 tentmaker pause [--for DURATION] [REASON...]
 tentmaker resume
 tentmaker doctor [--json]        Every check; with a problem, ends with "first fix: <fix>"
-                                  (`first_fix` in --json).
+                                  (`first_fix` in --json). A forge check a rate limit
+                                  stopped says so and carries `retry_after_s`.
 tentmaker logs [-f] [-n LINES]   The service's own log.
 tentmaker logs JOB-ID [--follow] [-n LINES]
                                   One job's redacted log tail, from whichever device ran it.
@@ -197,9 +201,11 @@ Steps, each reported as one line on a TTY and as an entry in `steps` with `--jso
 3. Forge connection: with `--token-stdin` read it; else unless `--no-gh` run `gh auth token`
    (as `$SUDO_USER` when run under sudo: `sudo -u "$SUDO_USER" gh auth token`); else on a
    TTY print where to make a token (fine-grained, the needed permissions listed by mode)
-   and read it without echo. Store as secret `<forge>-token` (`forgejo-token` keyed by
-   host when a URL is set: `forgejo-<host>-token`). No token is fine: the device becomes a
-   worker that takes work from brokers in its pool.
+   and read it without echo. One API call checks the token before it is stored as secret
+   `<forge>-token` (`forgejo-token` keyed by host when a URL is set: `forgejo-<host>-token`).
+   When that call is rate limited, setup stops here with the reset time and `retry_after_s`,
+   before it saves anything; run the same command after the reset. No token is fine: the
+   device becomes a worker that takes work from brokers in its pool.
 4. Validate and save config (config.Save), then `executor.Install` for this OS. On a Mac the
    Linux guest image is always installed when it fits; the macOS image only when free disk
    covers it with room for a job, or with `--macos-guests`. When it is skipped, the Mac offers

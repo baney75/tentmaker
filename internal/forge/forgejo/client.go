@@ -60,6 +60,10 @@ const (
 	HTTPTimeout = 30 * time.Second
 	// Tries is how many times a request is sent before giving up.
 	Tries = 3
+	// InlineWait is the longest 429 wait a call sleeps through itself; a
+	// longer one fails the call at once with core.ErrRateLimited, so a
+	// rate limit never holds the broker's tick until the reset.
+	InlineWait = 5 * time.Second
 	// RunMaxAge: runs older than this are ignored.
 	RunMaxAge = 24 * time.Hour
 	// MaxDescription caps a commit status description.
@@ -237,7 +241,9 @@ type response struct {
 }
 
 // do sends a request with retries: 3 tries with jittered backoff on 5xx
-// and network errors, a wait on 429; other 4xx are final.
+// and network errors, a wait of at most InlineWait on 429; other 4xx are
+// final. A 429 that asks for longer, or is still there after every try,
+// is a *core.RateLimitError.
 func (c *Client) do(ctx context.Context, method, path string, body any, accept string) (response, error) {
 	var payload []byte
 	if body != nil {
@@ -254,6 +260,9 @@ func (c *Client) do(ctx context.Context, method, path string, body any, accept s
 			return res, nil
 		}
 		lastErr = err
+		if statusOf(err) == http.StatusTooManyRequests && (wait > InlineWait || try == Tries-1) {
+			return response{}, &core.RateLimitError{Forge: "forgejo", Until: c.now().Add(wait), Err: err}
+		}
 		if ctx.Err() != nil || wait < 0 || try == Tries-1 {
 			break
 		}

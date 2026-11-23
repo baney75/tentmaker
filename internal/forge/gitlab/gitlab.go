@@ -375,14 +375,17 @@ func (c *Client) do(ctx context.Context, method, path string, q url.Values, form
 		}
 	}
 	if ra, ok := lastErr.(*retryAfter); ok {
-		return nil, ra.err
+		// Still 429 after every try: the token's rate limit, never a
+		// permission problem.
+		return nil, &core.RateLimitError{Forge: "gitlab", Until: ra.until, Err: ra.err}
 	}
 	return nil, lastErr
 }
 
 type retryAfter struct {
-	err  error
-	wait time.Duration
+	err   error
+	wait  time.Duration // how long to sleep before the next try
+	until time.Time     // when GitLab says the limit resets; zero if it didn't
 }
 
 func (r *retryAfter) Error() string { return r.err.Error() }
@@ -436,7 +439,7 @@ func (c *Client) once(ctx context.Context, method, u, path string, form url.Valu
 	he := &httpError{method: method, path: path, status: res.StatusCode, message: scrub(apiMessage(data), tok)}
 	switch {
 	case res.StatusCode == http.StatusTooManyRequests:
-		return nil, true, &retryAfter{err: he, wait: retryWait(res.Header)}
+		return nil, true, &retryAfter{err: he, wait: retryWait(res.Header), until: rateReset(res.Header, time.Now())}
 	case res.StatusCode >= 500 || res.StatusCode == http.StatusConflict:
 		return nil, true, he
 	}
@@ -479,6 +482,22 @@ func retryWait(h http.Header) time.Duration {
 		}
 	}
 	return backoff(1)
+}
+
+// rateReset is when a 429 says the limit resets: Retry-After seconds from
+// now, else the RateLimit-Reset Unix time. Zero when it says neither.
+func rateReset(h http.Header, now time.Time) time.Time {
+	if s := h.Get("Retry-After"); s != "" {
+		if n, err := strconv.Atoi(s); err == nil && n >= 0 {
+			return now.Add(time.Duration(n) * time.Second)
+		}
+	}
+	if s := h.Get("RateLimit-Reset"); s != "" {
+		if n, err := strconv.ParseInt(s, 10, 64); err == nil && n > 0 {
+			return time.Unix(n, 0)
+		}
+	}
+	return time.Time{}
 }
 
 func backoff(attempt int) time.Duration {

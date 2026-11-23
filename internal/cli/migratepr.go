@@ -368,6 +368,10 @@ func (a *app) openPR(ctx context.Context, pr core.PullRequest) (core.PullRequest
 			cctx, cancel := context.WithTimeout(ctx, prTimeout)
 			res, err := a.env.OpenPR(cctx, tok, pr)
 			cancel()
+			if ce := a.rateLimitFail(err); ce != nil {
+				ce.fix = pushed + ce.fix
+				return res, "gh", ce
+			}
 			if err != nil {
 				return res, "gh", fail(pushed+"check that your gh login can open pull requests on "+pr.Repo+", then run it again",
 					"open the pull request with your gh login: %s", strings.ReplaceAll(err.Error(), tok, "[redacted]"))
