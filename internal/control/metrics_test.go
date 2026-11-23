@@ -143,10 +143,10 @@ func TestProcTCPIdentify(t *testing.T) {
 		return fakeTCPConn{local: server, remote: netip.MustParseAddrPort(client)}
 	}
 	for client, want := range map[string]Caller{
-		"127.0.0.1:50000": {Who: "uid 1000"},
-		"127.0.0.1:50001": {Runner: true, Who: "uid 900"},
-		"127.0.0.1:50002": {Runner: true, Who: "uid 100005"},
-		"127.0.0.1:50003": {Who: "uid 1000"},
+		"127.0.0.1:50000": {Who: "uid 1000", ID: "1000"},
+		"127.0.0.1:50001": {Runner: true, Who: "uid 900", ID: "900"},
+		"127.0.0.1:50002": {Runner: true, Who: "uid 100005", ID: "100005"},
+		"127.0.0.1:50003": {Who: "uid 1000", ID: "1000"},
 	} {
 		c, err := ident(conn(client))
 		if err != nil || c != want {
