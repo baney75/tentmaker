@@ -76,10 +76,11 @@ type WakeInfo struct {
 	Platforms []core.Platform `json:"platforms,omitempty"`
 	// Slots is how many jobs its budget fits when it is plugged in.
 	Slots int `json:"slots"`
-	// Off is its schedule's "off" windows, read at UTCOffsetS seconds east
-	// of UTC, so a peer never wakes it into a window that admits no work
-	// (review second-F6).
-	Off        []config.Window `json:"off,omitempty"`
+	// Schedule is its budget schedule, read at UTCOffsetS seconds east of
+	// UTC, so a peer never wakes it into a window that admits no work
+	// (review second-F6). All of it, in order: the first window that
+	// covers a time wins (review r2 second-S2).
+	Schedule   []config.Window `json:"schedule,omitempty"`
 	UTCOffsetS int             `json:"utc_offset_s,omitempty"`
 }
 
@@ -105,11 +106,13 @@ type WakeRecord struct {
 	// OnlineAfterS is how long the device took to answer after the wake.
 	OnlineAfterS int64 `json:"online_after_s,omitempty"`
 	// Misses counts failed and timed out wakes in a row.
-	Misses int `json:"misses"`
-	// repeats counts wakes in a row for the same job that came online and
-	// didn't take it; they hold the backoff when Misses clear.
-	repeats     int
+	Misses      int       `json:"misses"`
 	NextAllowed time.Time `json:"next_allowed"`
+	// repeats counts wakes in a row for the same queued job (key) that
+	// came online and didn't take it; they hold the backoff when Misses
+	// clear.
+	repeats int
+	key     string
 }
 
 // WakeLog keeps wake records and counters. The daemon makes one and hands
@@ -168,7 +171,7 @@ func (l *WakeLog) pending(now time.Time) []string {
 
 // attempt records a wake of device at now: result is WakeSent or
 // WakeFailed.
-func (l *WakeLog) attempt(device, job, sender, result, errText string, now time.Time) {
+func (l *WakeLog) attempt(device, key, job, sender, result, errText string, now time.Time) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	r := l.recs[device]
@@ -180,14 +183,16 @@ func (l *WakeLog) attempt(device, job, sender, result, errText string, now time.
 	// guard, a schedule it changed): that is a miss too, so the backoff
 	// grows and it isn't woken every wakeEvery all night (review
 	// second-F6). Online for another job, it proved it wakes: start over.
+	// The key, not the job's name: a new run of a job with the same name is
+	// new work (review r2 first-F1).
 	if r.Result == WakeOnline {
-		if r.Job == job {
+		if key != "" && r.key == key {
 			r.repeats++
 		} else {
 			r.repeats = 0
 		}
 	}
-	r.LastWake, r.Job, r.Sender, r.Result, r.Error, r.OnlineAfterS = now, job, sender, result, errText, 0
+	r.LastWake, r.key, r.Job, r.Sender, r.Result, r.Error, r.OnlineAfterS = now, key, job, sender, result, errText, 0
 	if result == WakeFailed {
 		r.Misses++
 	}
@@ -415,7 +420,7 @@ func whyNotWake(d knownDevice, now time.Time) string {
 		return "its adapter can't wake it: " + w.LAN.Note
 	case w.Slots < 1:
 		return "its budget fits no job"
-	case budget.OffAt(w.Off, w.UTCOffsetS, now):
+	case budget.OffAt(w.Schedule, w.UTCOffsetS, now):
 		return "its schedule is off now"
 	case len(w.Platforms) == 0:
 		return "it reported no platforms it can run"
@@ -656,7 +661,7 @@ func (n *Node) wakeDevice(ctx context.Context, d knownDevice, need WakeNeed, now
 	if self := n.selfWakeInfo(); self != nil && n.o.Sender != nil && SameSubnet(self.LAN.Subnet, d.Wake.LAN.Subnet) {
 		_, err := n.sendWake(ctx, d.Device, "for "+need.Job)
 		if err == nil {
-			n.wakes.attempt(d.Device, need.Job, n.o.Device, WakeSent, "", now)
+			n.wakes.attempt(d.Device, need.Key, need.Job, n.o.Device, WakeSent, "", now)
 			return true
 		}
 		errs = append(errs, n.o.Device+": "+err.Error())
@@ -685,7 +690,7 @@ func (n *Node) wakeDevice(ctx context.Context, d knownDevice, need WakeNeed, now
 		cancel()
 		n.record(p.id, err, time.Since(start))
 		if err == nil {
-			n.wakes.attempt(d.Device, need.Job, p.hello.Device, WakeSent, "", now)
+			n.wakes.attempt(d.Device, need.Key, need.Job, p.hello.Device, WakeSent, "", now)
 			return true
 		}
 		errs = append(errs, p.hello.Device+": "+err.Error())
@@ -698,7 +703,7 @@ func (n *Node) wakeDevice(ctx context.Context, d knownDevice, need WakeNeed, now
 		}
 	}
 	n.log.Warn("mesh: can't wake a sleeping device", "device", d.Device, "job", need.Job, "err", msg)
-	n.wakes.attempt(d.Device, need.Job, "", WakeFailed, msg, now)
+	n.wakes.attempt(d.Device, need.Key, need.Job, "", WakeFailed, msg, now)
 	return false
 }
 

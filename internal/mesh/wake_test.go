@@ -302,10 +302,15 @@ func TestWhyNotWake(t *testing.T) {
 		{"no platforms", func(w *WakeInfo) { w.Platforms = nil }, time.Hour, "no platforms"},
 		// now is 08:00 UTC. An off night that ends at 07:00 UTC has ended;
 		// read five hours west it is 03:00 there, inside it (review second-F6).
-		{"off window over", func(w *WakeInfo) { w.Off = []config.Window{{From: "22:00", To: "07:00", Profile: "off"}} }, time.Hour, ""},
+		{"off window over", func(w *WakeInfo) { w.Schedule = []config.Window{{From: "22:00", To: "07:00", Profile: "off"}} }, time.Hour, ""},
 		{"off window now", func(w *WakeInfo) {
-			w.Off, w.UTCOffsetS = []config.Window{{From: "22:00", To: "07:00", Profile: "off"}}, -5*3600
+			w.Schedule, w.UTCOffsetS = []config.Window{{From: "22:00", To: "07:00", Profile: "off"}}, -5*3600
 		}, time.Hour, "schedule is off"},
+		// The first window that covers now wins: an everyday window ahead of
+		// an all-day off one admits work (review r2 second-S2).
+		{"earlier window wins", func(w *WakeInfo) {
+			w.Schedule = []config.Window{{From: "06:00", To: "10:00", Profile: "everyday"}, {From: "00:00", To: "00:00", Profile: "off"}}
+		}, time.Hour, ""},
 		{"stale", func(w *WakeInfo) {}, 8 * 24 * time.Hour, "7 days"},
 	}
 	for _, c := range cases {
@@ -494,8 +499,8 @@ func TestHelloCarriesWakeInfo(t *testing.T) {
 func TestRepeatWakeForTheSameJobBacksOff(t *testing.T) {
 	l := NewWakeLog()
 	now := time.Unix(1_800_000_000, 0)
-	wake := func(job string) time.Duration {
-		l.attempt("desk", job, "broker", WakeSent, "", now)
+	wake := func(key string) time.Duration {
+		l.attempt("desk", key, "acme/w: build", "broker", WakeSent, "", now)
 		at := now.Add(time.Minute) // it comes online, then sleeps again
 		l.settle(at, func(string) time.Time { return at })
 		got := l.recs["desk"].NextAllowed.Sub(now)
@@ -503,12 +508,13 @@ func TestRepeatWakeForTheSameJobBacksOff(t *testing.T) {
 		return got
 	}
 	for i, want := range []time.Duration{10 * time.Minute, 20 * time.Minute, 40 * time.Minute, 80 * time.Minute} {
-		if got := wake("acme/w: build"); got != want {
-			t.Fatalf("wake %d for the same job: next in %v, want %v", i, got, want)
+		if got := wake("run-1"); got != want {
+			t.Fatalf("wake %d for the same queued job: next in %v, want %v", i, got, want)
 		}
 	}
-	if got := wake("acme/w: test"); got != wakeEvery {
-		t.Fatalf("a wake for another job: next in %v, want %v", got, wakeEvery)
+	// A new run of a job with the same name is new work (review r2 first-F1).
+	if got := wake("run-2"); got != wakeEvery {
+		t.Fatalf("a wake for a new run of the same job: next in %v, want %v", got, wakeEvery)
 	}
 }
 

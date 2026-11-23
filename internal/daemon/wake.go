@@ -3,7 +3,6 @@ package daemon
 import (
 	"context"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/baney75/tentmaker/internal/budget"
@@ -23,11 +22,7 @@ func (d *Daemon) wakeInfo(ctx context.Context) mesh.WakeInfo {
 		Labels: dispatch.WorkerLabels(cfg.Device, cfg.Labels),
 		Slots:  budget.PluggedSlots(cfg),
 	}
-	for _, w := range cfg.Budget.Schedule {
-		if strings.EqualFold(w.Profile, budget.Off) {
-			info.Off = append(info.Off, w)
-		}
-	}
+	info.Schedule = slices.Clone(cfg.Budget.Schedule)
 	_, info.UTCOffsetS = time.Now().Zone()
 	if lan, err := d.o.LAN(); err != nil {
 		info.LANError = err.Error()
