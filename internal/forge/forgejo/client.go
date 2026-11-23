@@ -115,11 +115,15 @@ type Client struct {
 	token    string
 	flavor   string
 	runs     map[string]runInfo // "repo#id" -> run details
+	// limitedUntil: a 429 said to wait this long; calls fail fast with a
+	// *core.RateLimitError until then instead of asking again.
+	limitedUntil time.Time
 }
 
 var (
 	_ core.Forge       = (*Client)(nil)
 	_ core.StatusForge = (*Client)(nil)
+	_ core.PollPacer   = (*Client)(nil)
 )
 
 // New returns a Client.
@@ -253,6 +257,12 @@ func (c *Client) do(ctx context.Context, method, path string, body any, accept s
 		}
 		payload = b
 	}
+	c.mu.Lock()
+	until := c.limitedUntil
+	c.mu.Unlock()
+	if c.now().Before(until) {
+		return response{}, &core.RateLimitError{Forge: "forgejo", Until: until}
+	}
 	var lastErr error
 	for try := 0; try < Tries; try++ {
 		res, wait, err := c.once(ctx, method, path, payload, accept)
@@ -261,7 +271,16 @@ func (c *Client) do(ctx context.Context, method, path string, body any, accept s
 		}
 		lastErr = err
 		if statusOf(err) == http.StatusTooManyRequests && (wait > InlineWait || try == Tries-1) {
-			return response{}, &core.RateLimitError{Forge: "forgejo", Until: c.now().Add(wait), Err: err}
+			if wait <= 0 {
+				wait = core.RateLimitUnknownWait
+			}
+			until := c.now().Add(wait)
+			c.mu.Lock()
+			if until.After(c.limitedUntil) {
+				c.limitedUntil = until
+			}
+			c.mu.Unlock()
+			return response{}, &core.RateLimitError{Forge: "forgejo", Until: until, Err: err}
 		}
 		if ctx.Err() != nil || wait < 0 || try == Tries-1 {
 			break
@@ -274,6 +293,17 @@ func (c *Client) do(ctx context.Context, method, path string, body any, accept s
 		}
 	}
 	return response{}, lastErr
+}
+
+// PollDelay implements core.PollPacer: while a 429's wait runs, the broker
+// waits it out instead of polling into the limit every tick.
+func (c *Client) PollDelay() time.Duration {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if d := c.limitedUntil.Sub(c.now()); d > 0 {
+		return d
+	}
+	return 0
 }
 
 func (c *Client) once(ctx context.Context, method, path string, payload []byte, accept string) (response, time.Duration, error) {

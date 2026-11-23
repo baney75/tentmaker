@@ -48,3 +48,40 @@ func TestRateLimitShortWaitsExhausted(t *testing.T) {
 		t.Fatalf("slept %v", h.sleeps)
 	}
 }
+
+// After a 429 with a long wait, calls before the reset send nothing and
+// PollDelay tells the broker to wait it out, as GitHub's client does; after
+// the reset the client asks again.
+func TestRateLimitRemembered(t *testing.T) {
+	h := newHarness(t, Forgejo)
+	path := "/repos/acme/app/actions/runners/5"
+	h.f.on("GET", path, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "3600")
+		w.WriteHeader(http.StatusTooManyRequests)
+	})
+	if d := h.c.PollDelay(); d != 0 {
+		t.Fatalf("PollDelay before any limit = %v", d)
+	}
+	if _, err := h.c.Runner(context.Background(), "acme/app", 5); !errors.Is(err, core.ErrRateLimited) {
+		t.Fatalf("first call: %v", err)
+	}
+	_, err := h.c.Runner(context.Background(), "acme/app", 5)
+	var rl *core.RateLimitError
+	if !errors.As(err, &rl) || !rl.Until.Equal(t0.Add(time.Hour)) {
+		t.Fatalf("second call: %v", err)
+	}
+	if n := h.f.count("GET", path); n != 1 {
+		t.Fatalf("second call before the reset sent a request: %d requests", n)
+	}
+	if d := h.c.PollDelay(); d != time.Hour {
+		t.Fatalf("PollDelay = %v, want 1h", d)
+	}
+	h.c.now = func() time.Time { return t0.Add(time.Hour) }
+	if d := h.c.PollDelay(); d != 0 {
+		t.Fatalf("PollDelay after the reset = %v", d)
+	}
+	h.c.Runner(context.Background(), "acme/app", 5)
+	if n := h.f.count("GET", path); n != 2 {
+		t.Fatalf("call after the reset was not sent: %d requests", n)
+	}
+}
