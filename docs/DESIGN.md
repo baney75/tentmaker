@@ -88,6 +88,7 @@ scripts/install.ps1       Windows installer
 // budget
 func New(cfg config.Config, power core.PowerSource, idle core.IdleSource, probe guards.Probe) *Engine
 func (e *Engine) Decide(ctx context.Context, now time.Time, running int) core.Decision // implements core.Budgeter
+func PluggedSlots(cfg config.Config) int // jobs that fit when plugged in with no guard: max(everyday, boost) slots
 
 // power
 func New() core.PowerSource          // per-OS, build tags
@@ -737,6 +738,10 @@ type BrokerOptions struct {
 func NewBroker(o BrokerOptions) *Broker      // implements core.WorkSource
 func (b *Broker) Run(ctx context.Context) error   // poll loop: queued jobs cache, runner monitoring
 func (b *Broker) Status() BrokerStatus
+func (b *Broker) Waiting() []WaitingJob          // queued jobs no awake device takes, for Wake-on-LAN
+type WaitingJob struct { Key, Repo, Name string; Labels []string; Since time.Time }
+func (j WaitingJob) Fits(base []string, platforms []core.Platform) bool   // MatchJob
+const WakeAfter = 15 * time.Second
 
 type WorkerOptions struct {
     Config    config.Config
@@ -856,6 +861,16 @@ as a `worker` problem (review r1 partA sol-F2).
 written to `state.json` and holds its slot and memory from the moment it is accepted; it is
 reported in `Running` only once `Start` returns, so the broker's start grace still covers it.
 A stop asked for while it starts waits for `Start` to return (review r1 partA sol-F4).
+
+`Waiting` lists the jobs a sleeping device could be woken for. A runner-mode job is listed when
+it is queued at the forge, not refused (a job or repo refusal), not taken, not covered by a live
+grant with its labels, and has waited `WakeAfter` (15 s) since it was queued or the broker
+started, whichever is later. A checks-mode job is listed when it is planned with no status (or
+its retry is open), not taken, and was first seen waiting `WakeAfter` ago; its labels are
+`tentmaker` plus its platform labels. Either way a job is left out while an online,
+unquarantined device that asked for work in the last 30 s has a free slot and labels that fit it:
+that device will take it, so waking another would waste power. The broker keeps the labels and
+platforms of each device's last `Work` request in memory for this. The list is oldest first.
 
 ## Sandboxes (internal/sandbox)
 
@@ -1079,6 +1094,11 @@ type Options struct {
     Status    func() any                         // this device's status for pool views
     Views     http.Handler                       // GET /metrics, / and /status of this device alone; nil serves 404
     Log       *slog.Logger
+    Wake      func(ctx context.Context) WakeInfo // this device's Wake-on-LAN facts; nil = none announced
+    Sender    Sender                             // sends magic packets; nil = this device sends none
+    WakeNeeds func() []WakeNeed                  // jobs no awake device takes; nil = no wake loop
+    WakeLog   *WakeLog                           // records and counters, owned by the daemon across rebuilds
+    StateDir  string                             // keeps mesh-devices.json, the known pool devices
 }
 func New(o Options) *Node
 func (n *Node) Run(ctx context.Context) error    // serve the peer API on this device's tailnet IPs only
@@ -1086,6 +1106,17 @@ func (n *Node) Brokers(ctx context.Context) []core.WorkSource   // remote broker
 func (n *Node) Claim(...) / Release(...)          // implements core.Claimer across brokers
 func (n *Node) Pool(ctx context.Context) ([]DeviceStatus, error)
 func RemoteInstall(ctx context.Context, host string, args InstallArgs) error  // over `tailscale ssh`
+func (n *Node) WakeTick(ctx context.Context)     // one wake decision pass; Run calls it every 5 s
+func (n *Node) WakeStatus() WakeStatus           // status --json "wake"
+
+type LAN struct { Interface, MAC, Subnet, Broadcast string; Wired, Wakeable bool; Note string }
+func ProbeLAN() (LAN, error)                     // this host's best LAN interface
+type Sender interface { Send(ctx context.Context, mac net.HardwareAddr, broadcast netip.Addr) error }
+type UDPSender struct{}                          // UDP to broadcast:9 (WakePort), 3 s timeout
+func MagicPacket(mac net.HardwareAddr) ([]byte, error)   // 6 x 0xFF, then the MAC 16 times
+type WakeInfo struct { LAN *LAN; LANError string; OptOut, DoNotDisturb bool
+    Power *core.PowerState; Labels []string; Platforms []core.Platform; Slots int }
+type WakeNeed struct { Key, Job string; Since time.Time; Fits func([]string, []core.Platform) bool }
 ```
 
 Peer API (HTTP on the tailnet address, `mesh.port`, default 7433). Every request's remote
@@ -1129,6 +1160,55 @@ the self checks still run first. The views the mesh serves (`daemon.LocalViews`)
 device's own status, counters and history alone, never a peer's: a caller this device admits
 (a viewer, a member) may not be one its peers admit, so relaying their data would widen their
 access.
+
+### Wake-on-LAN
+
+A sleeping device drops out of discovery, so the pool has to remember it to wake it. At join and
+on every 30 s discovery (the heartbeat) each device reads `Options.Wake` and announces the answer
+in its `/v1/hello` (`wake`, absent on an older Tentmaker). The daemon fills it: the LAN interface
+from `ProbeLAN`, power from the budget's power source, `OptOut` from `mesh.wake = false`,
+`DoNotDisturb` while `tentmaker pause` holds the worker, its worker labels and executor platforms,
+and `budget.PluggedSlots`. `ProbeLAN` keeps interfaces that are up, broadcast capable, not
+loopback or point to point, with a globally administered unicast MAC and a private IPv4 address
+(/8 to /30), and prefers wired, then wakeable. On Linux an interface is physical when
+`/sys/class/net/<if>/device` exists, wireless when it has `wireless` or `phy80211`, and wakeable
+only when `device/power/wakeup` reads `enabled` (a missing file is not wakeable; the note says to
+run `ethtool -s <if> wol g`). macOS and Windows have no standard check, so they are assumed
+wakeable and say so in the note; `mesh.wake = false` opts out.
+
+Every device keeps each pool device it has heard from in `<state_dir>/mesh-devices.json` (stable
+node ID, name, wake facts, last seen), written with `config.WriteAtomic` after each discovery
+that changed it and at least every 10 minutes, and pruned after 30 days unseen. A name two nodes
+announce, or this device's own, is not recorded.
+
+A device with a broker and `Options.WakeNeeds` runs the wake loop every 5 s. It decides nothing
+until its view is fresh: its first discovery is at least 75 s old and its last one at most 60 s
+old, so a restart doesn't read every device as asleep. For each waiting job, oldest first, it
+picks the most recently seen device that is asleep (not seen in 75 s) and could wake: it sent
+wake facts, has not opted out, is not paused, was on AC power when last seen (battery or unknown
+power is never woken), has a MAC and subnet, is wakeable, fits at least one job, was seen in the
+last 7 days, has platforms and labels that fit the job, and its rate limit allows. A device
+already woken and not yet back covers up to its `Slots` jobs, so one job wakes one device.
+
+Rate limits: at most one wake per device per 10 minutes. A device that is not seen again within
+3 minutes of a sent wake records `timeout`, and its next wake waits 10 minutes doubled per miss in
+a row, at most 4 hours; seeing it again records `online` and clears the misses.
+
+To send, the deciding device uses its own UDP sender when it shares the sleeper's subnet;
+otherwise it posts `POST /v1/wake {device}` to up to 3 awake peers on that subnet, fastest first.
+The peer handler checks the caller is a known pool device (403 otherwise) and takes only a device
+name: it reads the MAC from its own known table and sends to its own LAN's broadcast address, so
+a remote request can never aim a packet at an arbitrary MAC or network. It refuses (409, with the
+reason) a device it can't wake by the rules above or one on another subnet, answers 502 with no
+detail when the send fails, and otherwise 200 `{sent, already}`. The sender keeps its own 10
+minute limit per device, so two brokers asking for one device send one packet (`already`). A
+failed send does not use up the limit.
+
+Results per device, in `status --json` under `wake` (`WakeStatus`: this device's LAN, its opt-out,
+each known device with `awake`, `can_wake`, `why` and the last `WakeRecord`: time, result,
+sender, job, error, seconds until online, misses, next allowed) and as counts: `sent`, `failed`
+(no awake device shares its LAN, or every sender failed), then `online` or `timeout` for each one
+sent. The `WakeLog` lives as long as the daemon, so a mesh rebuild keeps the counts.
 
 ## Metrics and status page (internal/observe)
 
@@ -1179,6 +1259,8 @@ the views follow the `status --json` contract). The job counters come from `obse
   `_forge_api_requests_total`, `_billed_total`, `_not_modified_total`, `_rate_limited_total`,
   `_forge_api_rate_remaining` and `_rate_limit` (only when the forge said), and
   `_rate_reset_timestamp_seconds`.
+- On a device with a mesh node: `tentmaker_wakes_total{device,result}` (counter, `result` is
+  `sent`, `failed`, `online` or `timeout`; `device` is this device, which decided the wakes).
 - Job counters: `tentmaker_jobs_finished_total{result}`,
   `tentmaker_job_start_latency_seconds` (histogram, queued at the forge to running; buckets 1, 2,
   5, 10, 15, 30, 60, 120, 300 and 600 s), `tentmaker_cache_jobs_total{cache,result}` (`cache` is

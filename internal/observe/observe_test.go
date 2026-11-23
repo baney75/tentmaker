@@ -622,3 +622,20 @@ func TestMetricsBuildCache(t *testing.T) {
 		}
 	}
 }
+
+func TestMetricsWakeCounter(t *testing.T) {
+	s := studio()
+	all := parseText(t, string(Metrics(MetricsInput{Now: fixtureNow, Self: s})))
+	for _, x := range all {
+		if x.name == "tentmaker_wakes_total" {
+			t.Fatal("wakes reported with no mesh node")
+		}
+	}
+	s.Wake = &mesh.WakeStatus{Counts: map[string]int64{mesh.WakeSent: 3, mesh.WakeOnline: 2, mesh.WakeTimeout: 1}}
+	all = parseText(t, string(Metrics(MetricsInput{Now: fixtureNow, Self: s})))
+	for r, want := range map[string]float64{mesh.WakeSent: 3, mesh.WakeFailed: 0, mesh.WakeOnline: 2, mesh.WakeTimeout: 1} {
+		if got := value(t, all, "tentmaker_wakes_total", "result", r); got != want {
+			t.Errorf("wakes %s = %v, want %v", r, got, want)
+		}
+	}
+}

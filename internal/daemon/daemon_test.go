@@ -193,6 +193,8 @@ func (r *rig) launch() {
 		},
 		Secrets:         r.store,
 		Tailscale:       r.ts,
+		LAN:             func() (mesh.LAN, error) { return mesh.LAN{}, errors.New("no LAN in tests") },
+		WakeSender:      noSender{},
 		ControlAddr:     "127.0.0.1:0",
 		Identify:        func(net.Conn) (control.Caller, error) { return control.Caller{Who: "uid 1000"}, nil },
 		RelayAddr:       "127.0.0.1:0",
@@ -797,4 +799,11 @@ func TestDaemonServesActionsCache(t *testing.T) {
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("the control API answered a cache path with %d", resp.StatusCode)
 	}
+}
+
+// noSender refuses every magic packet: no daemon test sends one.
+type noSender struct{}
+
+func (noSender) Send(context.Context, net.HardwareAddr, netip.Addr) error {
+	return errors.New("tests send no magic packets")
 }

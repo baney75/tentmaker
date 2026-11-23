@@ -151,6 +151,7 @@ How devices on one tailnet form a pool.
 | `mesh.port` | int | `7433` | The peer API port, served on tailnet addresses only. 0 to 65535. |
 | `mesh.members` | list of strings | `[]` | Tailnet logins served besides your own. Devices owned by the same tailnet user are always served. Add `"tagged-devices"` to serve tagged devices. |
 | `mesh.viewers` | list of strings | `[]` | Tailnet nodes that may read this device's `/metrics` and status page (`/` and `/status`) on the peer API and nothing else: `"tag:monitoring"`, a MagicDNS name like `"grafana"`, or a stable node ID. They get no work, runs, logs or control. |
+| `mesh.wake` | bool | `true` | Let the pool wake this device with Wake-on-LAN when a queued job fits it and no awake device can take it. A device on battery or paused (`tentmaker pause`) is never woken. Wake-on-LAN must also be on in the firmware and, on Linux, the network card (`ethtool -s <if> wol g`); `status --json` shows under `wake` whether the pool can wake it and why not. `false` opts out. |
 
 ## `[[alerts]]`
 
