@@ -218,8 +218,8 @@ Steps, each reported as one line on a TTY and as an entry in `steps` with `--jso
 `preflight`, `user`, `dirs`, `runner`, `files`, `net`, `user-manager`, `podman`, `podman.info`,
 `runner.wait`, `baseline`, where the actions/runner download starts at `runner`, overlaps the
 phases after it, and `runner.wait` is what is left of it;
-macOS: `preflight`, `tart`, `softnet`, `vms`, `images`; Windows: `preflight`, `dirs`, `runner`,
-`user`, `net`, `files`, `runner.wait`), `service.install`, `service.wait`, `doctor`, and `pr` with `--pr`.
+macOS: `preflight`, `tart`, `softnet`, `vms`, `images`; Windows: `preflight`, `dirs`, `user`,
+`net`, `files`, `runner`), `service.install`, `service.wait`, `doctor`, and `pr` with `--pr`.
 The human output ends with `setup took N s`.
 
 The one line that takes a checkout from nothing to a pull request:

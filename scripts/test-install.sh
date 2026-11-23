@@ -158,7 +158,8 @@ check_shell() {
 		# run: zsh once passed "env SSH_AUTH_SOCK=..." to sudo as one word.
 		TM_AGENT=/tmp/agent.sock run "$s" "$good" --yes -- --repo owner/name
 		case $rc:$(cat "$TM_SUDO_LOG" 2>/dev/null) in
-			"0:-n env SSH_AUTH_SOCK=/tmp/agent.sock $prefix/tentmaker setup --yes"*) [ -s "$TM_SETUP_LOG" ] && ok "$s: keeps the ssh-agent socket through sudo" || bad "$s: agent socket: setup did not run: $out" ;;
+			"0:-n env SSH_AUTH_SOCK=/tmp/agent.sock $prefix/tentmaker setup --yes"*)
+				if [ -s "$TM_SETUP_LOG" ]; then ok "$s: keeps the ssh-agent socket through sudo"; else bad "$s: agent socket: setup did not run: $out"; fi ;;
 			*) bad "$s: agent socket not passed: rc=$rc, sudo called as [$(cat "$TM_SUDO_LOG" 2>/dev/null)]: $out" ;;
 		esac
 	fi

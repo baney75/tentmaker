@@ -141,19 +141,6 @@ func Install(ctx context.Context, o Options) error {
 			return err
 		}
 	}
-	// The runner download is network-bound and needs only the directories
-	// above, so it overlaps the user, the network rules and the files.
-	e.phase("runner")
-	runnerCtx, cancelRunner := context.WithCancel(ctx)
-	runnerErr := make(chan error, 1)
-	go func() { runnerErr <- e.installRunner(runnerCtx, pin) }()
-	runnerDone := false
-	defer func() {
-		cancelRunner()
-		if !runnerDone {
-			<-runnerErr
-		}
-	}()
 	e.phase("user")
 	sid, err := e.installUser()
 	if err != nil {
@@ -192,9 +179,8 @@ func Install(ctx context.Context, o Options) error {
 		os.Remove(tmp)
 		return err
 	}
-	e.phase("runner.wait")
-	runnerDone = true
-	if err := <-runnerErr; err != nil {
+	e.phase("runner")
+	if err := e.installRunner(ctx, pin); err != nil {
 		return err
 	}
 	e.log.Info("installed", "executor", Name, "runner", pin.Version, "arch", e.arch)

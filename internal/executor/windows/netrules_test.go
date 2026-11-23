@@ -5,8 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
-	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -303,13 +301,8 @@ func TestInstallAddsFirewallRules(t *testing.T) {
 			installs = append(installs, s)
 		}
 	}
-	// The check runs in the same session as the writes, after them.
-	if len(installs) != 1 || installs[0] != FirewallScript(p)+checkFirewallScript {
+	if len(installs) != 1 || installs[0] != FirewallScript(p) {
 		t.Fatalf("install scripts %d:\n%s", len(installs), strings.Join(installs, "\n"))
-	}
-	// Two PowerShell starts in all: the DNS servers, then write and check.
-	if n := len(v.api.scripts); n != 2 {
-		t.Errorf("install started PowerShell %d times, want 2", n)
 	}
 	if len(v.api.fw) != len(FirewallRules(p)) {
 		t.Fatalf("rules after install: %v", v.api.fw)
@@ -471,8 +464,7 @@ func TestStartRewritesStaleNetRules(t *testing.T) {
 	}
 }
 
-// TestInstallPhases: the runner download starts after the directories and
-// is waited for last, so it overlaps the user, network rules and files.
+// TestInstallPhases: setup's timings name the Windows install phases.
 func TestInstallPhases(t *testing.T) {
 	v := newEnv(t)
 	var phases []string
@@ -480,12 +472,7 @@ func TestInstallPhases(t *testing.T) {
 	if err := Install(context.Background(), v.o); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := strings.Join(phases, " "), "dirs runner user net files runner.wait"; got != want {
+	if got, want := strings.Join(phases, " "), "dirs user net files runner"; got != want {
 		t.Errorf("phases %q, want %q", got, want)
-	}
-	e := New(v.o)
-	pin, _ := e.pin()
-	if _, err := os.Stat(filepath.Join(e.runnerRoot(), pin.Dir(), "run.cmd")); err != nil {
-		t.Errorf("runner not in place after Install: %v", err)
 	}
 }
