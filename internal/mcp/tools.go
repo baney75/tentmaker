@@ -220,6 +220,11 @@ func window(v any) error {
 	return nil
 }
 
+// MaxSandboxTimeoutS bounds sandbox_exec's timeout_s: seven days, longer
+// than any sandbox may live. A fraction is refused, never truncated: 0.5
+// would become 0, which means no limit.
+const MaxSandboxTimeoutS = 7 * 24 * 3600
+
 func between(lo, hi float64) func(any) error {
 	return func(v any) error {
 		f := v.(float64)
@@ -579,13 +584,8 @@ var tools = []tool{
 			{Name: "id", Type: "string", Required: true, Description: "The sandbox id from sandbox_create.", Check: sandboxID},
 			{Name: "command", Type: "array", Required: true, Description: "The program and its arguments.", Check: command},
 			{Name: "dir", Type: "string", Description: "The folder to run in, relative to the work folder and inside it (default: the work folder)."},
-			{Name: "timeout_s", Type: "number", Description: "Stop the command after this many seconds; omit to run until the sandbox expires.",
-				Check: func(v any) error {
-					if f := v.(float64); f < 0 || math.IsInf(f, 0) || math.IsNaN(f) {
-						return fmt.Errorf("must be 0 or more")
-					}
-					return nil
-				}},
+			{Name: "timeout_s", Type: "number", Description: "Stop the command after this many whole seconds (1 to 604800); omit or pass 0 to run until the sandbox expires.",
+				Check: between(0, MaxSandboxTimeoutS)},
 			{Name: "stdin", Type: "string", Description: "Text to pass on stdin."},
 		},
 		run: func(ctx context.Context, c Controller, a args) (any, error) {

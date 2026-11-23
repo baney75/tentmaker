@@ -92,7 +92,7 @@ claude mcp add tentmaker -- tentmaker mcp
 | `why_failed` | no | Why a job failed, small: failed step, up to 5 failing tests with messages, the log around the first error, a flaky verdict. Pass `id`, or `repo` with `sha` or `run_id`. |
 | `debug_exec` | yes, in the kept sandbox | Run one `command` in a failed job's kept sandbox on this device: `id`, `timeout_s` (default 60, at most 600), `max_bytes` (default 65536, at most 1 MiB). Returns `exit_code`, `output`, `truncated`, `timed_out`. |
 | `sandbox_create` | starts a sandbox | A throwaway machine on this device: `os`, `cpus`, `memory`, `ttl` (default 30m), `copy_dir` (an absolute local folder to put in its work folder). Returns its `id`. |
-| `sandbox_exec` | in the sandbox | Run `command` (an argv array) in sandbox `id`, with optional `dir`, `timeout_s` and `stdin`. Returns `exit_code`, `stdout` and `stderr` (each capped at 1 MiB). |
+| `sandbox_exec` | in the sandbox | Run `command` (an argv array) in sandbox `id`, with optional `dir`, `timeout_s` (whole seconds; omit to run until the sandbox expires) and `stdin`. Returns `exit_code`, `stdout` and `stderr` (each capped at 1 MiB). |
 | `sandbox_cp` | in the sandbox or locally | Copy `from` to `to`; one of them is `ID:PATH`. |
 | `sandbox_ls` | no | Your sandboxes, with their size and when they expire. |
 | `sandbox_rm` | ends the sandbox | Remove a sandbox now. |

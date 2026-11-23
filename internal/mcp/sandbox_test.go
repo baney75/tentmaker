@@ -140,3 +140,28 @@ func TestSandboxToolsRefuseInexactIDs(t *testing.T) {
 		t.Fatalf("a tool ran with a bad id: %s", fc.last())
 	}
 }
+
+// timeout_s 0.5 used to pass and truncate to 0, which means no limit.
+func TestSandboxExecTimeoutIsWholeSeconds(t *testing.T) {
+	fc := &fakeSandboxes{}
+	s, _ := start(t, fc)
+	id := 1
+	exec := func(timeout any) (*rpcError, string) {
+		id++
+		_, rerr := s.tool(id, "sandbox_exec", map[string]any{"id": "sbx-0123456789ab", "command": []any{"true"}, "timeout_s": timeout})
+		return rerr, fc.last()
+	}
+	for _, bad := range []any{0.5, 0.0001, 1.5, -1.0, -0.5, 1e300, float64(MaxSandboxTimeoutS + 1)} {
+		before := fc.last()
+		rerr, last := exec(bad)
+		if rerr == nil || !strings.Contains(rerr.Message, "whole number") || last != before {
+			t.Errorf("timeout_s %v: error %+v, call %q", bad, rerr, last)
+		}
+	}
+	for _, good := range []float64{0, 1, 30, MaxSandboxTimeoutS} {
+		rerr, last := exec(good)
+		if rerr != nil || !strings.Contains(last, fmt.Sprintf(` "" %g ""`, good)) {
+			t.Errorf("timeout_s %v: error %+v, call %q", good, rerr, last)
+		}
+	}
+}

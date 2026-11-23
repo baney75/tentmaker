@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"strings"
 	"time"
 
@@ -325,6 +326,11 @@ func (c controller) SandboxCreate(ctx context.Context, os, device string, cpus f
 }
 
 func (c controller) SandboxExec(ctx context.Context, id string, argv []string, dir string, timeoutS float64, stdin string) (any, error) {
+	// The tool checks this too; a fraction or a negative must never reach
+	// the request, where 0.5 would truncate to 0, which means no limit.
+	if timeoutS < 0 || timeoutS > mcp.MaxSandboxTimeoutS || timeoutS != math.Trunc(timeoutS) {
+		return nil, fmt.Errorf("timeout_s must be a whole number from 0 to %d, not %g", mcp.MaxSandboxTimeoutS, timeoutS)
+	}
 	var in io.Reader
 	if stdin != "" {
 		in = strings.NewReader(stdin)
