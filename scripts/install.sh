@@ -49,7 +49,8 @@ json_str() {
 	printf '"%s"' "$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g' | tr '\n\t\r' '   ')"
 }
 
-# die MESSAGE [FIX]
+# die MESSAGE [FIX]. The JSON line goes to fd 3, main's stdout, so a die
+# inside $(...) still reaches the caller.
 die() {
 	printf 'tentmaker-install: error: %s\n' "$1" >&2
 	tm_fix=
@@ -58,7 +59,7 @@ die() {
 		tm_fix=$2
 	fi
 	if [ "$tm_json" = 1 ] && [ "$tm_setup_ran" = 0 ]; then
-		printf '{"ok":false,"error":%s,"fix":%s}\n' "$(json_str "$1")" "$(json_str "$tm_fix")"
+		printf '{"ok":false,"error":%s,"fix":%s}\n' "$(json_str "$1")" "$(json_str "$tm_fix")" >&3
 	fi
 	exit 1
 }
@@ -169,7 +170,23 @@ quote_args() {
 	done
 }
 
+# run_setup CMD...: run setup, setting tm_rc. With --json, setup's line is
+# captured and forwarded, and only a line that came back counts as its result.
+run_setup() {
+	tm_rc=0
+	if [ "$tm_json" = 1 ]; then
+		tm_out=$("$@") || tm_rc=$?
+		if [ -n "$tm_out" ]; then
+			tm_setup_ran=1
+			printf '%s\n' "$tm_out"
+		fi
+	else
+		"$@" || tm_rc=$?
+	fi
+}
+
 main() {
+	exec 3>&1
 	channel=${TENTMAKER_CHANNEL:-stable}
 	version=${TENTMAKER_VERSION:-}
 	prefix=""
@@ -308,9 +325,9 @@ main() {
 	fi
 	if [ "$run_setup" = 1 ] && [ "$no_setup" = 0 ]; then
 		say "running: $setup_cmd --yes$(quote_args "$@")"
+		# TENTMAKER_JSON_ONELINE: setup's JSON stays one line on a pty.
 		if [ "$is_root" = 1 ]; then
-			tm_setup_ran=1
-			"$bin" setup --yes "$@"
+			run_setup env TENTMAKER_JSON_ONELINE=1 "$bin" setup --yes "$@"
 		else
 			sudo_cmd=${TENTMAKER_SUDO:-sudo}
 			have "$sudo_cmd" || die "setup needs root and sudo is not installed" "run as root: $bin setup --yes$(quote_args "$@")"
@@ -322,16 +339,11 @@ main() {
 			# socket. Not ${agent:+env "$agent"}: zsh keeps that one word.
 			sudo_setup() {
 				tm_n=
-				if [ "$1" = -n ]; then tm_n=-n; shift; fi
-				if [ -n "$agent" ]; then
-					"$sudo_cmd" ${tm_n:+"$tm_n"} env "$agent" "$bin" setup --yes "$@"
-				else
-					"$sudo_cmd" ${tm_n:+"$tm_n"} "$bin" setup --yes "$@"
-				fi
+				if [ "${1:-}" = -n ]; then tm_n=-n; shift; fi
+				"$sudo_cmd" ${tm_n:+"$tm_n"} env TENTMAKER_JSON_ONELINE=1 ${agent:+"$agent"} "$bin" setup --yes "$@"
 			}
 			if [ -t 0 ]; then
-				tm_setup_ran=1
-				sudo_setup "$@" || die "setup failed (exit $?)" "fix the error above, then run: $setup_cmd --yes$(quote_args "$@")"
+				run_setup sudo_setup "$@"
 			else
 				# No terminal on stdin (curl | sh). A person at a terminal
 				# types the sudo password on /dev/tty; an agent with no
@@ -342,16 +354,13 @@ main() {
 					"$sudo_cmd" -v </dev/tty ||
 						die "sudo did not accept the password" "run it yourself: $setup_cmd --yes$(quote_args "$@")"
 				fi
-				# sudo -n fails with no output when it needs a password;
-				# only a setup that ran printed a JSON line.
-				tm_rc=0
-				"$sudo_cmd" -n true 2>/dev/null && tm_setup_ran=1
-				sudo_setup -n "$@" || tm_rc=$?
-				[ "$tm_rc" = 0 ] ||
-					die "setup did not run: sudo needs a password or setup failed (exit $tm_rc)" \
-						"run it yourself: $setup_cmd --yes$(quote_args "$@")"
+				# sudo -n fails with no output when it needs a password.
+				run_setup sudo_setup -n "$@"
 			fi
 		fi
+		[ "$tm_rc" = 0 ] ||
+			die "setup did not run or failed (exit $tm_rc); sudo may need a password" \
+				"fix the error above, then run: $setup_cmd --yes$(quote_args "$@")"
 		say "done"
 	else
 		say "next step: $setup_cmd$(quote_args "$@")"

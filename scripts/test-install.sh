@@ -40,7 +40,14 @@ release() {
 #!/bin/sh
 case "\$1" in
 version) echo "tentmaker $2" ;;
-setup) shift; printf '%s\n' "\$@" >"\$TM_SETUP_LOG" ;;
+setup)
+	shift
+	printf '%s\n' "\$@" >"\$TM_SETUP_LOG"
+	case " \$* " in *" --json "*) ;; *) exit 0 ;; esac
+	if [ -n "\${TM_SETUP_FAIL:-}" ]; then echo '{"ok":false,"error":"setup broke","fix":"run setup again"}'; exit 1; fi
+	# Like tentmaker: indented on a terminal unless TENTMAKER_JSON_ONELINE.
+	if [ -t 1 ] && [ -z "\${TENTMAKER_JSON_ONELINE:-}" ]; then printf '{\n  "ok": true\n}\n'; else echo '{"ok":true}'; fi
+	;;
 *) exit 2 ;;
 esac
 EOF
@@ -81,10 +88,21 @@ cat >"$fakesudo" <<'EOF'
 #!/bin/sh
 printf '%s\n' "$*" >"$TM_SUDO_LOG"
 if [ "$1" = -v ]; then exit 0; fi
+# TM_SUDO_REFUSE: sudo -n allows true but nothing else.
+if [ -n "${TM_SUDO_REFUSE:-}" ] && [ "$*" != "-n true" ]; then echo "sudo: a password is required" >&2; exit 1; fi
 if [ "$1" = -n ]; then shift; fi
 exec "$@"
 EOF
 chmod 0755 "$fakesudo"
+
+# A 32-bit ARM uname, for a die inside $(detect_arch).
+fakeuname="$work/fakeuname"
+mkdir -p "$fakeuname"
+cat >"$fakeuname/uname" <<EOF
+#!/bin/sh
+if [ "\$1" = -m ]; then echo armv7l; else exec $(command -v uname) "\$@"; fi
+EOF
+chmod 0755 "$fakeuname/uname"
 
 n=0
 # run SHELL BASE ARGS...: run the installer with stdin closed (no TTY). Sets
@@ -110,7 +128,24 @@ run_json() {
 	prefix="$work/p$n/bin"
 	export TM_SETUP_LOG="$work/setup$n.log" TM_SUDO_LOG="$work/sudo$n.log"
 	rc=0
-	out=$(SSH_AUTH_SOCK=${TM_AGENT:-} TENTMAKER_DOWNLOAD_BASE="$base" TENTMAKER_SUDO="$fakesudo" "$sh_" "$installer" --prefix "$prefix" "$@" </dev/null 2>/dev/null) || rc=$?
+	out=$(PATH=${TM_PATH:-$PATH} SSH_AUTH_SOCK=${TM_AGENT:-} TENTMAKER_DOWNLOAD_BASE="$base" TENTMAKER_SUDO="$fakesudo" "$sh_" "$installer" --prefix "$prefix" "$@" </dev/null 2>/dev/null) || rc=$?
+}
+
+# have_pty: util-linux script, to run the installer on a pty.
+have_pty() { script --version 2>/dev/null | grep -q util-linux; }
+
+# run_pty SHELL ARGS...: run the installer on the good release with stdin and
+# stdout on a pty, like an agent harness; out is stdout alone, without CRs.
+run_pty() {
+	sh_=$1
+	shift
+	n=$((n + 1))
+	prefix="$work/p$n/bin"
+	export TM_SETUP_LOG="$work/setup$n.log" TM_SUDO_LOG="$work/sudo$n.log"
+	rc=0
+	SSH_AUTH_SOCK='' TENTMAKER_DOWNLOAD_BASE="$good" TENTMAKER_SUDO="$fakesudo" \
+		script -qec "$sh_ $installer --prefix $prefix $* 2>/dev/null" /dev/null </dev/null >"$work/pty$n.out" || rc=$?
+	out=$(tr -d '\r' <"$work/pty$n.out")
 }
 
 # one_line TEXT: TEXT is exactly one line.
@@ -145,7 +180,7 @@ check_shell() {
 	fi
 	if [ "$(id -u)" != 0 ]; then
 		case $(cat "$TM_SUDO_LOG" 2>/dev/null) in
-			"-n $prefix/tentmaker setup --yes"*) ok "$s: sudo -n with no TTY" ;;
+			"-n env TENTMAKER_JSON_ONELINE=1 $prefix/tentmaker setup --yes"*) ok "$s: sudo -n with no TTY" ;;
 			*) bad "$s: sudo called as [$(cat "$TM_SUDO_LOG" 2>/dev/null)]" ;;
 		esac
 		# No controlling terminal at all (an agent or a CI job): the
@@ -158,10 +193,38 @@ check_shell() {
 		# run: zsh once passed "env SSH_AUTH_SOCK=..." to sudo as one word.
 		TM_AGENT=/tmp/agent.sock run "$s" "$good" --yes -- --repo owner/name
 		case $rc:$(cat "$TM_SUDO_LOG" 2>/dev/null) in
-			"0:-n env SSH_AUTH_SOCK=/tmp/agent.sock $prefix/tentmaker setup --yes"*)
+			"0:-n env TENTMAKER_JSON_ONELINE=1 SSH_AUTH_SOCK=/tmp/agent.sock $prefix/tentmaker setup --yes"*)
 				if [ -s "$TM_SETUP_LOG" ]; then ok "$s: keeps the ssh-agent socket through sudo"; else bad "$s: agent socket: setup did not run: $out"; fi ;;
 			*) bad "$s: agent socket not passed: rc=$rc, sudo called as [$(cat "$TM_SUDO_LOG" 2>/dev/null)]: $out" ;;
 		esac
+		# --json: setup's own failure line comes through once, alone.
+		export TM_SETUP_FAIL=1
+		run_json "$s" "$good" --yes --json -- --repo owner/name
+		unset TM_SETUP_FAIL
+		case "$rc:$out" in
+			0:*) bad "$s: --json setup failure exited 0" ;;
+			*:'{"ok":false,"error":"setup broke","fix":"run setup again"}') ok "$s: --json forwards setup's failure line" ;;
+			*) bad "$s: --json setup failure rc=$rc: $out" ;;
+		esac
+		# sudo -n allows true but refuses setup: the installer reports it.
+		export TM_SUDO_REFUSE=1
+		run_json "$s" "$good" --yes --json -- --repo owner/name
+		unset TM_SUDO_REFUSE
+		case "$rc:$out" in
+			0:*) bad "$s: --json refused sudo exited 0" ;;
+			*:'{"ok":false,"error":"setup did not run'*) if one_line "$out"; then ok "$s: --json reports a setup sudo refused"; else bad "$s: refused sudo lines: $out"; fi ;;
+			*) bad "$s: --json refused sudo rc=$rc: $out" ;;
+		esac
+		if have_pty; then
+			# A person at a terminal with no setup arguments.
+			run_pty "$s" --yes
+			if [ $rc = 0 ] && [ -s "$TM_SETUP_LOG" ]; then ok "$s: --yes on a terminal with no setup arguments"; else bad "$s: pty --yes rc=$rc setup=[$(cat "$TM_SETUP_LOG" 2>/dev/null)]: $out"; fi
+			# An agent harness on a pty still gets one line.
+			run_pty "$s" --yes --json -- --repo owner/name
+			if [ $rc = 0 ] && [ "$out" = '{"ok":true}' ]; then ok "$s: --json on a pty is one line"; else bad "$s: pty --json rc=$rc: $out"; fi
+		else
+			printf 'skip pty tests: need util-linux script\n'
+		fi
 	fi
 
 	run "$s" "$good" --yes --no-setup
@@ -212,11 +275,21 @@ check_shell() {
 		bad "$s: --json setup=[$(cat "$TM_SETUP_LOG" 2>/dev/null)] rc=$rc: $out"
 	fi
 	run_json "$s" "$good" --yes -- --json --repo owner/name
-	if [ $rc = 0 ] && [ "$(cat "$TM_SETUP_LOG" 2>/dev/null)" = "$(printf '%s\n' --yes --json --repo owner/name)" ] && [ -z "$out" ]; then
+	if [ $rc = 0 ] && [ "$(cat "$TM_SETUP_LOG" 2>/dev/null)" = "$(printf '%s\n' --yes --json --repo owner/name)" ] && [ "$out" = '{"ok":true}' ]; then
 		ok "$s: setup's own --json is not doubled"
 	else
 		bad "$s: setup --json setup=[$(cat "$TM_SETUP_LOG" 2>/dev/null)] rc=$rc: $out"
 	fi
+
+	# A die inside $(...) still prints its line.
+	TM_PATH="$fakeuname:$PATH"
+	run_json "$s" "$good" --json --no-setup
+	TM_PATH=
+	case "$rc:$out" in
+		0:*) bad "$s: --json armv7l exited 0" ;;
+		*:'{"ok":false,"error":"unsupported CPU armv7l"'*) if one_line "$out"; then ok "$s: --json die inside \$(...)"; else bad "$s: armv7l lines: $out"; fi ;;
+		*) bad "$s: --json armv7l rc=$rc: $out" ;;
+	esac
 
 	# Piped, like curl | sh.
 	n=$((n + 1))
