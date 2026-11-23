@@ -62,6 +62,7 @@ type Executor struct {
 	poolInUse core.Resources
 	poolCalls int
 	poolErr   error
+	noPoolCap bool // CapsPoolCPU reports false, as macos-tart and windows-job
 
 	cachesRepos bool
 	actionsDir  string // "" means no Actions cache
@@ -525,6 +526,22 @@ func (e *Executor) SetPoolLimit(ctx context.Context, limit, inUse core.Resources
 	}
 	e.poolLimit, e.poolInUse = limit, inUse
 	return nil
+}
+
+// CapsPoolCPU implements core.PoolCPUCapper. It is true unless
+// SetCapsPoolCPU(false), like linux-podman.
+func (e *Executor) CapsPoolCPU() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return !e.noPoolCap
+}
+
+// SetCapsPoolCPU sets what CapsPoolCPU reports: false acts like an executor
+// with no pool-wide CPU cap (macos-tart, windows-job).
+func (e *Executor) SetCapsPoolCPU(caps bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.noPoolCap = !caps
 }
 
 // SetPoolLimitErr makes SetPoolLimit fail with err (nil clears it).

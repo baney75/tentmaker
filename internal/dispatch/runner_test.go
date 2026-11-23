@@ -37,7 +37,7 @@ func TestRunnerModeHappyPath(t *testing.T) {
 	if len(grants) != 1 || !bytes.Equal(spec.Grant.Secret, grants[0].Secret) || len(spec.Grant.Secret) == 0 {
 		t.Fatalf("executor did not get the forge's grant secret")
 	}
-	if spec.Kind != core.KindRunner || spec.Platform != linuxX64 || spec.TestWorkers != 2 ||
+	if spec.Kind != core.KindRunner || spec.Platform != linuxX64 || spec.TestWorkers != 4 ||
 		spec.Limits != (core.Resources{MemoryBytes: 2 << 30, CPUs: 2}) || spec.MaxDuration != 3*time.Hour {
 		t.Fatalf("spec = %+v", spec)
 	}

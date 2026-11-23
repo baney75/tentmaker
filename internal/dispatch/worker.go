@@ -630,12 +630,38 @@ func (w *Worker) inUse(exName string) (core.Resources, int) {
 // change) for jobs that start after. It fails closed: when executor exec's
 // last SetPoolLimit failed or applied another limit, nothing caps the jobs
 // together, so the ceiling is 0 (job.cpus) and slots x job.cpus stays within
-// the budget.
+// the budget. An executor with no pool-wide CPU cap (core.PoolCPUCapper
+// false or missing: macos-tart, windows-job) gets 0 too.
 func (w *Worker) cpuCeilingLocked(exec string) float64 {
 	if c, ok := w.poolCPUs[exec]; !ok || c != w.decision.Limit.CPUs {
 		return 0
 	}
+	e := w.execByName(exec)
+	if e == nil {
+		return 0
+	}
+	if pc, ok := e.ex.(core.PoolCPUCapper); !ok || !pc.CapsPoolCPU() {
+		return 0
+	}
 	return core.CPUCeiling(w.limits, w.decision.Limit.CPUs)
+}
+
+// testWorkerMemory is the least memory TENTMAKER_JOBS leaves each worker
+// when it raises the count past job.cpus. The CPUs burst but the job's
+// memory limit does not, and an OOM kill ends the whole job.
+const testWorkerMemory = 512 << 20
+
+// testWorkers is the job's TENTMAKER_JOBS: the whole CPUs it starts with,
+// so a job alone under the pool's cap sizes its parallelism to the pool and
+// one held at job.cpus (no pool cap, or the cap failed) to job.cpus. Past
+// floor(job.cpus) it gives each worker at least testWorkerMemory of the
+// job's memory. At least 1.
+func testWorkers(limits core.Resources, ceiling float64) int {
+	n := int(math.Floor(core.CPUCeiling(limits, ceiling)))
+	if limits.MemoryBytes > 0 {
+		n = min(n, max(int(math.Floor(limits.CPUs)), int(limits.MemoryBytes/testWorkerMemory)))
+	}
+	return max(1, n)
 }
 
 func (w *Worker) applyPoolLimits(ctx context.Context, d core.Decision) {
@@ -1060,12 +1086,8 @@ func (w *Worker) start(ctx context.Context, src core.WorkSource, off core.WorkOf
 	}
 	g := off.Grant
 	g.Secret = secret
-	tw := int(math.Floor(w.o.Config.Job.CPUs))
-	if tw < 1 {
-		tw = 1
-	}
 	spec := core.ExecSpec{Kind: kind, Name: name, Grant: g, Platform: off.Platform, Limits: w.limits,
-		MaxDuration: w.o.Config.Job.MaxDuration.D(), TestWorkers: tw}
+		MaxDuration: w.o.Config.Job.MaxDuration.D()}
 	rec := &jobRec{Name: name, Source: source, Kind: kind, Executor: e.name, Forge: off.Job.Forge, Repo: off.Job.Repo,
 		Job: off.Job.Name, JobID: off.Job.ID, Platform: off.Platform, Started: now, Limits: w.limits, starting: true,
 		Workflow: off.Job.Workflow, RunID: off.Job.RunID, RunURL: off.Job.HTMLURL, Ref: off.Job.HeadBranch,
@@ -1075,6 +1097,7 @@ func (w *Worker) start(ctx context.Context, src core.WorkSource, off core.WorkOf
 	// see either this job or no start (review r2 partA sol-F1).
 	w.mu.Lock()
 	spec.CPUCeiling = w.cpuCeilingLocked(e.name)
+	spec.TestWorkers = testWorkers(spec.Limits, spec.CPUCeiling)
 	if w.freeLocked(w.decision, w.now()) == 0 || w.capacityLocked(e) == 0 {
 		w.dropRelaysLocked(name)
 		w.mu.Unlock()

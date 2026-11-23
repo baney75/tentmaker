@@ -1087,6 +1087,12 @@ func (e *Executor) SetPoolLimit(ctx context.Context, limit, inUse core.Resources
 	return nil
 }
 
+// CapsPoolCPU implements core.PoolCPUCapper: the slice's CPUQuota caps every
+// job together, so a job may honor ExecSpec.CPUCeiling.
+func (e *Executor) CapsPoolCPU() bool { return true }
+
+var _ core.PoolCPUCapper = (*Executor)(nil)
+
 // CheckResult implements core.Executor.
 func (e *Executor) CheckResult(ctx context.Context, name string) (core.CheckResult, error) {
 	if err := checkName(name); err != nil {

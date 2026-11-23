@@ -209,7 +209,9 @@ type ExecSpec struct {
 	// Limits.CPUs, or two jobs could use twice the pool.
 	CPUCeiling  float64
 	MaxDuration time.Duration // the executor kills the job after this
-	TestWorkers int           // exported to the job as TENTMAKER_JOBS
+	// TestWorkers is exported to the job as TENTMAKER_JOBS: the whole CPUs
+	// the job starts with, floor(CPUCeiling(Limits, CPUCeiling)), at least 1.
+	TestWorkers int
 	// Cache names the repo whose persistent build cache the job may use,
 	// or is zero for none. The worker sets it only from an offer the broker
 	// marked cache-safe (WorkOffer.Cache), so no fork job ever sees one.
@@ -292,6 +294,15 @@ type Executor interface {
 	// CheckResult reads a finished KindCheck job's result.json and the tail
 	// (last 64 KiB) of its log. Call it after the job exits, before Clean.
 	CheckResult(ctx context.Context, name string) (CheckResult, error)
+}
+
+// PoolCPUCapper is implemented by an executor whose SetPoolLimit caps the
+// CPU of every job together (linux-podman's slice). Only such an executor
+// gets a nonzero ExecSpec or DebugSpec CPUCeiling; the others cap each job
+// at Limits.CPUs, so the worker leaves the ceiling at zero for them and
+// TestWorkers matches the CPUs the job can use.
+type PoolCPUCapper interface {
+	CapsPoolCPU() bool
 }
 
 // CheckStep is one step of a planned check job.
