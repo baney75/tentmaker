@@ -267,6 +267,8 @@ type app struct {
 	// mcpRoot is the folder `tentmaker mcp --root` may write to, symlinks
 	// resolved; "" outside the MCP server, where sandbox_cp writes nothing.
 	mcpRoot string
+	// mcpNoRoot says why there is no default mcpRoot (defaultRoot).
+	mcpNoRoot string
 }
 
 // out prints human output; nothing in --json mode.

@@ -68,7 +68,7 @@ Without a terminal, install.sh runs sudo with `-n`, so it fails fast instead of 
 claude mcp add tentmaker -- tentmaker mcp
 ```
 
-`--root DIR` names the one folder `sandbox_cp` may copy files out of a sandbox into. It defaults to the folder the server starts in, which for Claude Code is the project you opened. Pin it when that isn't what you want:
+`--root DIR` names the one folder `sandbox_cp` may copy files out of a sandbox into. It defaults to the folder the server starts in, which for Claude Code is the project you opened. When the server starts in `/`, a drive root or your home folder, there is no default and copying out is refused until you pass `--root`, because such a folder would confine nothing. Pin it when that isn't what you want:
 
 ```sh
 claude mcp add tentmaker -- tentmaker mcp --root /home/alice/src/myproject

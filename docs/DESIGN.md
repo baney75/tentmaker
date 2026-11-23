@@ -903,7 +903,9 @@ each stream and says when it cut one. Over MCP, `sandbox_exec` keeps the last 64
 stream (the end is where an error usually is), starting on a UTF-8 boundary, and answers
 `stdout_cut_bytes` and `stderr_cut_bytes` with how many bytes it dropped from the start, so the
 answer fits a model's context. `tentmaker mcp --root DIR` (default: the current folder when it
-starts, symlinks resolved) is the only place `sandbox_cp` may copy out of a sandbox into: a
+starts, symlinks resolved, unless that is a filesystem root, the home folder or can't be read:
+then there is no default, the server still serves, and copy out is refused with a note to pass
+`--root`; review first-F1 and second-F3) is the only place `sandbox_cp` may copy out of a sandbox into: a
 relative `to` is taken from the root, the part of the path that exists has its symlinks resolved,
 and anything that isn't the root or under it is refused before the copy starts. `Extract` then
 writes only below that folder through `os.Root` and removes an existing entry before it writes a

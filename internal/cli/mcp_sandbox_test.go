@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -174,6 +175,41 @@ func TestMCPSandboxCopyOutStaysUnderRoot(t *testing.T) {
 }
 
 // With no --root, the root is the folder the server started in.
+// With no --root, a current folder that confines nothing (a filesystem
+// root, the home folder, or one that can't be read) gives no root: copy
+// out is refused with the reason, and the server still serves (review
+// first-F1, second-F3).
+func TestMCPSandboxCopyOutRefusedWithoutAConfiningRoot(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	for _, c := range []struct {
+		name  string
+		getwd func() (string, error)
+		want  string
+	}{
+		{"filesystem root", func() (string, error) { return string(filepath.Separator), nil }, "filesystem root"},
+		{"home folder", func() (string, error) { return home, nil }, "home folder"},
+		{"unreadable", func() (string, error) { return "", errors.New("gone") }, "can't be read"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := newFixture(t)
+			serveSandboxes(t, f, control.Caller{Admin: true, ID: "0"})
+			f.env.Getwd = c.getwd
+			call := mcpSession(t, f)
+			res, ok := call("sandbox_create", map[string]any{})
+			if !ok {
+				t.Fatalf("create: %s", mustJSON(res))
+			}
+			id := res["structuredContent"].(map[string]any)["id"].(string)
+			res, ok = call("sandbox_cp", map[string]any{"from": id + ":in", "to": "passwd"})
+			if ok || !strings.Contains(mustJSON(res), c.want) || !strings.Contains(mustJSON(res), "--root") {
+				t.Fatalf("copy out with no confining root: ok=%v %s", ok, mustJSON(res))
+			}
+		})
+	}
+}
+
 func TestMCPSandboxCopyRootDefaultsToTheCurrentFolder(t *testing.T) {
 	f := newFixture(t)
 	serveSandboxes(t, f, control.Caller{Admin: true, ID: "0"})

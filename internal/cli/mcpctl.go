@@ -305,17 +305,15 @@ func (a *app) cmdMCP(args []string) (any, error) {
 	if len(pos) > 0 {
 		return nil, usage("usage: tentmaker mcp [--root DIR]", "unexpected argument %q", pos[0])
 	}
-	root := *rootFlag
-	if root == "" {
-		if a.env.Getwd == nil {
-			return nil, usage("pass --root DIR", "the current folder is unknown")
+	if root := *rootFlag; root != "" {
+		if a.mcpRoot, err = resolveRoot(root); err != nil {
+			return nil, usage("pass --root with a folder that exists", "--root %s: %v", root, err)
 		}
-		if root, err = a.env.Getwd(); err != nil {
-			return nil, usage("pass --root DIR", "the current folder: %v", err)
-		}
-	}
-	if a.mcpRoot, err = resolveRoot(root); err != nil {
-		return nil, usage("pass --root with a folder that exists", "--root %s: %v", root, err)
+	} else {
+		// No --root: the current folder, unless it confines nothing. The
+		// server still starts, so every other tool works, and copy out
+		// says to pass --root (review first-F1, second-F3).
+		a.mcpRoot, a.mcpNoRoot = defaultRoot(a.env.Getwd)
 	}
 	// stdout is the protocol: nothing else may print there.
 	a.json = true
@@ -425,6 +423,9 @@ func (c controller) SandboxCopy(ctx context.Context, from, to string) (any, erro
 	_, _, fromSandbox := splitRemote(from)
 	_, _, toSandbox := splitRemote(to)
 	if fromSandbox && !toSandbox {
+		if c.a.mcpRoot == "" && c.a.mcpNoRoot != "" {
+			return nil, fmt.Errorf("sandbox_cp won't copy out of a sandbox: %s, so it would confine nothing; start the server with tentmaker mcp --root DIR", c.a.mcpNoRoot)
+		}
 		dst, err := underRoot(c.a.mcpRoot, to)
 		if err != nil {
 			return nil, err
@@ -433,6 +434,34 @@ func (c controller) SandboxCopy(ctx context.Context, from, to string) (any, erro
 	}
 	v, err := c.a.sandboxCopy(ctx, from, to)
 	return v, mcpErr(err)
+}
+
+// defaultRoot is the copy-out root when --root is not given: the current
+// folder, resolved. It is "" with the reason when that can't be read, or
+// when it is a filesystem root or the home folder, which a client or a
+// service manager often starts a server in and which would let a sandbox
+// file replace /etc/passwd or ~/.bashrc.
+func defaultRoot(getwd func() (string, error)) (root, why string) {
+	if getwd == nil {
+		return "", "the current folder is unknown"
+	}
+	wd, err := getwd()
+	if err != nil {
+		return "", "the current folder can't be read"
+	}
+	r, err := resolveRoot(wd)
+	if err != nil {
+		return "", "the current folder can't be resolved"
+	}
+	if filepath.Dir(r) == r {
+		return "", "the current folder is " + r + ", a filesystem root"
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		if h, err := resolveRoot(home); err == nil && h == r {
+			return "", "the current folder is the home folder"
+		}
+	}
+	return r, ""
 }
 
 // resolveRoot is dir made absolute with its symlinks resolved; it must be
