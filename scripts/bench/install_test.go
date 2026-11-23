@@ -84,3 +84,14 @@ func TestInstallNeedsSetupTimings(t *testing.T) {
 }
 
 func at(sec int64) string { return time.Unix(sec, 0).UTC().Format(time.RFC3339) }
+
+func TestKeepInstall(t *testing.T) {
+	old := "# Benchmarks\n\nold numbers\n\n## Install\n\nkept\n"
+	got := keepInstall("# Benchmarks\n\nnew numbers\n", old)
+	if got != "# Benchmarks\n\nnew numbers\n\n## Install\n\nkept\n" {
+		t.Errorf("got %q", got)
+	}
+	if got := keepInstall("new\n", "no section\n"); got != "new\n" {
+		t.Errorf("no section: %q", got)
+	}
+}

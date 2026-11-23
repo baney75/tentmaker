@@ -73,6 +73,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 		text := Markdown(rep)
+		// The Install section comes from the e2e workflow, not this run:
+		// keep it.
+		if old, err := os.ReadFile(*md); err == nil {
+			text = keepInstall(text, string(old))
+		}
 		for path, b := range map[string][]byte{*js: data, *md: []byte(text)} {
 			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 				fmt.Fprintln(stderr, "bench report:", err)

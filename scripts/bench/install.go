@@ -176,6 +176,19 @@ func BuildInstall(osName string, marks map[string]*span, setup []byte, statuses 
 	return rep, nil
 }
 
+// installHeading starts the hand-kept Install section, the last in
+// docs/BENCHMARKS.md.
+const installHeading = "\n## Install\n"
+
+// keepInstall carries the Install section of old over to the end of text.
+func keepInstall(text, old string) string {
+	i := strings.Index(old, installHeading)
+	if i < 0 || strings.Contains(text, installHeading) {
+		return text
+	}
+	return strings.TrimRight(text, "\n") + "\n" + old[i:]
+}
+
 // InstallMarkdown is the job summary table.
 func InstallMarkdown(rep InstallReport) string {
 	var b strings.Builder
