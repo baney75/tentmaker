@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/baney75/tentmaker/internal/core"
@@ -19,18 +20,85 @@ const MaxDescription = 140
 
 // PendingCommits lists open PR heads (FromFork set for forks, so the caller
 // can refuse them), the default branch head and the heads of branches. A
-// listed branch that doesn't exist is skipped.
+// listed branch that doesn't exist is skipped. The PR list and the branch
+// heads are read at once, so a poll takes about one round trip; the default
+// branch name comes from defaultBranch.
 func (c *Client) PendingCommits(ctx context.Context, repo string, branches ...string) ([]core.Commit, error) {
 	rp, err := repoPath(repo)
 	if err != nil {
 		return nil, err
 	}
-	var r apiRepo
-	if err := c.getJSON(ctx, rp, true, &r); err != nil {
+	def, err := c.defaultBranch(ctx, rp)
+	if err != nil {
 		return nil, err
 	}
+	var names []string
+	seen := map[string]bool{}
+	for _, name := range append([]string{def}, branches...) {
+		if name != "" && !seen[name] {
+			seen[name] = true
+			names = append(names, name)
+		}
+	}
+	var (
+		wg     sync.WaitGroup
+		prs    []core.Commit
+		prErr  error
+		heads  = make([]*core.Commit, len(names))
+		brErrs = make([]error, len(names))
+	)
+	wg.Add(1 + len(names))
+	go func() {
+		defer wg.Done()
+		prs, prErr = c.openPRHeads(ctx, rp, repo)
+	}()
+	for i, name := range names {
+		go func() {
+			defer wg.Done()
+			heads[i], brErrs[i] = c.branchHead(ctx, rp, repo, name)
+		}()
+	}
+	wg.Wait()
+	if prErr != nil {
+		return nil, prErr
+	}
+	out := prs
+	for i := range names {
+		err := brErrs[i]
+		if names[i] != def && errors.Is(err, core.ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *heads[i])
+	}
+	return out, nil
+}
+
+// defaultBranch returns repo's default branch, read at most every
+// DefaultBranchTTL (an ETag GET, so a refresh that finds no change is free).
+func (c *Client) defaultBranch(ctx context.Context, rp string) (string, error) {
+	now := c.now()
+	c.mu.Lock()
+	e, ok := c.defBranch[rp]
+	c.mu.Unlock()
+	if ok && now.Sub(e.at) < DefaultBranchTTL {
+		return e.name, nil
+	}
+	var r apiRepo
+	if err := c.getJSON(ctx, rp, true, &r); err != nil {
+		return "", err
+	}
+	c.mu.Lock()
+	c.defBranch[rp] = defBranchEntry{name: r.DefaultBranch, at: now}
+	c.mu.Unlock()
+	return r.DefaultBranch, nil
+}
+
+func (c *Client) openPRHeads(ctx context.Context, rp, repo string) ([]core.Commit, error) {
 	var out []core.Commit
-	err = c.pages(ctx, rp+"/pulls?state=open", true, func(b []byte) (int, error) {
+	err := c.pages(ctx, rp+"/pulls?state=open", true, func(b []byte) (int, error) {
 		var prs []struct {
 			Number int `json:"number"`
 			User   struct {
@@ -54,37 +122,26 @@ func (c *Client) PendingCommits(ctx context.Context, repo string, branches ...st
 		}
 		return len(prs), nil
 	})
-	if err != nil {
+	return out, err
+}
+
+func (c *Client) branchHead(ctx context.Context, rp, repo, name string) (*core.Commit, error) {
+	var br struct {
+		Commit struct {
+			SHA    string `json:"sha"`
+			Author *struct {
+				Login string `json:"login"`
+			} `json:"author"`
+		} `json:"commit"`
+	}
+	if err := c.getJSON(ctx, rp+"/branches/"+url.PathEscape(name), true, &br); err != nil {
 		return nil, err
 	}
-	seen := map[string]bool{}
-	for i, name := range append([]string{r.DefaultBranch}, branches...) {
-		if name == "" || seen[name] {
-			continue
-		}
-		seen[name] = true
-		var br struct {
-			Commit struct {
-				SHA    string `json:"sha"`
-				Author *struct {
-					Login string `json:"login"`
-				} `json:"author"`
-			} `json:"commit"`
-		}
-		err := c.getJSON(ctx, rp+"/branches/"+url.PathEscape(name), true, &br)
-		if i > 0 && errors.Is(err, core.ErrNotFound) {
-			continue
-		}
-		if err != nil {
-			return nil, err
-		}
-		cm := core.Commit{Repo: repo, SHA: br.Commit.SHA, Ref: name}
-		if br.Commit.Author != nil {
-			cm.Author = br.Commit.Author.Login
-		}
-		out = append(out, cm)
+	cm := &core.Commit{Repo: repo, SHA: br.Commit.SHA, Ref: name}
+	if br.Commit.Author != nil {
+		cm.Author = br.Commit.Author.Login
 	}
-	return out, nil
+	return cm, nil
 }
 
 func checkSHA(sha string) error {

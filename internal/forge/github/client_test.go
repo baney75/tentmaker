@@ -163,49 +163,89 @@ func TestPaginationTruncatedFails(t *testing.T) {
 	}
 }
 
-func TestRateLimitLowWaitsForReset(t *testing.T) {
+// A low limit no longer sleeps every call toward the reset (issue #23: a
+// device at 199 left took no job for 37 minutes). Calls still go, and
+// PollDelay paces the broker so the rest lasts until the reset.
+func TestRateLimitLowPacesInsteadOfWaiting(t *testing.T) {
 	h := newHarness(t)
-	reset := t0.Add(30 * time.Second)
+	reset := t0.Add(10 * time.Minute)
+	left := "150"
 	h.f.on("GET", "/repos/acme/app/actions/runners/5", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("X-RateLimit-Remaining", "150")
+		w.Header().Set("X-RateLimit-Limit", "1000")
+		w.Header().Set("X-RateLimit-Remaining", left)
 		w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(reset.Unix(), 10))
 		fmt.Fprint(w, `{"status":"online","busy":true}`)
 	})
+	for i := 0; i < 3; i++ {
+		st, err := h.c.Runner(context.Background(), "acme/app", 5)
+		if err != nil || !st.Busy {
+			t.Fatalf("call %d with 150 left: %+v, %v", i, st, err)
+		}
+	}
+	if s := h.slept(); len(s) != 0 {
+		t.Fatalf("slept %v with 150 left; want no wait", s)
+	}
+	for _, tc := range []struct {
+		left string
+		want time.Duration
+	}{
+		{"150", PacedMax},         // under RateFloor: one poll a minute
+		{"300", 24 * time.Second}, // 100 spare over 10 min at PollCost 4
+		{"350", 16 * time.Second},
+		{"320", 20 * time.Second},
+		{"400", 0}, // a quarter of 1000 left: polls are free again
+	} {
+		left = tc.left
+		if _, err := h.c.Runner(context.Background(), "acme/app", 5); err != nil {
+			t.Fatal(err)
+		}
+		if got := h.c.PollDelay(); got != tc.want {
+			t.Fatalf("%s left: PollDelay %v, want %v", tc.left, got, tc.want)
+		}
+	}
+	left = "150"
 	if _, err := h.c.Runner(context.Background(), "acme/app", 5); err != nil {
 		t.Fatal(err)
 	}
-	if len(h.slept()) != 0 {
-		t.Fatal("slept before the limit was known")
+	h.advance(9*time.Minute + 50*time.Second)
+	if got := h.c.PollDelay(); got != 10*time.Second {
+		t.Fatalf("10 s before the reset: PollDelay %v, want 10s (never past the reset)", got)
 	}
-	st, err := h.c.Runner(context.Background(), "acme/app", 5)
-	if err != nil || !st.Busy || !st.Exists {
-		t.Fatalf("got %+v, %v", st, err)
-	}
-	if s := h.slept(); len(s) != 1 || s[0] != 30*time.Second {
-		t.Fatalf("want one 30 s wait for the reset, got %v", s)
+	h.advance(10 * time.Second)
+	if got := h.c.PollDelay(); got != 0 {
+		t.Fatalf("after the reset: PollDelay %v, want 0", got)
 	}
 }
 
-func TestRateLimitWaitHonorsContext(t *testing.T) {
+// With the limit used up, a call fails at once with core.ErrRateLimited and
+// sends nothing; it neither sleeps nor holds its caller.
+func TestRateLimitUsedUpFailsFast(t *testing.T) {
 	h := newHarness(t)
-	h.c.sleep = sleepCtx // real sleeper
-	h.c.rateLeft, h.c.rateSet = 10, t0.Add(time.Hour)
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	start := time.Now()
-	_, err := h.c.Runner(ctx, "acme/app", 5)
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("want context.Canceled, got %v", err)
+	h.f.json("GET", "/repos/acme/app/actions/runners/5", 200, map[string]any{"status": "online"})
+	h.c.rateLeft, h.c.rateSet, h.c.rateMax = 0, t0.Add(time.Hour), 1000
+	_, err := h.c.Runner(context.Background(), "acme/app", 5)
+	if !errors.Is(err, core.ErrRateLimited) {
+		t.Fatalf("want core.ErrRateLimited, got %v", err)
 	}
-	if time.Since(start) > 5*time.Second {
-		t.Fatal("did not return promptly")
+	if h.f.count("GET", "/repos/acme/app/actions/runners/5") != 0 || len(h.slept()) != 0 {
+		t.Fatal("sent a request or slept while the rate limit was spent")
 	}
-	if h.f.count("GET", "/repos/acme/app/actions/runners/5") != 0 {
-		t.Fatal("sent a request while the rate limit was spent")
+	if got := h.c.PollDelay(); got != time.Hour {
+		t.Fatalf("PollDelay %v, want the hour to the reset", got)
+	}
+	if st := h.c.APIStats(); st.RateLimited != 1 || st.Requests != 0 {
+		t.Fatalf("stats %+v", st)
+	}
+	h.advance(time.Hour)
+	if _, err := h.c.Runner(context.Background(), "acme/app", 5); err != nil {
+		t.Fatalf("after the reset: %v", err)
 	}
 }
 
-func TestRateLimited403RetriedAfterReset(t *testing.T) {
+// A rate limit answer with a long wait fails the call at once and every
+// call until the wait ends, without a request; a short one is slept
+// through and retried.
+func TestRateLimited403(t *testing.T) {
 	h := newHarness(t)
 	n := 0
 	h.f.on("GET", "/repos/acme/app/actions/runners/5", func(w http.ResponseWriter, r *http.Request) {
@@ -217,14 +257,38 @@ func TestRateLimited403RetriedAfterReset(t *testing.T) {
 			fmt.Fprint(w, `{"message":"API rate limit exceeded"}`)
 			return
 		}
+		if n == 2 {
+			w.Header().Set("Retry-After", "2")
+			w.WriteHeader(http.StatusForbidden)
+			fmt.Fprint(w, `{"message":"You have exceeded a secondary rate limit"}`)
+			return
+		}
 		fmt.Fprint(w, `{"status":"online"}`)
 	})
+	_, err := h.c.Runner(context.Background(), "acme/app", 5)
+	if !errors.Is(err, core.ErrRateLimited) || statusOf(err) != 403 {
+		t.Fatalf("want a 403 matching core.ErrRateLimited, got %v", err)
+	}
+	if len(h.slept()) != 0 {
+		t.Fatalf("slept %v through a 42 s wait", h.slept())
+	}
+	if got := h.c.PollDelay(); got != 42*time.Second {
+		t.Fatalf("PollDelay %v, want 42s", got)
+	}
+	h.advance(41 * time.Second)
+	if _, err := h.c.Runner(context.Background(), "acme/app", 5); !errors.Is(err, core.ErrRateLimited) || n != 1 {
+		t.Fatalf("during the wait: %v after %d requests; want a refusal without a request", err, n)
+	}
+	h.advance(time.Second)
 	st, err := h.c.Runner(context.Background(), "acme/app", 5)
 	if err != nil || !st.Exists {
 		t.Fatalf("got %+v, %v", st, err)
 	}
-	if s := h.slept(); len(s) == 0 || s[0] != 42*time.Second {
-		t.Fatalf("want a 42 s wait, got %v", s)
+	if s := h.slept(); fmt.Sprint(s) != "[2s]" || n != 3 {
+		t.Fatalf("a 2 s secondary limit: slept %v over %d requests, want [2s] and a retry", s, n)
+	}
+	if st := h.c.APIStats(); st.Requests != 3 || st.RateLimited != 3 || st.Billed != 3 {
+		t.Fatalf("stats %+v", st)
 	}
 }
 
@@ -526,7 +590,6 @@ func TestTokenNeverLeaks(t *testing.T) {
 
 // Polls are cheap until the limit runs low (a quarter of it, at least
 // CheapPollMin); they are cheap again once its reset time passes.
-// RateFloor's wait is separate and unchanged.
 func TestCheapPollsFollowsRateLeft(t *testing.T) {
 	h := newHarness(t)
 	if !h.c.CheapPolls() {

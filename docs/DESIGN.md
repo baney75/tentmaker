@@ -149,6 +149,9 @@ type Options struct {
 }
 func New(o Options) *Client
 func (c *Client) CheapPolls() bool   // core.CheapPoller: limit unknown, past its reset, or a quarter (at least 400) left
+func (c *Client) PollDelay() time.Duration // core.PollPacer: 0 while cheap; else the rest spread to the reset, at most 1 min
+func (c *Client) APIStats() core.APIStats  // core.APICounter: requests, 304s, billed, rate limited since start
+type RateLimitError struct { Until time.Time } // matches core.ErrRateLimited
 func (c *Client) SetForkApproval(ctx context.Context, repo string) error       // require approval for all outside contributors (public) / disable fork PR workflows (private)
 func (c *Client) SetReadOnlyToken(ctx context.Context, repo string) error      // default GITHUB_TOKEN read-only
 func MigrateWorkflow(src []byte, platform string) (out []byte, report []string, changed bool, err error)
@@ -165,13 +168,28 @@ func TokenFromGH(ctx context.Context) (string, error)                          /
 func New(o Options) *Client
 ```
 
-GitHub details to port from fleet-ci (`fleet_ci.py` class `GitHub`): ETag conditional GETs (a 304
-costs no rate limit), list runs with `status=queued` and `status=in_progress`, refetch jobs of an
-in-progress run at most every 15 s unless the run changed, ignore runs older than 24 h, sleep to
-the reset when fewer than 200 requests remain, `POST /repos/{o}/{r}/actions/runners/generate-jitconfig`
-with `runner_group_id` 1, delete runners, cancel runs. A job's `FromFork` is true when the run's
-`head_repository.full_name` differs from the repo. Retries: 3 tries with jittered backoff on 5xx
-and network errors; never retry a 4xx except 429/403-rate-limit after waiting.
+GitHub details ported from fleet-ci (`fleet_ci.py` class `GitHub`): ETag conditional GETs (a 304
+costs no rate limit), list runs with `status=queued` and `status=in_progress` (both at once),
+refetch jobs of an in-progress run at most every 15 s unless the run changed, ignore runs older
+than 24 h, `POST /repos/{o}/{r}/actions/runners/generate-jitconfig` with `runner_group_id` 1,
+delete runners, cancel runs. A job's `FromFork` is true when the run's `head_repository.full_name`
+differs from the repo. Retries: 3 tries with jittered backoff on 5xx and network errors; never
+retry a 4xx except 429/403-rate-limit.
+
+Rate limit (issue #23). The client never sleeps toward a reset; that held the broker's tick and
+stopped every pickup for up to an hour when five devices shared one workflow token. A rate limit
+answer whose wait is at most 5 s (`InlineWait`) is slept through and retried. A longer one fails
+the call at once with a `RateLimitError` (it matches `core.ErrRateLimited`), and so does every call
+until the wait ends or, when the primary limit reads 0, until its reset, without a request. Below
+a quarter of the limit (at least 400), `PollDelay` paces polls: what is left above `RateFloor`
+(200, kept for status posts, grants and deletes), spread over the time to the reset at 4 billed
+requests a poll, at most `PacedMax` (1 min) and never past the reset. `APIStats` counts every
+request, the 304s and the rate limited calls; `tentmaker status --json` shows them as
+`broker.api.<forge>`.
+
+`PendingCommits` reads the repo object for its default branch at most every 10 minutes
+(`DefaultBranchTTL`): its ETag changes on every push to any branch, so reading it each poll billed
+one request a poll in a busy repo. The PR list and every branch head are read at once.
 
 Optional forge interfaces in core, which only the GitHub client implements:
 
@@ -597,10 +615,16 @@ func (w *Worker) Shutdown(ctx context.Context)    // drain idle, leave busy ones
 
 Broker: polls queued jobs per repo, keeps a cache. A forge that implements `core.CheapPoller` and
 says `CheapPolls()` (GitHub: every poll is an ETag GET whose 304 costs no primary rate limit, and
-a quarter of the limit, at least 400 requests, is left) is polled every 2 s, or 500 ms per configured repo when that is
-more, to stay under GitHub's secondary limit of 900 requests a minute. Any other forge, a failed
-poll and a refused repo back off (5 s up to 30 s, x1.5 when idle). The broker ticks every second
-and a repo is due 100 ms early, so a 2 s poll doesn't slip to 3 s.
+a quarter of the limit, at least 400 requests, is left) is polled every second while the repo is
+active (`pollHot`: a new or changed head or queued job, work waiting, or a grant of the repo not
+ended, in the last 5 minutes) and every 2 s when it is idle, or 250 ms and 500 ms per configured
+repo when that is more, to stay under GitHub's secondary limit of 900 requests a minute. A
+`core.PollPacer` forge's `PollDelay` is the least gap in every case; when the forge says its polls
+aren't cheap, the gap is `PollDelay`, at least 2 s, so a low limit slows pickups to at most a
+minute and lasts until the reset instead of running out. Any other forge, a failed poll and a
+refused repo back off (5 s up to 30 s, x1.5 when idle), and never poll before `PollDelay` ends.
+The broker ticks every second and a repo is due 100 ms early, so a 1 s poll doesn't slip to 2 s.
+`BrokerStatus.API` holds each `core.APICounter` forge's `APIStats` by forge name.
 on `Work`, matches queued jobs (oldest first) to the request: a job matches when it asks for
 `tentmaker` and every label it asks for is in the worker's labels for one of its platforms;
 refuses forks, denied repos (`deny_repo_patterns`), public repos without `allow_public`, and runs
@@ -728,7 +752,11 @@ func New(o Options) *Client                            // implements core.Status
   author is in `authors`, default the owner, plus the default-branch head and the heads of the
   repo's `branches`; never forks), plans the
   workflows at that sha via `FileAt`/`ListDir`, and offers one check job per planned job that has
-  no `tentmaker/<job>` status yet. It posts `pending` ("running on <device>") when granting and
+  no `tentmaker/<job>` status yet. Heads are planned and read at once (at most 4 at a time), and a
+  new head's statuses are read while it is planned. A head with no planned job never has its
+  statuses read; a head whose planned jobs all have a status reuses the broker's copy (which its
+  own posts keep current) for 15 s (`statusRecheck`), so a status another broker posts is seen
+  within that; a head with a job still waiting is read every poll. It posts `pending` ("running on <device>") when granting and
   the final state from `WorkRequest.Results`. A worker sends at most 512 KiB of results (JSON) per
   request, and always one, so a backlog of 64 KiB log tails never passes the mesh's 1 MiB cap; the rest
   go in the next exchanges. Until its result goes, an ended check job is listed in `Running`, not

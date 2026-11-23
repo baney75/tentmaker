@@ -5,7 +5,7 @@ How fast Tentmaker runs real CI jobs next to GitHub's hosted runners, measured b
 [`benchmarks.json`](benchmarks.json) are written by `go run ./scripts/bench report`; don't edit
 them by hand.
 
-Source run: [bench run](https://github.com/baney75/tentmaker/actions/runs/45063494656), commit `f49c6409ec4f`, 2026-11-22.
+Source run: [bench run](https://github.com/baney75/tentmaker/actions/runs/45105047156), commit `fb257a61ccce`, 2026-11-23.
 
 ## Hardware, honestly
 
@@ -16,11 +16,11 @@ VM). A real home or office machine is likely faster than this. Neither side is t
 
 | Workload | Device image | CPUs | CPU | Memory | Tentmaker | Budget |
 |---|---|---|---|---|---|---|
-| [cache](https://github.com/baney75/tentmaker/actions/runs/45063494656/job/137335944816) | ubuntu26 20261116.88.1 | 4 | Intel(R) Xeon(R) 6975P-C | 15 GiB | 0.0.1-scn.1 | `{"admit":true,"evict":false,"limit":{"cpus":4,"memory_bytes":8589934592},"profile":"boost","reasons":null,"slots":2}` |
-| [cross-build](https://github.com/baney75/tentmaker/actions/runs/45063494656/job/137335945037) | ubuntu26 20261116.202.1 | 4 | INTEL(R) XEON(R) PLATINUM 8573C | 16 GiB | 0.0.1-scn.1 | `{"admit":true,"evict":false,"limit":{"cpus":4,"memory_bytes":8589934592},"profile":"boost","reasons":null,"slots":2}` |
-| [docker](https://github.com/baney75/tentmaker/actions/runs/45063494656/job/137335945033) | ubuntu26 20261116.202.1 | 4 | AMD EPYC 7763 64-Core Processor | 16 GiB | 0.0.1-scn.1 | `{"admit":true,"evict":false,"limit":{"cpus":4,"memory_bytes":8589934592},"profile":"boost","reasons":null,"slots":2}` |
-| [go-test](https://github.com/baney75/tentmaker/actions/runs/45063494656/job/137335944959) | ubuntu26 20261116.202.1 | 4 | AMD EPYC 7763 64-Core Processor | 16 GiB | 0.0.1-scn.1 | `{"admit":true,"evict":false,"limit":{"cpus":4,"memory_bytes":8589934592},"profile":"boost","reasons":null,"slots":2}` |
-| [node](https://github.com/baney75/tentmaker/actions/runs/45063494656/job/137335945043) | ubuntu26 20261116.202.1 | 4 | INTEL(R) XEON(R) PLATINUM 8573C | 16 GiB | 0.0.1-scn.1 | `{"admit":true,"evict":false,"limit":{"cpus":4,"memory_bytes":8589934592},"profile":"boost","reasons":null,"slots":2}` |
+| [cache](https://github.com/baney75/tentmaker/actions/runs/45105047156/job/137464292587) | ubuntu26 20261116.202.1 | 4 | AMD EPYC 7763 64-Core Processor | 16 GiB | 0.0.1-scn.1 | `{"admit":true,"evict":false,"limit":{"cpus":4,"memory_bytes":8589934592},"profile":"boost","reasons":null,"slots":2}` |
+| [cross-build](https://github.com/baney75/tentmaker/actions/runs/45105047156/job/137464292522) | ubuntu26 20261116.202.1 | 4 | AMD EPYC 9V74 80-Core Processor | 16 GiB | 0.0.1-scn.1 | `{"admit":true,"evict":false,"limit":{"cpus":4,"memory_bytes":8589934592},"profile":"boost","reasons":null,"slots":2}` |
+| [docker](https://github.com/baney75/tentmaker/actions/runs/45105047156/job/137464292649) | ubuntu26 20261116.202.1 | 4 | AMD EPYC 7763 64-Core Processor | 16 GiB | 0.0.1-scn.1 | `{"admit":true,"evict":false,"limit":{"cpus":4,"memory_bytes":8589934592},"profile":"boost","reasons":null,"slots":2}` |
+| [go-test](https://github.com/baney75/tentmaker/actions/runs/45105047156/job/137464292365) | ubuntu26 20261116.202.1 | 4 | AMD EPYC 9V45 96-Core Processor | 16 GiB | 0.0.1-scn.1 | `{"admit":true,"evict":false,"limit":{"cpus":4,"memory_bytes":8589934592},"profile":"boost","reasons":null,"slots":2}` |
+| [node](https://github.com/baney75/tentmaker/actions/runs/45105047156/job/137464292598) | ubuntu26 20261116.202.1 | 4 | AMD EPYC 7763 64-Core Processor | 16 GiB | 0.0.1-scn.1 | `{"admit":true,"evict":false,"limit":{"cpus":4,"memory_bytes":8589934592},"profile":"boost","reasons":null,"slots":2}` |
 
 ## Job time
 
@@ -32,25 +32,16 @@ count, and a warm run that missed it is left out of every number.
 
 | Workload | GitHub-hosted cold | GitHub-hosted warm | Tentmaker cold | Tentmaker warm | Speedup | n |
 |---|---|---|---|---|---|---|
-| Go test (this repo: gofmt, vet, go test -race) | 80.0 s | 28.0 s | 135.0 s | 22.0 s | 1.3x | 3 / 3 |
-| Go cross build (this repo, 6 targets) | 90.0 s | 19.0 s | 143.0 s | 6.0 s | 3.2x | 3 / 3 |
-| Node: tj/commander.js v15.1.0, npm ci and npm test | 16.0 s | 18.0 s | 19.0 s | 18.0 s | 1.0x | 3 / 3 |
-| Docker build, two stages (baseline: no layer cache yet) | 28.0 s | 27.5 s | 39.0 s | 41.0 s | 0.7x | 2 / 3 |
-| Cache: 256 MiB blob save, then restore | 8.0 s | 8.0 s | 3.0 s | 2.0 s | 4.0x | 3 / 3 |
-
-- go-test, GitHub-hosted: 3 warm runs didn't record whether they hit the cache
-- go-test, Tentmaker: 3 warm runs didn't record whether they hit the cache
-- cross-build, GitHub-hosted: 3 warm runs didn't record whether they hit the cache
-- cross-build, Tentmaker: 3 warm runs didn't record whether they hit the cache
-- node, GitHub-hosted: 3 warm runs didn't record whether they hit the cache
-- node, Tentmaker: 3 warm runs didn't record whether they hit the cache
-- cache, GitHub-hosted: 3 warm runs didn't record whether they hit the cache
-- cache, Tentmaker: 3 warm runs didn't record whether they hit the cache
+| Go test (this repo: gofmt, vet, go test -race) | 95.0 s | 33.0 s | 113.0 s | 22.0 s | 1.5x | 3 / 3 |
+| Go cross build (this repo, 6 targets) | 98.0 s | 20.0 s | 120.0 s | 6.0 s | 3.3x | 3 / 3 |
+| Node: tj/commander.js v15.1.0, npm ci and npm test | 16.0 s | 18.0 s | 20.0 s | 19.0 s | 0.9x | 3 / 2 |
+| Docker build, two stages (baseline: no layer cache yet) | 30.5 s | 27.0 s | 40.0 s | 42.0 s | 0.6x | 3 / 3 |
+| Cache: 256 MiB blob save, then restore | 11.0 s | 12.0 s | 5.0 s | 3.0 s | 4.0x | 3 / 3 |
 
 Go used by each side (`go env GOVERSION`, every passing run):
 
-- go-test: GitHub-hosted none recorded; Tentmaker none recorded
-- cross-build: GitHub-hosted none recorded; Tentmaker none recorded
+- go-test: GitHub-hosted go1.25.0; Tentmaker go1.25.0
+- cross-build: GitHub-hosted go1.25.0; Tentmaker go1.25.0
 
 Every run, with links to each job, is in [`benchmarks.json`](benchmarks.json) (`samples`).
 
@@ -60,10 +51,25 @@ Seconds from queued to running. GitHub-hosted: the job's `created_at` to `starte
 Tentmaker: the push to the `pending` status it posts when a device takes the job, so it also
 counts noticing the commit.
 
-| Platform | Median | Min | Max | Jobs |
-|---|---|---|---|---|
-| GitHub-hosted | 2.0 s | 1.0 s | 2.0 s | 30 |
-| Tentmaker | 4.0 s | 2.0 s | 2235.0 s | 30 |
+| Platform | Median | p95 | Min | Max | Jobs |
+|---|---|---|---|---|---|
+| GitHub-hosted | 3.0 s | 48.0 s | 1.0 s | 66.0 s | 30 |
+| Tentmaker | 1.0 s | 2.0 s | 0.0 s | 2.0 s | 30 |
+
+## API calls
+
+What each Tentmaker device's daemon asked of the GitHub API since its last restart (the bench
+restarts it between reps), from `tentmaker status --json` (`broker.api`). All five devices share the workflow's
+`GITHUB_TOKEN`, which gets 1000 billed requests an hour per repo. Billed is every request but
+a 304: a conditional GET that found nothing new costs no rate limit.
+
+| Workload | Hours | Requests/h | Billed/h | 304s | Rate limited |
+|---|---|---|---|---|---|
+| cache | 0.01 | 22347 | 6285 | 72% | 0 |
+| cross-build | 0.04 | 19100 | 1110 | 94% | 0 |
+| docker | 0.03 | 19543 | 1850 | 91% | 0 |
+| go-test | 0.04 | 19248 | 1009 | 95% | 0 |
+| node | 0.01 | 14923 | 2926 | 80% | 0 |
 
 ## Where the time goes
 
@@ -73,26 +79,26 @@ the job start to the first mark: checkout and tool setup, plus cache restore on 
 
 | Workload | Platform | Round | Phases |
 |---|---|---|---|
-| go-test | GitHub-hosted | cold | setup 12.2 s, deps 0.3 s, test 64.0 s |
-| go-test | GitHub-hosted | warm | setup 11.1 s, deps 0.0 s, test 15.2 s |
-| go-test | Tentmaker | cold | setup 1.2 s, deps 0.3 s, test 131.9 s |
-| go-test | Tentmaker | warm | setup 1.7 s, deps 0.0 s, test 20.0 s |
-| cross-build | GitHub-hosted | cold | setup 11.9 s, build 71.9 s, deps 0.3 s |
-| cross-build | GitHub-hosted | warm | setup 12.9 s, build 3.2 s, deps 0.0 s |
-| cross-build | Tentmaker | cold | setup 2.0 s, build 134.7 s, deps 0.4 s |
-| cross-build | Tentmaker | warm | setup 1.6 s, build 3.4 s, deps 0.0 s |
-| node | GitHub-hosted | cold | setup 3.7 s, deps 2.3 s, fetch 0.1 s, test 8.1 s |
-| node | GitHub-hosted | warm | setup 5.1 s, deps 2.4 s, fetch 0.3 s, test 7.9 s |
-| node | Tentmaker | cold | setup 1.6 s, deps 2.6 s, fetch 0.1 s, test 13.9 s |
-| node | Tentmaker | warm | setup 1.7 s, deps 1.7 s, fetch 0.1 s, test 14.0 s |
-| docker | GitHub-hosted | cold | setup 2.9 s, build 23.4 s |
-| docker | GitHub-hosted | warm | setup 3.3 s, build 22.4 s |
-| docker | Tentmaker | cold | setup 1.7 s, build 35.4 s |
-| docker | Tentmaker | warm | setup 1.2 s, build 36.1 s |
-| cache | GitHub-hosted | cold | setup 3.4 s, restore 0.2 s, save 1.9 s |
-| cache | GitHub-hosted | warm | setup 2.9 s, restore 2.6 s, save 0.0 s |
-| cache | Tentmaker | cold | setup 1.7 s, restore 0.0 s, save 0.2 s |
-| cache | Tentmaker | warm | setup 1.3 s, restore 0.2 s, save 0.0 s |
+| go-test | GitHub-hosted | cold | setup 13.0 s, deps 0.2 s, test 75.0 s |
+| go-test | GitHub-hosted | warm | setup 12.3 s, deps 0.0 s, test 16.9 s |
+| go-test | Tentmaker | cold | setup 1.8 s, deps 0.3 s, test 110.5 s |
+| go-test | Tentmaker | warm | setup 1.8 s, deps 0.0 s, test 20.1 s |
+| cross-build | GitHub-hosted | cold | setup 11.8 s, build 78.6 s, deps 0.3 s |
+| cross-build | GitHub-hosted | warm | setup 13.8 s, build 3.7 s, deps 0.0 s |
+| cross-build | Tentmaker | cold | setup 1.3 s, build 117.6 s, deps 0.2 s |
+| cross-build | Tentmaker | warm | setup 2.2 s, build 3.2 s, deps 0.0 s |
+| node | GitHub-hosted | cold | setup 3.7 s, deps 1.9 s, fetch 0.3 s, test 7.1 s |
+| node | GitHub-hosted | warm | setup 4.5 s, deps 1.9 s, fetch 0.2 s, test 6.4 s |
+| node | Tentmaker | cold | setup 1.6 s, deps 2.7 s, fetch 0.1 s, test 14.7 s |
+| node | Tentmaker | warm | setup 1.6 s, deps 2.0 s, fetch 0.1 s, test 14.5 s |
+| docker | GitHub-hosted | cold | setup 4.5 s, build 24.6 s |
+| docker | GitHub-hosted | warm | setup 3.0 s, build 22.3 s |
+| docker | Tentmaker | cold | setup 1.5 s, build 37.0 s |
+| docker | Tentmaker | warm | setup 1.5 s, build 36.8 s |
+| cache | GitHub-hosted | cold | setup 6.2 s, restore 0.3 s, save 2.9 s |
+| cache | GitHub-hosted | warm | setup 7.4 s, restore 2.0 s, save 0.0 s |
+| cache | Tentmaker | cold | setup 2.1 s, restore 0.0 s, save 1.3 s |
+| cache | Tentmaker | warm | setup 1.7 s, restore 0.2 s, save 0.0 s |
 
 ## Cache throughput
 
@@ -103,8 +109,8 @@ step before to the step after. Tentmaker: a copy into its repo cache on the same
 
 | Platform | Save (cold run) | Restore (warm run) |
 |---|---|---|
-| GitHub-hosted | 138 MB/s | 104 MB/s |
-| Tentmaker | 1304 MB/s | 1700 MB/s |
+| GitHub-hosted | 91 MB/s | 131 MB/s |
+| Tentmaker | 211 MB/s | 1240 MB/s |
 
 ## Gate
 
@@ -117,22 +123,7 @@ record the same Go, or when the median Tentmaker job start latency is over 5 s.
 
 This run: **fail**.
 
-- go-test: 3 passing GitHub-hosted cold runs recorded no Go version
-- go-test: 3 passing GitHub-hosted warm runs recorded no Go version
-- go-test: 3 passing Tentmaker cold runs recorded no Go version
-- go-test: 3 passing Tentmaker warm runs recorded no Go version
-- go-test: 3 passing Tentmaker warm runs didn't record whether they hit the cache
-- go-test: 3 passing GitHub-hosted warm runs didn't record whether they hit the cache
-- cross-build: 3 passing GitHub-hosted cold runs recorded no Go version
-- cross-build: 3 passing GitHub-hosted warm runs recorded no Go version
-- cross-build: 3 passing Tentmaker cold runs recorded no Go version
-- cross-build: 3 passing Tentmaker warm runs recorded no Go version
-- cross-build: 3 passing Tentmaker warm runs didn't record whether they hit the cache
-- cross-build: 3 passing GitHub-hosted warm runs didn't record whether they hit the cache
-- node: 3 passing Tentmaker warm runs didn't record whether they hit the cache
-- node: 3 passing GitHub-hosted warm runs didn't record whether they hit the cache
-- cache: 3 passing Tentmaker warm runs didn't record whether they hit the cache
-- cache: 3 passing GitHub-hosted warm runs didn't record whether they hit the cache
+- node: 2 passing Tentmaker warm runs that hit the cache, of 3 (1 failed, 0 missed the cache); the gate needs 3
 
 ## Known limits of this bench
 

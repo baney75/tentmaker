@@ -148,6 +148,20 @@ func TestStartLatencyMedian(t *testing.T) {
 	}
 }
 
+// p95 is nearest rank: the 19th of 20 sorted starts, the 2nd of 2.
+func TestStartLatencyP95(t *testing.T) {
+	var v []float64
+	for i := 1; i <= 20; i++ {
+		v = append(v, float64(i))
+	}
+	if c := cellOf(v); c.P95 != 19 || c.Median != 10.5 {
+		t.Fatalf("cell = %+v, want p95 19", c)
+	}
+	if c := cellOf([]float64{1, 30}); c.P95 != 30 {
+		t.Fatalf("two starts: p95 %v, want 30", c.P95)
+	}
+}
+
 // TestGateCommand runs the gate as bench.yml does. The JSON says the run
 // passed, but its samples don't: the gate must recompute and fail.
 // TestWarmMissLeftOut: a warm run that missed the cache is a cold run in
@@ -217,6 +231,7 @@ func TestReportCommand(t *testing.T) {
 		"| Tentmaker | n/a | 537 MB/s |",
 		"their claims, not our measurements",
 		"This run: **fail**.",
+		"| cache | 0.50 | 7200 | 120 | 98% | 0 |",
 	} {
 		if !strings.Contains(string(text), want) {
 			t.Errorf("BENCHMARKS.md lacks %q", want)

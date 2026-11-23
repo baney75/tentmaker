@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -92,6 +93,11 @@ type repoState struct {
 	lastErr  string
 	queued   []core.Job   // runner mode: the last poll, oldest first
 	heads    []*checkHead // checks mode: commits to test
+	// active is when the repo last had something new or waiting (pollHot).
+	active time.Time
+	// seen is the last poll's head SHAs or queued job IDs, to tell a
+	// change.
+	seen string
 }
 
 func (r *repoState) key() string { return r.forge + ":" + r.cfg.Name }
@@ -100,6 +106,7 @@ type checkHead struct {
 	commit   core.Commit
 	jobs     []core.CheckJob
 	statuses map[string]string
+	read     time.Time // when statuses were read from the forge
 }
 
 type infoCache struct {
@@ -1014,44 +1021,86 @@ func (b *Broker) Tick(ctx context.Context) error {
 }
 
 // polledLocked schedules the next poll after a good one. A forge whose
-// unchanged polls are free is polled again in pollFast (more with many
-// repos), busy or not, so a new job is seen within about 2 s; any other
-// forge backs off as backoffLocked says. Errors and refused repos always go
-// through backoffLocked.
-func (b *Broker) polledLocked(r *repoState, now time.Time, busy bool) {
+// unchanged polls are free is polled again in pollHot while the repo is
+// active (hotWindow) and pollFast when it is idle, each stretched with the
+// number of repos, busy or not, so a push is seen within about a second.
+// A forge that says its limit runs low (not CheapPolls) is paced by its
+// PollDelay when it is a core.PollPacer (at least pollFast) and backs off as
+// backoffLocked says otherwise. Errors and refused repos always go through
+// backoffLocked. changed says the poll found something new.
+func (b *Broker) polledLocked(r *repoState, now time.Time, busy, changed bool) {
+	if busy || changed || b.repoRunningLocked(r) {
+		r.active = now
+	}
 	if !b.cheapLocked(r) {
+		if d, ok := b.pollDelayLocked(r); ok {
+			r.lastPoll = now
+			r.interval = max(d, pollFast)
+			r.next = now.Add(r.interval)
+			return
+		}
 		b.backoffLocked(r, now, busy)
 		return
 	}
-	d := time.Duration(len(b.repos)) * pollFastPerRepo
-	if d < pollFast {
-		d = pollFast
+	n := time.Duration(len(b.repos))
+	d := max(n*pollFastPerRepo, pollFast)
+	if now.Sub(r.active) < hotWindow {
+		d = max(n*pollHotPerRepo, pollHot)
+	}
+	if pd, ok := b.pollDelayLocked(r); ok {
+		d = max(d, pd)
 	}
 	r.lastPoll = now
 	r.interval = d
 	r.next = now.Add(d)
 }
 
+// repoRunningLocked reports whether a grant of repo r has not ended.
+func (b *Broker) repoRunningLocked(r *repoState) bool {
+	for _, g := range b.grants {
+		if g.Forge == r.forge && g.Repo == r.cfg.Name && !g.Ended {
+			return true
+		}
+	}
+	return false
+}
+
+// pollForgeLocked is repo r's forge: the status forge in checks mode.
+func (b *Broker) pollForgeLocked(r *repoState) any {
+	if r.mode == "checks" {
+		return b.o.StatusForges[r.forge]
+	}
+	return b.o.Forges[r.forge]
+}
+
 // cheapLocked reports whether repo r's forge says its polls are free now.
 func (b *Broker) cheapLocked(r *repoState) bool {
-	var f any
-	if r.mode == "checks" {
-		f = b.o.StatusForges[r.forge]
-	} else {
-		f = b.o.Forges[r.forge]
-	}
-	cp, ok := f.(core.CheapPoller)
+	cp, ok := b.pollForgeLocked(r).(core.CheapPoller)
 	return ok && cp.CheapPolls()
 }
 
+// pollDelayLocked is repo r's forge's PollDelay, when it is a PollPacer.
+func (b *Broker) pollDelayLocked(r *repoState) (time.Duration, bool) {
+	pp, ok := b.pollForgeLocked(r).(core.PollPacer)
+	if !ok {
+		return 0, false
+	}
+	return pp.PollDelay(), true
+}
+
 // backoffLocked schedules the next poll: 5 s while there is work, else the
-// current interval, which then grows x1.5 up to 30 s.
+// current interval, which then grows x1.5 up to 30 s. A forge whose
+// PollDelay is longer (its rate limit is used up) is polled after that
+// instead, so a refused poll isn't retried before the forge would answer.
 func (b *Broker) backoffLocked(r *repoState, now time.Time, busy bool) {
 	if busy || r.interval < pollMin {
 		r.interval = pollMin
 	}
 	r.lastPoll = now
 	r.next = now.Add(r.interval)
+	if d, ok := b.pollDelayLocked(r); ok && now.Add(d).After(r.next) {
+		r.next = now.Add(d)
+	}
 	if !busy {
 		r.interval = time.Duration(float64(r.interval) * pollFactor)
 		if r.interval > pollMax {
@@ -1122,18 +1171,23 @@ func (b *Broker) pollRunner(ctx context.Context, r *repoState, now time.Time) {
 	r.queued, r.lastErr = jobs, ""
 	busy := false
 	live := map[string]bool{}
+	var keys []string
 	for _, j := range jobs {
 		live[j.Key()] = true
+		keys = append(keys, j.Key())
 		if b.jobRefusal(j, now) == "" {
 			busy = true
 		}
 	}
+	seen := strings.Join(keys, ",")
+	changed := seen != r.seen
+	r.seen = seen
 	for k := range b.noted {
 		if strings.HasPrefix(k, r.forge+":"+r.cfg.Name+":") && !live[k] {
 			delete(b.noted, k)
 		}
 	}
-	b.polledLocked(r, now, busy)
+	b.polledLocked(r, now, busy, changed)
 	b.mu.Unlock()
 	b.foundWork(busy)
 }
@@ -1603,8 +1657,7 @@ func (b *Broker) pollChecks(ctx context.Context, r *repoState, now time.Time) {
 		authors = []string{ownerOf(r.cfg.Name)}
 	}
 	seen := map[string]bool{}
-	var heads []*checkHead
-	busy := false
+	var todo []core.Commit
 	for _, c := range commits {
 		if c.Repo == "" {
 			c.Repo = r.cfg.Name
@@ -1625,21 +1678,44 @@ func (b *Broker) pollChecks(ctx context.Context, r *repoState, now time.Time) {
 			continue // the forge lists the newest head first
 		}
 		seen[key] = true
-		jobs, err := b.plan(ctx, sf, r, c.SHA)
-		if err != nil {
-			b.noteErr(r.cfg.Name, "plan "+short(c.SHA), err)
+		todo = append(todo, c)
+	}
+	// The last poll's heads by SHA: their statuses are reused when nothing
+	// can have changed them but this broker, which keeps its copy current.
+	b.mu.Lock()
+	prev := map[string]*checkHead{}
+	var shas []string
+	for _, h := range r.heads {
+		prev[h.commit.SHA] = h
+	}
+	for _, c := range todo {
+		shas = append(shas, c.SHA)
+	}
+	changed := strings.Join(shas, ",") != r.seen
+	r.seen = strings.Join(shas, ",")
+	b.mu.Unlock()
+	// Heads are planned and read at once, at most headWorkers at a time, so
+	// a new commit costs one round trip more than an idle poll.
+	got := make([]*checkHead, len(todo))
+	sem := make(chan struct{}, headWorkers)
+	var wg sync.WaitGroup
+	for i, c := range todo {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func() {
+			defer func() { <-sem; wg.Done() }()
+			got[i] = b.readHead(ctx, sf, r, c, prev[c.SHA], now)
+		}()
+	}
+	wg.Wait()
+	var heads []*checkHead
+	busy := false
+	for _, h := range got {
+		if h == nil {
 			continue
 		}
-		fctx, cancel := context.WithTimeout(ctx, forgeTimeout)
-		sts, err := sf.Statuses(fctx, r.cfg.Name, c.SHA)
-		cancel()
-		if err != nil {
-			b.noteErr(r.cfg.Name, "read statuses "+short(c.SHA), err)
-			continue
-		}
-		h := &checkHead{commit: c, jobs: jobs, statuses: sts}
-		for _, j := range jobs {
-			if _, ok := sts[CheckContext(j)]; !ok {
+		for _, j := range h.jobs {
+			if _, ok := h.statuses[CheckContext(j)]; !ok {
 				busy = true
 			}
 		}
@@ -1672,9 +1748,74 @@ func (b *Broker) pollChecks(ctx context.Context, r *repoState, now time.Time) {
 			delete(b.noted, k)
 		}
 	}
-	b.polledLocked(r, now, busy)
+	b.polledLocked(r, now, busy, changed)
 	b.mu.Unlock()
 	b.foundWork(busy)
+}
+
+// readHead plans commit c and reads its statuses. A head with no planned
+// job needs no statuses. A head seen last poll (old) whose jobs all had a
+// status keeps that copy until statusRecheck; one with a job waiting, and a
+// new head, are read now. A new head is planned and read at once. It
+// returns nil when the forge failed; the error is noted.
+func (b *Broker) readHead(ctx context.Context, sf core.StatusForge, r *repoState, c core.Commit, old *checkHead, now time.Time) *checkHead {
+	h := &checkHead{commit: c, statuses: map[string]string{}}
+	read := func() error {
+		fctx, cancel := context.WithTimeout(ctx, forgeTimeout)
+		defer cancel()
+		sts, err := sf.Statuses(fctx, r.cfg.Name, c.SHA)
+		if err != nil {
+			return err
+		}
+		h.statuses, h.read = sts, now
+		return nil
+	}
+	var (
+		jobs    []core.CheckJob
+		planErr error
+		readErr error
+		early   bool
+	)
+	if old == nil {
+		// A new commit: read its statuses while planning it.
+		early = true
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go func() { defer wg.Done(); readErr = read() }()
+		jobs, planErr = b.plan(ctx, sf, r, c.SHA)
+		wg.Wait()
+	} else {
+		jobs, planErr = b.plan(ctx, sf, r, c.SHA)
+	}
+	if planErr != nil {
+		b.noteErr(r.cfg.Name, "plan "+short(c.SHA), planErr)
+		return nil
+	}
+	h.jobs = jobs
+	if len(jobs) == 0 {
+		return h
+	}
+	if !early {
+		b.mu.Lock()
+		settled := now.Sub(old.read) < statusRecheck
+		for _, j := range jobs {
+			if _, ok := old.statuses[CheckContext(j)]; !ok {
+				settled = false
+			}
+		}
+		if settled {
+			h.statuses, h.read = maps.Clone(old.statuses), old.read
+		}
+		b.mu.Unlock()
+		if !settled {
+			readErr = read()
+		}
+	}
+	if readErr != nil {
+		b.noteErr(r.cfg.Name, "read statuses "+short(c.SHA), readErr)
+		return nil
+	}
+	return h
 }
 
 func (b *Broker) noteCommit(r *repoState, c core.Commit, why string) {
@@ -1963,6 +2104,9 @@ type BrokerStatus struct {
 	Devices         []DeviceStatus `json:"devices"`
 	PendingStatuses int            `json:"pending_statuses"`
 	LastErrors      []ErrorEntry   `json:"last_errors"`
+	// API counts each forge's API calls since start, by forge name, for
+	// forges that count them (core.APICounter).
+	API map[string]core.APIStats `json:"api,omitempty"`
 }
 
 // RepoStatus is one repo's polling health.
@@ -2044,7 +2188,30 @@ func (b *Broker) Status() BrokerStatus {
 			Quarantined: d.Quarantine, Why: d.QuarantineWhy, Runners: count[d.Name]})
 	}
 	sort.Slice(s.Devices, func(i, k int) bool { return s.Devices[i].Name < s.Devices[k].Name })
+	s.API = b.apiStats()
 	return s
+}
+
+// apiStats reads every counting forge once, by name.
+func (b *Broker) apiStats() map[string]core.APIStats {
+	out := map[string]core.APIStats{}
+	add := func(name string, f any) {
+		if ac, ok := f.(core.APICounter); ok {
+			if _, done := out[name]; !done {
+				out[name] = ac.APIStats()
+			}
+		}
+	}
+	for n, f := range b.o.Forges {
+		add(n, f)
+	}
+	for n, f := range b.o.StatusForges {
+		add(n, f)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // ---------------------------------------------------------------- small helpers

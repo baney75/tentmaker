@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/baney75/tentmaker/internal/core"
@@ -194,8 +195,21 @@ func (c *Client) QueuedJobs(ctx context.Context, repo string) ([]core.Job, error
 	seen := map[int64]bool{}
 	jobSeen := map[int64]bool{}
 	var out []core.Job
-	for _, status := range []string{"queued", "in_progress"} {
-		runs, err := c.listRuns(ctx, rp, status)
+	// Both lists at once: a poll takes one round trip, not two.
+	statuses := []string{"queued", "in_progress"}
+	lists := make([][]apiRun, len(statuses))
+	errs := make([]error, len(statuses))
+	var wg sync.WaitGroup
+	for i, status := range statuses {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			lists[i], errs[i] = c.listRuns(ctx, rp, status)
+		}()
+	}
+	wg.Wait()
+	for i, status := range statuses {
+		runs, err := lists[i], errs[i]
 		if err != nil {
 			return nil, err
 		}

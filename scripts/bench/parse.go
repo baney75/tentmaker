@@ -43,7 +43,23 @@ type Device struct {
 	Version      string  `json:"version"`
 	JobURL       string  `json:"job_url,omitempty"`
 	Budget       any     `json:"budget,omitempty"`
+	// API is the daemon's API call counts at the end (tm/<workload>/api.json).
+	API *DeviceAPI `json:"api,omitempty"`
 }
+
+// DeviceAPI is `tentmaker status --json`'s broker.api.github, plus when
+// bench.sh read it.
+type DeviceAPI struct {
+	Since       time.Time `json:"since"`
+	At          time.Time `json:"at"`
+	Requests    int64     `json:"requests"`
+	NotModified int64     `json:"not_modified"`
+	Billed      int64     `json:"billed"`
+	RateLimited int64     `json:"rate_limited"`
+}
+
+// Hours is how long the counts ran.
+func (a *DeviceAPI) Hours() float64 { return a.At.Sub(a.Since).Hours() }
 
 // Run is everything one bench run produced.
 type Run struct {
@@ -348,6 +364,10 @@ func LoadRun(dir string) (Run, error) {
 		if err := readJSON(filepath.Join(wd, "device.json"), &d); err == nil {
 			if d.JobURL == "" {
 				d.JobURL = jobURL
+			}
+			var a DeviceAPI
+			if err := readJSON(filepath.Join(wd, "api.json"), &a); err == nil && !a.Since.IsZero() {
+				d.API = &a
 			}
 			r.Devices = append(r.Devices, d)
 		} else {

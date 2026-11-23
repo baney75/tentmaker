@@ -1,17 +1,17 @@
 {
-  "run_url": "https://github.com/baney75/tentmaker/actions/runs/45063494656",
-  "sha": "f49c6409ec4ff95de86d124c527ae33382f1f8e9",
-  "date": "2026-11-22",
+  "run_url": "https://github.com/baney75/tentmaker/actions/runs/45105047156",
+  "sha": "fb257a61ccce083f3faaf816ae404dda884c7d7c",
+  "date": "2026-11-23",
   "devices": [
     {
       "workload": "cache",
       "image_os": "ubuntu26",
-      "image_version": "20261116.88.1",
+      "image_version": "20261116.202.1",
       "cpus": 4,
-      "cpu_model": "Intel(R) Xeon(R) 6975P-C",
-      "memory_gib": 15.3,
+      "cpu_model": "AMD EPYC 7763 64-Core Processor",
+      "memory_gib": 15.6,
       "version": "0.0.1-scn.1",
-      "job_url": "https://github.com/baney75/tentmaker/actions/runs/45063494656/job/137335944816",
+      "job_url": "https://github.com/baney75/tentmaker/actions/runs/45105047156/job/137464292587",
       "budget": {
         "admit": true,
         "evict": false,
@@ -22,6 +22,14 @@
         "profile": "boost",
         "reasons": null,
         "slots": 2
+      },
+      "api": {
+        "since": "2026-11-23T03:18:33.379482471Z",
+        "at": "2026-11-23T03:18:54Z",
+        "requests": 128,
+        "not_modified": 92,
+        "billed": 36,
+        "rate_limited": 0
       }
     },
     {
@@ -29,10 +37,10 @@
       "image_os": "ubuntu26",
       "image_version": "20261116.202.1",
       "cpus": 4,
-      "cpu_model": "INTEL(R) XEON(R) PLATINUM 8573C",
+      "cpu_model": "AMD EPYC 9V74 80-Core Processor",
       "memory_gib": 15.6,
       "version": "0.0.1-scn.1",
-      "job_url": "https://github.com/baney75/tentmaker/actions/runs/45063494656/job/137335945037",
+      "job_url": "https://github.com/baney75/tentmaker/actions/runs/45105047156/job/137464292522",
       "budget": {
         "admit": true,
         "evict": false,
@@ -43,6 +51,14 @@
         "profile": "boost",
         "reasons": null,
         "slots": 2
+      },
+      "api": {
+        "since": "2026-11-23T03:22:37.521883609Z",
+        "at": "2026-11-23T03:24:57Z",
+        "requests": 740,
+        "not_modified": 697,
+        "billed": 43,
+        "rate_limited": 0
       }
     },
     {
@@ -53,7 +69,7 @@
       "cpu_model": "AMD EPYC 7763 64-Core Processor",
       "memory_gib": 15.6,
       "version": "0.0.1-scn.1",
-      "job_url": "https://github.com/baney75/tentmaker/actions/runs/45063494656/job/137335945033",
+      "job_url": "https://github.com/baney75/tentmaker/actions/runs/45105047156/job/137464292649",
       "budget": {
         "admit": true,
         "evict": false,
@@ -64,6 +80,14 @@
         "profile": "boost",
         "reasons": null,
         "slots": 2
+      },
+      "api": {
+        "since": "2026-11-23T03:21:07.604786015Z",
+        "at": "2026-11-23T03:22:41Z",
+        "requests": 507,
+        "not_modified": 459,
+        "billed": 48,
+        "rate_limited": 0
       }
     },
     {
@@ -71,10 +95,10 @@
       "image_os": "ubuntu26",
       "image_version": "20261116.202.1",
       "cpus": 4,
-      "cpu_model": "AMD EPYC 7763 64-Core Processor",
+      "cpu_model": "AMD EPYC 9V45 96-Core Processor",
       "memory_gib": 15.6,
       "version": "0.0.1-scn.1",
-      "job_url": "https://github.com/baney75/tentmaker/actions/runs/45063494656/job/137335944959",
+      "job_url": "https://github.com/baney75/tentmaker/actions/runs/45105047156/job/137464292365",
       "budget": {
         "admit": true,
         "evict": false,
@@ -85,6 +109,14 @@
         "profile": "boost",
         "reasons": null,
         "slots": 2
+      },
+      "api": {
+        "since": "2026-11-23T03:22:57.739195591Z",
+        "at": "2026-11-23T03:25:24Z",
+        "requests": 782,
+        "not_modified": 741,
+        "billed": 41,
+        "rate_limited": 0
       }
     },
     {
@@ -92,10 +124,10 @@
       "image_os": "ubuntu26",
       "image_version": "20261116.202.1",
       "cpus": 4,
-      "cpu_model": "INTEL(R) XEON(R) PLATINUM 8573C",
+      "cpu_model": "AMD EPYC 7763 64-Core Processor",
       "memory_gib": 15.6,
       "version": "0.0.1-scn.1",
-      "job_url": "https://github.com/baney75/tentmaker/actions/runs/45063494656/job/137335945043",
+      "job_url": "https://github.com/baney75/tentmaker/actions/runs/45105047156/job/137464292598",
       "budget": {
         "admit": true,
         "evict": false,
@@ -106,21 +138,31 @@
         "profile": "boost",
         "reasons": null,
         "slots": 2
+      },
+      "api": {
+        "since": "2026-11-23T03:20:04.785802559Z",
+        "at": "2026-11-23T03:20:54Z",
+        "requests": 204,
+        "not_modified": 164,
+        "billed": 40,
+        "rate_limited": 0
       }
     }
   ],
   "start_latency_s": {
     "github": {
       "n": 30,
-      "median": 2,
+      "median": 3,
       "min": 1,
-      "max": 2
+      "max": 66,
+      "p95": 48
     },
     "tentmaker": {
       "n": 30,
-      "median": 4,
-      "min": 2,
-      "max": 2235
+      "median": 1,
+      "min": 0,
+      "max": 2,
+      "p95": 2
     }
   },
   "workloads": [
@@ -132,75 +174,89 @@
         "cold": {
           "runs": 3,
           "failed": 0,
-          "no_go": 3,
+          "go": [
+            "go1.25.0"
+          ],
           "job_s": {
             "n": 3,
-            "median": 80,
-            "min": 79,
-            "max": 94
+            "median": 95,
+            "min": 94,
+            "max": 95,
+            "p95": 95
           },
           "start_s": {
             "n": 3,
-            "median": 2,
-            "min": 1,
-            "max": 2
+            "median": 3,
+            "min": 3,
+            "max": 21,
+            "p95": 21
           },
           "phases_s": {
             "deps": {
               "n": 3,
-              "median": 0.3,
+              "median": 0.2,
               "min": 0.2,
-              "max": 0.4
+              "max": 0.3,
+              "p95": 0.3
             },
             "setup": {
               "n": 3,
-              "median": 12.2,
-              "min": 10.2,
-              "max": 12.6
+              "median": 13,
+              "min": 12.2,
+              "max": 13.1,
+              "p95": 13.1
             },
             "test": {
               "n": 3,
-              "median": 64,
-              "min": 63.6,
-              "max": 74.9
+              "median": 75,
+              "min": 74.6,
+              "max": 75.8,
+              "p95": 75.8
             }
           }
         },
         "warm": {
           "runs": 3,
           "failed": 0,
-          "cache_unrecorded": 3,
-          "no_go": 3,
+          "cache_hits": 3,
+          "go": [
+            "go1.25.0"
+          ],
           "job_s": {
             "n": 3,
-            "median": 28,
-            "min": 25,
-            "max": 31
+            "median": 33,
+            "min": 30,
+            "max": 37,
+            "p95": 37
           },
           "start_s": {
             "n": 3,
             "median": 2,
-            "min": 1,
-            "max": 2
+            "min": 2,
+            "max": 2,
+            "p95": 2
           },
           "phases_s": {
             "deps": {
               "n": 3,
               "median": 0,
               "min": 0,
-              "max": 0
+              "max": 0,
+              "p95": 0
             },
             "setup": {
               "n": 3,
-              "median": 11.1,
-              "min": 10.6,
-              "max": 12.8
+              "median": 12.3,
+              "min": 11.1,
+              "max": 19.1,
+              "p95": 19.1
             },
             "test": {
               "n": 3,
-              "median": 15.2,
-              "min": 12.2,
-              "max": 15.9
+              "median": 16.9,
+              "min": 14.4,
+              "max": 18.7,
+              "p95": 18.7
             }
           }
         }
@@ -209,80 +265,94 @@
         "cold": {
           "runs": 3,
           "failed": 0,
-          "no_go": 3,
+          "go": [
+            "go1.25.0"
+          ],
           "job_s": {
             "n": 3,
-            "median": 135,
-            "min": 134,
-            "max": 148
+            "median": 113,
+            "min": 112,
+            "max": 115,
+            "p95": 115
           },
           "start_s": {
             "n": 3,
-            "median": 57,
-            "min": 4,
-            "max": 2235
+            "median": 1,
+            "min": 1,
+            "max": 2,
+            "p95": 2
           },
           "phases_s": {
             "deps": {
               "n": 3,
               "median": 0.3,
-              "min": 0.2,
-              "max": 0.3
+              "min": 0.3,
+              "max": 0.3,
+              "p95": 0.3
             },
             "setup": {
               "n": 3,
-              "median": 1.2,
-              "min": 1,
-              "max": 1.3
+              "median": 1.8,
+              "min": 1.6,
+              "max": 2.3,
+              "p95": 2.3
             },
             "test": {
               "n": 3,
-              "median": 131.9,
-              "min": 130.9,
-              "max": 144.1
+              "median": 110.5,
+              "min": 109.1,
+              "max": 111.5,
+              "p95": 111.5
             }
           }
         },
         "warm": {
           "runs": 3,
           "failed": 0,
-          "cache_unrecorded": 3,
-          "no_go": 3,
+          "cache_hits": 3,
+          "go": [
+            "go1.25.0"
+          ],
           "job_s": {
             "n": 3,
             "median": 22,
             "min": 22,
-            "max": 138
+            "max": 22,
+            "p95": 22
           },
           "start_s": {
             "n": 3,
-            "median": 3,
-            "min": 2,
-            "max": 31
+            "median": 1,
+            "min": 1,
+            "max": 2,
+            "p95": 2
           },
           "phases_s": {
             "deps": {
               "n": 3,
               "median": 0,
               "min": 0,
-              "max": 0.3
+              "max": 0,
+              "p95": 0
             },
             "setup": {
               "n": 3,
-              "median": 1.7,
-              "min": 1.5,
-              "max": 1.7
+              "median": 1.8,
+              "min": 1.4,
+              "max": 2.2,
+              "p95": 2.2
             },
             "test": {
               "n": 3,
-              "median": 20,
-              "min": 19.8,
-              "max": 134.9
+              "median": 20.1,
+              "min": 19.5,
+              "max": 20.1,
+              "p95": 20.1
             }
           }
         }
       },
-      "speedup_warm": 1.3
+      "speedup_warm": 1.5
     },
     {
       "name": "cross-build",
@@ -292,75 +362,89 @@
         "cold": {
           "runs": 3,
           "failed": 0,
-          "no_go": 3,
+          "go": [
+            "go1.25.0"
+          ],
           "job_s": {
             "n": 3,
-            "median": 90,
-            "min": 80,
-            "max": 96
+            "median": 98,
+            "min": 84,
+            "max": 123,
+            "p95": 123
           },
           "start_s": {
             "n": 3,
-            "median": 1,
-            "min": 1,
-            "max": 2
+            "median": 4,
+            "min": 2,
+            "max": 18,
+            "p95": 18
           },
           "phases_s": {
             "build": {
               "n": 3,
-              "median": 71.9,
-              "min": 62.4,
-              "max": 75.5
+              "median": 78.6,
+              "min": 68.1,
+              "max": 99.7,
+              "p95": 99.7
             },
             "deps": {
               "n": 3,
               "median": 0.3,
-              "min": 0.2,
-              "max": 0.4
+              "min": 0.3,
+              "max": 0.4,
+              "p95": 0.4
             },
             "setup": {
               "n": 3,
-              "median": 11.9,
-              "min": 11.3,
-              "max": 13.2
+              "median": 11.8,
+              "min": 9.3,
+              "max": 13.5,
+              "p95": 13.5
             }
           }
         },
         "warm": {
           "runs": 3,
           "failed": 0,
-          "cache_unrecorded": 3,
-          "no_go": 3,
+          "cache_hits": 3,
+          "go": [
+            "go1.25.0"
+          ],
           "job_s": {
             "n": 3,
-            "median": 19,
-            "min": 17,
-            "max": 19
+            "median": 20,
+            "min": 20,
+            "max": 20,
+            "p95": 20
           },
           "start_s": {
             "n": 3,
             "median": 2,
-            "min": 2,
-            "max": 2
+            "min": 1,
+            "max": 2,
+            "p95": 2
           },
           "phases_s": {
             "build": {
               "n": 3,
-              "median": 3.2,
-              "min": 2.9,
-              "max": 3.3
+              "median": 3.7,
+              "min": 2.7,
+              "max": 3.8,
+              "p95": 3.8
             },
             "deps": {
               "n": 3,
               "median": 0,
               "min": 0,
-              "max": 0
+              "max": 0,
+              "p95": 0
             },
             "setup": {
               "n": 3,
-              "median": 12.9,
-              "min": 11.5,
-              "max": 13.3
+              "median": 13.8,
+              "min": 13.7,
+              "max": 15.8,
+              "p95": 15.8
             }
           }
         }
@@ -368,81 +452,95 @@
       "tentmaker": {
         "cold": {
           "runs": 3,
-          "failed": 0,
-          "no_go": 3,
+          "failed": 1,
+          "go": [
+            "go1.25.0"
+          ],
           "job_s": {
-            "n": 3,
-            "median": 143,
-            "min": 139,
-            "max": 2255
+            "n": 2,
+            "median": 120,
+            "min": 120,
+            "max": 120,
+            "p95": 120
           },
           "start_s": {
             "n": 3,
-            "median": 2,
-            "min": 2,
-            "max": 5
+            "median": 1,
+            "min": 1,
+            "max": 2,
+            "p95": 2
           },
           "phases_s": {
             "build": {
-              "n": 3,
-              "median": 134.7,
-              "min": 133.9,
-              "max": 139.5
+              "n": 2,
+              "median": 117.6,
+              "min": 117.5,
+              "max": 117.7,
+              "p95": 117.7
             },
             "deps": {
-              "n": 3,
-              "median": 0.4,
-              "min": 0.3,
-              "max": 0.5
+              "n": 2,
+              "median": 0.2,
+              "min": 0.2,
+              "max": 0.2,
+              "p95": 0.2
             },
             "setup": {
-              "n": 3,
-              "median": 2,
-              "min": 2,
-              "max": 2.4
+              "n": 2,
+              "median": 1.3,
+              "min": 1.3,
+              "max": 1.3,
+              "p95": 1.3
             }
           }
         },
         "warm": {
           "runs": 3,
           "failed": 0,
-          "cache_unrecorded": 3,
-          "no_go": 3,
+          "cache_hits": 3,
+          "go": [
+            "go1.25.0"
+          ],
           "job_s": {
             "n": 3,
             "median": 6,
             "min": 5,
-            "max": 6
+            "max": 6,
+            "p95": 6
           },
           "start_s": {
             "n": 3,
-            "median": 11,
-            "min": 4,
-            "max": 18
+            "median": 1,
+            "min": 0,
+            "max": 1,
+            "p95": 1
           },
           "phases_s": {
             "build": {
               "n": 3,
-              "median": 3.4,
-              "min": 3.3,
-              "max": 3.4
+              "median": 3.2,
+              "min": 3.2,
+              "max": 3.4,
+              "p95": 3.4
             },
             "deps": {
               "n": 3,
               "median": 0,
               "min": 0,
-              "max": 0
+              "max": 0,
+              "p95": 0
             },
             "setup": {
               "n": 3,
-              "median": 1.6,
-              "min": 1.6,
-              "max": 1.7
+              "median": 2.2,
+              "min": 1.5,
+              "max": 2.3,
+              "p95": 2.3
             }
           }
         }
       },
-      "speedup_warm": 3.2
+      "speedup_warm": 3.3
     },
     {
       "name": "node",
@@ -455,82 +553,94 @@
           "job_s": {
             "n": 3,
             "median": 16,
-            "min": 16,
-            "max": 22
+            "min": 15,
+            "max": 20,
+            "p95": 20
           },
           "start_s": {
             "n": 3,
-            "median": 2,
-            "min": 1,
-            "max": 2
+            "median": 3,
+            "min": 2,
+            "max": 44,
+            "p95": 44
           },
           "phases_s": {
             "deps": {
               "n": 3,
-              "median": 2.3,
-              "min": 2.1,
-              "max": 3.4
+              "median": 1.9,
+              "min": 1.7,
+              "max": 2.3,
+              "p95": 2.3
             },
             "fetch": {
               "n": 3,
-              "median": 0.1,
-              "min": 0,
-              "max": 0.2
+              "median": 0.3,
+              "min": 0.2,
+              "max": 0.4,
+              "p95": 0.4
             },
             "setup": {
               "n": 3,
               "median": 3.7,
-              "min": 3.3,
-              "max": 8
+              "min": 3,
+              "max": 4.8,
+              "p95": 4.8
             },
             "test": {
               "n": 3,
-              "median": 8.1,
-              "min": 7.6,
-              "max": 8.2
+              "median": 7.1,
+              "min": 6.7,
+              "max": 8,
+              "p95": 8
             }
           }
         },
         "warm": {
           "runs": 3,
           "failed": 0,
-          "cache_unrecorded": 3,
+          "cache_hits": 3,
           "job_s": {
             "n": 3,
             "median": 18,
-            "min": 16,
-            "max": 23
+            "min": 15,
+            "max": 19,
+            "p95": 19
           },
           "start_s": {
             "n": 3,
-            "median": 2,
+            "median": 32,
             "min": 1,
-            "max": 2
+            "max": 36,
+            "p95": 36
           },
           "phases_s": {
             "deps": {
               "n": 3,
-              "median": 2.4,
-              "min": 1.5,
-              "max": 3.5
+              "median": 1.9,
+              "min": 1.2,
+              "max": 2.3,
+              "p95": 2.3
             },
             "fetch": {
               "n": 3,
-              "median": 0.3,
+              "median": 0.2,
               "min": 0.1,
-              "max": 0.4
+              "max": 0.4,
+              "p95": 0.4
             },
             "setup": {
               "n": 3,
-              "median": 5.1,
-              "min": 4.6,
-              "max": 6.9
+              "median": 4.5,
+              "min": 4.4,
+              "max": 6.9,
+              "p95": 6.9
             },
             "test": {
               "n": 3,
-              "median": 7.9,
-              "min": 6.7,
-              "max": 10.1
+              "median": 6.4,
+              "min": 6,
+              "max": 8.9,
+              "p95": 8.9
             }
           }
         }
@@ -541,88 +651,100 @@
           "failed": 0,
           "job_s": {
             "n": 3,
-            "median": 19,
-            "min": 19,
-            "max": 31
+            "median": 20,
+            "min": 20,
+            "max": 20,
+            "p95": 20
           },
           "start_s": {
             "n": 3,
-            "median": 2,
-            "min": 2,
-            "max": 47
+            "median": 1,
+            "min": 1,
+            "max": 2,
+            "p95": 2
           },
           "phases_s": {
             "deps": {
               "n": 3,
-              "median": 2.6,
-              "min": 2.5,
-              "max": 2.6
+              "median": 2.7,
+              "min": 2.7,
+              "max": 2.8,
+              "p95": 2.8
             },
             "fetch": {
               "n": 3,
               "median": 0.1,
               "min": 0.1,
-              "max": 0.1
+              "max": 0.1,
+              "p95": 0.1
             },
             "setup": {
               "n": 3,
               "median": 1.6,
-              "min": 1.5,
-              "max": 2.2
+              "min": 1.6,
+              "max": 1.8,
+              "p95": 1.8
             },
             "test": {
               "n": 3,
-              "median": 13.9,
-              "min": 13.9,
-              "max": 14.4
+              "median": 14.7,
+              "min": 14.6,
+              "max": 14.7,
+              "p95": 14.7
             }
           }
         },
         "warm": {
           "runs": 3,
-          "failed": 0,
-          "cache_unrecorded": 3,
+          "failed": 1,
+          "cache_hits": 2,
           "job_s": {
-            "n": 3,
-            "median": 18,
-            "min": 18,
-            "max": 20
+            "n": 2,
+            "median": 19,
+            "min": 19,
+            "max": 19,
+            "p95": 19
           },
           "start_s": {
             "n": 3,
-            "median": 5,
-            "min": 3,
-            "max": 7
+            "median": 1,
+            "min": 1,
+            "max": 1,
+            "p95": 1
           },
           "phases_s": {
             "deps": {
-              "n": 3,
-              "median": 1.7,
-              "min": 1.7,
-              "max": 2.6
+              "n": 2,
+              "median": 2,
+              "min": 2,
+              "max": 2,
+              "p95": 2
             },
             "fetch": {
-              "n": 3,
+              "n": 2,
               "median": 0.1,
               "min": 0.1,
-              "max": 0.1
+              "max": 0.1,
+              "p95": 0.1
             },
             "setup": {
-              "n": 3,
-              "median": 1.7,
+              "n": 2,
+              "median": 1.6,
               "min": 1.5,
-              "max": 1.7
+              "max": 1.7,
+              "p95": 1.7
             },
             "test": {
-              "n": 3,
-              "median": 14,
-              "min": 13.9,
-              "max": 14.1
+              "n": 2,
+              "median": 14.5,
+              "min": 14.4,
+              "max": 14.5,
+              "p95": 14.5
             }
           }
         }
       },
-      "speedup_warm": 1
+      "speedup_warm": 0.9
     },
     {
       "name": "docker",
@@ -631,61 +753,69 @@
       "github": {
         "cold": {
           "runs": 3,
-          "failed": 0,
+          "failed": 1,
           "job_s": {
-            "n": 3,
-            "median": 28,
-            "min": 26,
-            "max": 31
+            "n": 2,
+            "median": 30.5,
+            "min": 30,
+            "max": 31,
+            "p95": 31
           },
           "start_s": {
             "n": 3,
-            "median": 2,
-            "min": 1,
-            "max": 2
+            "median": 13,
+            "min": 6,
+            "max": 48,
+            "p95": 48
           },
           "phases_s": {
             "build": {
-              "n": 3,
-              "median": 23.4,
-              "min": 21.4,
-              "max": 26.3
+              "n": 2,
+              "median": 24.6,
+              "min": 21.6,
+              "max": 27.6,
+              "p95": 27.6
             },
             "setup": {
-              "n": 3,
-              "median": 2.9,
-              "min": 2.8,
-              "max": 3.3
+              "n": 2,
+              "median": 4.5,
+              "min": 2.4,
+              "max": 6.6,
+              "p95": 6.6
             }
           }
         },
         "warm": {
           "runs": 3,
-          "failed": 1,
+          "failed": 0,
           "job_s": {
-            "n": 2,
-            "median": 27.5,
-            "min": 27,
-            "max": 28
+            "n": 3,
+            "median": 27,
+            "min": 26,
+            "max": 28,
+            "p95": 28
           },
           "start_s": {
             "n": 3,
-            "median": 1,
-            "min": 1,
-            "max": 2
+            "median": 5,
+            "min": 2,
+            "max": 9,
+            "p95": 9
           },
           "phases_s": {
             "build": {
-              "n": 2,
-              "median": 22.4,
-              "min": 21.9,
-              "max": 22.8
+              "n": 3,
+              "median": 22.3,
+              "min": 21.2,
+              "max": 22.8,
+              "p95": 22.8
             },
             "setup": {
-              "n": 2,
-              "median": 3.3,
-              "min": 2.9,
-              "max": 3.6
+              "n": 3,
+              "median": 3,
+              "min": 2.8,
+              "max": 3.6,
+              "p95": 3.6
             }
           }
         }
@@ -696,28 +826,32 @@
           "failed": 0,
           "job_s": {
             "n": 3,
-            "median": 39,
-            "min": 39,
-            "max": 42
+            "median": 40,
+            "min": 40,
+            "max": 41,
+            "p95": 41
           },
           "start_s": {
             "n": 3,
-            "median": 4,
-            "min": 2,
-            "max": 4
+            "median": 1,
+            "min": 1,
+            "max": 1,
+            "p95": 1
           },
           "phases_s": {
             "build": {
               "n": 3,
-              "median": 35.4,
-              "min": 35.1,
-              "max": 37.8
+              "median": 37,
+              "min": 36.7,
+              "max": 37.3,
+              "p95": 37.3
             },
             "setup": {
               "n": 3,
-              "median": 1.7,
-              "min": 1.2,
-              "max": 2
+              "median": 1.5,
+              "min": 1.5,
+              "max": 1.7,
+              "p95": 1.7
             }
           }
         },
@@ -726,33 +860,37 @@
           "failed": 0,
           "job_s": {
             "n": 3,
-            "median": 41,
-            "min": 40,
-            "max": 41
+            "median": 42,
+            "min": 41,
+            "max": 42,
+            "p95": 42
           },
           "start_s": {
             "n": 3,
-            "median": 5,
-            "min": 3,
-            "max": 6
+            "median": 1,
+            "min": 1,
+            "max": 2,
+            "p95": 2
           },
           "phases_s": {
             "build": {
               "n": 3,
-              "median": 36.1,
-              "min": 35.6,
-              "max": 36.3
+              "median": 36.8,
+              "min": 36.5,
+              "max": 37.6,
+              "p95": 37.6
             },
             "setup": {
               "n": 3,
-              "median": 1.2,
-              "min": 1.1,
-              "max": 1.7
+              "median": 1.5,
+              "min": 1.5,
+              "max": 1.7,
+              "p95": 1.7
             }
           }
         }
       },
-      "speedup_warm": 0.7
+      "speedup_warm": 0.6
     },
     {
       "name": "cache",
@@ -764,87 +902,99 @@
           "failed": 0,
           "job_s": {
             "n": 3,
-            "median": 8,
-            "min": 8,
-            "max": 12
+            "median": 11,
+            "min": 9,
+            "max": 13,
+            "p95": 13
           },
           "start_s": {
             "n": 3,
             "median": 2,
             "min": 1,
-            "max": 2
+            "max": 2,
+            "p95": 2
           },
           "phases_s": {
             "restore": {
               "n": 3,
-              "median": 0.2,
+              "median": 0.3,
               "min": 0.2,
-              "max": 0.3
+              "max": 0.4,
+              "p95": 0.4
             },
             "save": {
               "n": 3,
-              "median": 1.9,
-              "min": 1.7,
-              "max": 2.6
+              "median": 2.9,
+              "min": 2.7,
+              "max": 3.1,
+              "p95": 3.1
             },
             "setup": {
               "n": 3,
-              "median": 3.4,
-              "min": 2.7,
-              "max": 8.1
+              "median": 6.2,
+              "min": 3.3,
+              "max": 6.5,
+              "p95": 6.5
             }
           },
           "mbps": {
             "save": {
               "n": 3,
-              "median": 138,
-              "min": 104,
-              "max": 155.1
+              "median": 91.4,
+              "min": 85.8,
+              "max": 99.1,
+              "p95": 99.1
             }
           }
         },
         "warm": {
           "runs": 3,
           "failed": 0,
-          "cache_unrecorded": 3,
+          "cache_hits": 3,
           "job_s": {
             "n": 3,
-            "median": 8,
+            "median": 12,
             "min": 7,
-            "max": 8
+            "max": 17,
+            "p95": 17
           },
           "start_s": {
             "n": 3,
-            "median": 2,
-            "min": 1,
-            "max": 2
+            "median": 7,
+            "min": 3,
+            "max": 66,
+            "p95": 66
           },
           "phases_s": {
             "restore": {
               "n": 3,
-              "median": 2.6,
-              "min": 2.1,
-              "max": 2.6
+              "median": 2,
+              "min": 1.9,
+              "max": 5,
+              "p95": 5
             },
             "save": {
               "n": 3,
               "median": 0,
               "min": 0,
-              "max": 0
+              "max": 0,
+              "p95": 0
             },
             "setup": {
               "n": 3,
-              "median": 2.9,
-              "min": 2.6,
-              "max": 3.2
+              "median": 7.4,
+              "min": 2.8,
+              "max": 8.1,
+              "p95": 8.1
             }
           },
           "mbps": {
             "restore": {
               "n": 3,
-              "median": 103.9,
-              "min": 102.1,
-              "max": 125
+              "median": 131,
+              "min": 53.7,
+              "max": 142.6,
+              "p95": 142.6
             }
           }
         }
@@ -855,87 +1005,99 @@
           "failed": 0,
           "job_s": {
             "n": 3,
-            "median": 3,
-            "min": 3,
-            "max": 4
+            "median": 5,
+            "min": 4,
+            "max": 5,
+            "p95": 5
           },
           "start_s": {
             "n": 3,
-            "median": 3,
-            "min": 3,
-            "max": 3
+            "median": 1,
+            "min": 0,
+            "max": 2,
+            "p95": 2
           },
           "phases_s": {
             "restore": {
               "n": 3,
               "median": 0,
               "min": 0,
-              "max": 0
+              "max": 0,
+              "p95": 0
             },
             "save": {
               "n": 3,
-              "median": 0.2,
-              "min": 0.2,
-              "max": 1.3
+              "median": 1.3,
+              "min": 0.6,
+              "max": 1.3,
+              "p95": 1.3
             },
             "setup": {
               "n": 3,
-              "median": 1.7,
-              "min": 1.6,
-              "max": 1.9
+              "median": 2.1,
+              "min": 2,
+              "max": 2.3,
+              "p95": 2.3
             }
           },
           "mbps": {
             "save": {
               "n": 3,
-              "median": 1304.3,
-              "min": 199.2,
-              "max": 1481.1
+              "median": 210.8,
+              "min": 210.6,
+              "max": 452.7,
+              "p95": 452.7
             }
           }
         },
         "warm": {
           "runs": 3,
           "failed": 0,
-          "cache_unrecorded": 3,
+          "cache_hits": 3,
           "job_s": {
-            "n": 3,
-            "median": 2,
-            "min": 2,
-            "max": 2
-          },
-          "start_s": {
             "n": 3,
             "median": 3,
             "min": 2,
-            "max": 4
+            "max": 3,
+            "p95": 3
+          },
+          "start_s": {
+            "n": 3,
+            "median": 1,
+            "min": 0,
+            "max": 2,
+            "p95": 2
           },
           "phases_s": {
             "restore": {
               "n": 3,
               "median": 0.2,
-              "min": 0.1,
-              "max": 0.2
+              "min": 0.2,
+              "max": 0.2,
+              "p95": 0.2
             },
             "save": {
               "n": 3,
               "median": 0,
               "min": 0,
-              "max": 0
+              "max": 0,
+              "p95": 0
             },
             "setup": {
               "n": 3,
-              "median": 1.3,
-              "min": 1.3,
-              "max": 1.6
+              "median": 1.7,
+              "min": 1.4,
+              "max": 2.2,
+              "p95": 2.2
             }
           },
           "mbps": {
             "restore": {
               "n": 3,
-              "median": 1699.8,
-              "min": 1469.9,
-              "max": 1823.2
+              "median": 1240.2,
+              "min": 1100.7,
+              "max": 1258.4,
+              "p95": 1258.4
             }
           }
         }
@@ -946,22 +1108,7 @@
   "gate": {
     "pass": false,
     "failures": [
-      "go-test: 3 passing GitHub-hosted cold runs recorded no Go version",
-      "go-test: 3 passing GitHub-hosted warm runs recorded no Go version",
-      "go-test: 3 passing Tentmaker cold runs recorded no Go version",
-      "go-test: 3 passing Tentmaker warm runs recorded no Go version",
-      "go-test: 3 passing Tentmaker warm runs didn't record whether they hit the cache",
-      "go-test: 3 passing GitHub-hosted warm runs didn't record whether they hit the cache",
-      "cross-build: 3 passing GitHub-hosted cold runs recorded no Go version",
-      "cross-build: 3 passing GitHub-hosted warm runs recorded no Go version",
-      "cross-build: 3 passing Tentmaker cold runs recorded no Go version",
-      "cross-build: 3 passing Tentmaker warm runs recorded no Go version",
-      "cross-build: 3 passing Tentmaker warm runs didn't record whether they hit the cache",
-      "cross-build: 3 passing GitHub-hosted warm runs didn't record whether they hit the cache",
-      "node: 3 passing Tentmaker warm runs didn't record whether they hit the cache",
-      "node: 3 passing GitHub-hosted warm runs didn't record whether they hit the cache",
-      "cache: 3 passing Tentmaker warm runs didn't record whether they hit the cache",
-      "cache: 3 passing GitHub-hosted warm runs didn't record whether they hit the cache"
+      "node: 2 passing Tentmaker warm runs that hit the cache, of 3 (1 failed, 0 missed the cache); the gate needs 3"
     ]
   },
   "samples": [
@@ -972,17 +1119,18 @@
       "rep": 1,
       "ok": true,
       "conclusion": "success",
-      "start_s": 1,
-      "job_s": 8,
+      "start_s": 2,
+      "job_s": 9,
       "phases": {
         "restore": 0.3,
-        "save": 1.9,
-        "setup": 3.4
+        "save": 3.1,
+        "setup": 3.3
       },
       "mbps": {
-        "save": 138
+        "save": 85.8
       },
-      "url": "https://github.com/baney75/tentmaker/actions/runs/45063494656/job/137335945217"
+      "cache_hit": false,
+      "url": "https://github.com/baney75/tentmaker/actions/runs/45105047156/job/137464292704"
     },
     {
       "workload": "cache",
@@ -991,131 +1139,138 @@
       "rep": 2,
       "ok": true,
       "conclusion": "success",
-      "start_s": 2,
-      "job_s": 12,
+      "start_s": 1,
+      "job_s": 11,
       "phases": {
         "restore": 0.2,
-        "save": 1.7,
+        "save": 2.7,
+        "setup": 6.5
+      },
+      "mbps": {
+        "save": 99.1
+      },
+      "cache_hit": false,
+      "url": "https://github.com/baney75/tentmaker/actions/runs/45105047156/job/137464356066"
+    },
+    {
+      "workload": "cache",
+      "platform": "github",
+      "round": "cold",
+      "rep": 3,
+      "ok": true,
+      "conclusion": "success",
+      "start_s": 2,
+      "job_s": 13,
+      "phases": {
+        "restore": 0.4,
+        "save": 2.9,
+        "setup": 6.2
+      },
+      "mbps": {
+        "save": 91.4
+      },
+      "cache_hit": false,
+      "url": "https://github.com/baney75/tentmaker/actions/runs/45105047156/job/137464423775"
+    },
+    {
+      "workload": "cache",
+      "platform": "github",
+      "round": "warm",
+      "rep": 1,
+      "ok": true,
+      "conclusion": "success",
+      "start_s": 66,
+      "job_s": 17,
+      "phases": {
+        "restore": 5,
+        "save": 0,
+        "setup": 7.4
+      },
+      "mbps": {
+        "restore": 53.7
+      },
+      "cache_hit": true,
+      "url": "https://github.com/baney75/tentmaker/actions/runs/45105047156/job/137464501528"
+    },
+    {
+      "workload": "cache",
+      "platform": "github",
+      "round": "warm",
+      "rep": 2,
+      "ok": true,
+      "conclusion": "success",
+      "start_s": 7,
+      "job_s": 7,
+      "phases": {
+        "restore": 1.9,
+        "save": 0,
+        "setup": 2.8
+      },
+      "mbps": {
+        "restore": 142.6
+      },
+      "cache_hit": true,
+      "url": "https://github.com/baney75/tentmaker/actions/runs/45105047156/job/137464937309"
+    },
+    {
+      "workload": "cache",
+      "platform": "github",
+      "round": "warm",
+      "rep": 3,
+      "ok": true,
+      "conclusion": "success",
+      "start_s": 3,
+      "job_s": 12,
+      "phases": {
+        "restore": 2,
+        "save": 0,
         "setup": 8.1
       },
       "mbps": {
-        "save": 155.1
+        "restore": 131
       },
-      "url": "https://github.com/baney75/tentmaker/actions/runs/45063494656/job/137335995366"
+      "cache_hit": true,
+      "url": "https://github.com/baney75/tentmaker/actions/runs/45105047156/job/137465009170"
     },
     {
       "workload": "cache",
-      "platform": "github",
+      "platform": "tentmaker",
       "round": "cold",
-      "rep": 3,
-      "ok": true,
-      "conclusion": "success",
-      "start_s": 2,
-      "job_s": 8,
-      "phases": {
-        "restore": 0.2,
-        "save": 2.6,
-        "setup": 2.7
-      },
-      "mbps": {
-        "save": 104
-      },
-      "url": "https://github.com/baney75/tentmaker/actions/runs/45063494656/job/137336066238"
-    },
-    {
-      "workload": "cache",
-      "platform": "github",
-      "round": "warm",
       "rep": 1,
       "ok": true,
       "conclusion": "success",
       "start_s": 1,
-      "job_s": 8,
-      "phases": {
-        "restore": 2.6,
-        "save": 0,
-        "setup": 3.2
-      },
-      "mbps": {
-        "restore": 103.9
-      },
-      "url": "https://github.com/baney75/tentmaker/actions/runs/45063494656/job/137336112889"
-    },
-    {
-      "workload": "cache",
-      "platform": "github",
-      "round": "warm",
-      "rep": 2,
-      "ok": true,
-      "conclusion": "success",
-      "start_s": 2,
-      "job_s": 7,
-      "phases": {
-        "restore": 2.1,
-        "save": 0,
-        "setup": 2.6
-      },
-      "mbps": {
-        "restore": 125
-      },
-      "url": "https://github.com/baney75/tentmaker/actions/runs/45063494656/job/137336162765"
-    },
-    {
-      "workload": "cache",
-      "platform": "github",
-      "round": "warm",
-      "rep": 3,
-      "ok": true,
-      "conclusion": "success",
-      "start_s": 2,
-      "job_s": 8,
-      "phases": {
-        "restore": 2.6,
-        "save": 0,
-        "setup": 2.9
-      },
-      "mbps": {
-        "restore": 102.1
-      },
-      "url": "https://github.com/baney75/tentmaker/actions/runs/45063494656/job/137336212015"
-    },
-    {
-      "workload": "cache",
-      "platform": "tentmaker",
-      "round": "cold",
-      "rep": 1,
-      "ok": true,
-      "conclusion": "success",
-      "start_s": 3,
-      "job_s": 3,
-      "phases": {
-        "restore": 0,
-        "save": 0.2,
-        "setup": 1.9
-      },
-      "mbps": {
-        "save": 1304.3
-      },
-      "url": "https://github.com/baney75/tentmaker/actions/runs/45063494656/job/137335944816"
-    },
-    {
-      "workload": "cache",
-      "platform": "tentmaker",
-      "round": "cold",
-      "rep": 2,
-      "ok": true,
-      "conclusion": "success",
-      "start_s": 3,
       "job_s": 4,
       "phases": {
         "restore": 0,
-        "save": 1.3,
-        "setup": 1.6
+        "save": 0.6,
+        "setup": 2.1
       },
       "mbps": {
-        "save": 199.2
+        "save": 452.7
       },
-      "url": "https://github.com/baney75/tentmaker/actions/runs/45063494656/job/137335944816"
+      "cache_hit": false,
+      "url": "https://github.com/baney75/tentmaker/actions/runs/45105047156/job/137464292587"
+    },
+    {
+      "workload": "cache",
+      "platform": "tentmaker",
+      "round": "cold",
+      "rep": 2,
+      "ok": true,
+      "conclusion": "success",
+      "start_s": 0,
+      "job_s": 5,
+      "phases": {
+        "restore": 0,
+        "save": 1.3,
+        "setup": 2
+      },
+      "mbps": {
+        "save": 210.8
+      },
+      "cache_hit": false,
+      "url": "https://github.com/baney75/tentmaker/actions/runs/45105047156/job/137464292587"
     },
     {
       "workload": "cache",
@@ -1124,42 +1279,64 @@
       "rep": 3,
       "ok": true,
       "conclusion": "success",
-      "start_s": 3,
-      "job_s": 3,
+      "start_s": 2,
+      "job_s": 5,
       "phases": {
         "restore": 0,
-        "save": 0.2,
+        "save": 1.3,
+        "setup": 2.3
+      },
+      "mbps": {
+        "save": 210.6
+      },
+      "cache_hit": false,
+      "url": "https://github.com/baney75/tentmaker/actions/runs/45105047156/job/137464292587"
+    },
+    {
+      "workload": "cache",
+      "platform": "tentmaker",
+      "round": "warm",
+      "rep": 1,
+      "ok": true,
+      "conclusion": "success",
+      "start_s": 0,
+      "job_s": 3,
+      "phases": {
+        "restore": 0.2,
+        "save": 0,
+        "setup": 2.2
+      },
+      "mbps": {
+        "restore": 1100.7
+      },
+      "cache_hit": true,
+      "url": "https://github.com/baney75/tentmaker/actions/runs/45105047156/job/137464292587"
+    },
+    {
+      "workload": "cache",
+      "platform": "tentmaker",
+      "round": "warm",
+      "rep": 2,
+      "ok": true,
+      "conclusion": "success",
+      "start_s": 1,
+      "job_s": 3,
+      "phases": {
+        "restore": 0.2,
+        "save": 0,
         "setup": 1.7
       },
       "mbps": {
-        "save": 1481.1
+        "restore": 1240.2
       },
-      "url": "https://github.com/baney75/tentmaker/actions/runs/45063494656/job/137335944816"
+      "cache_hit": true,
+      "url": "https://github.com/baney75/tentmaker/actions/runs/45105047156/job/137464292587"
     },
     {
       "workload": "cache",
       "platform": "tentmaker",
       "round": "warm",
-      "rep": 1,
-      "ok": true,
-      "conclusion": "success",
-      "start_s": 3,
-      "job_s": 2,
-      "phases": {
-        "restore": 0.2,
-        "save": 0,
-        "setup": 1.3
-      },
-      "mbps": {
-        "restore": 1469.9
-      },
-      "url": "https://github.com/baney75/tentmaker/actions/runs/45063494656/job/137335944816"
-    },
-    {
-      "workload": "cache",
-      "platform": "tentmaker",
-      "round": "warm",
-      "rep": 2,
+      "rep": 3,
       "ok": true,
       "conclusion": "success",
       "start_s": 2,
@@ -1167,207 +1344,211 @@
       "phases": {
         "restore": 0.2,
         "save": 0,
-        "setup": 1.6
+        "setup": 1.4
       },
       "mbps": {
-        "restore": 1699.8
+        "restore": 1258.4
       },
-      "url": "https://github.com/baney75/tentmaker/actions/runs/45063494656/job/137335944816"
+      "cache_hit": true,
+      "url": "https://github.com/baney75/tentmaker/actions/runs/45105047156/job/137464292587"
     },
     {
-      "workload": "cache",
-      "platform": "tentmaker",
-      "round": "warm",
-      "rep": 3,
+      "workload": "cross-build",
+      "platform": "github",
+      "round": "cold",
+      "rep": 1,
       "ok": true,
       "conclusion": "success",
       "start_s": 4,
-      "job_s": 2,
+      "job_s": 84,
       "phases": {
-        "restore": 0.1,
-        "save": 0,
-        "setup": 1.3
-      },
-      "mbps": {
-        "restore": 1823.2
-      },
-      "url": "https://github.com/baney75/tentmaker/actions/runs/45063494656/job/137335944816"
-    },
-    {
-      "workload": "cross-build",
-      "platform": "github",
-      "round": "cold",
-      "rep": 1,
-      "ok": true,
-      "conclusion": "success",
-      "start_s": 1,
-      "job_s": 96,
-      "phases": {
-        "build": 75.5,
-        "deps": 0.3,
-        "setup": 11.9
-      },
-      "url": "https://github.com/baney75/tentmaker/actions/runs/45063494656/job/137335945006"
-    },
-    {
-      "workload": "cross-build",
-      "platform": "github",
-      "round": "cold",
-      "rep": 2,
-      "ok": true,
-      "conclusion": "success",
-      "start_s": 2,
-      "job_s": 80,
-      "phases": {
-        "build": 62.4,
-        "deps": 0.2,
-        "setup": 13.2
-      },
-      "url": "https://github.com/baney75/tentmaker/actions/runs/45063494656/job/137336433054"
-    },
-    {
-      "workload": "cross-build",
-      "platform": "github",
-      "round": "cold",
-      "rep": 3,
-      "ok": true,
-      "conclusion": "success",
-      "start_s": 1,
-      "job_s": 90,
-      "phases": {
-        "build": 71.9,
+        "build": 68.1,
         "deps": 0.4,
-        "setup": 11.3
+        "setup": 9.3
       },
-      "url": "https://github.com/baney75/tentmaker/actions/runs/45063494656/job/137336844908"
+      "cache_hit": false,
+      "go": "go1.25.0",
+      "url": "https://github.com/baney75/tentmaker/actions/runs/45105047156/job/137464292784"
     },
     {
       "workload": "cross-build",
       "platform": "github",
-      "round": "warm",
-      "rep": 1,
-      "ok": true,
-      "conclusion": "success",
-      "start_s": 2,
-      "job_s": 19,
-      "phases": {
-        "build": 2.9,
-        "deps": 0,
-        "setup": 13.3
-      },
-      "url": "https://github.com/baney75/tentmaker/actions/runs/45063494656/job/137337305554"
-    },
-    {
-      "workload": "cross-build",
-      "platform": "github",
-      "round": "warm",
-      "rep": 2,
-      "ok": true,
-      "conclusion": "success",
-      "start_s": 2,
-      "job_s": 17,
-      "phases": {
-        "build": 3.2,
-        "deps": 0,
-        "setup": 11.5
-      },
-      "url": "https://github.com/baney75/tentmaker/actions/runs/45063494656/job/137337408249"
-    },
-    {
-      "workload": "cross-build",
-      "platform": "github",
-      "round": "warm",
-      "rep": 3,
-      "ok": true,
-      "conclusion": "success",
-      "start_s": 2,
-      "job_s": 19,
-      "phases": {
-        "build": 3.3,
-        "deps": 0,
-        "setup": 12.9
-      },
-      "url": "https://github.com/baney75/tentmaker/actions/runs/45063494656/job/137337498797"
-    },
-    {
-      "workload": "cross-build",
-      "platform": "tentmaker",
       "round": "cold",
-      "rep": 1,
-      "ok": true,
-      "conclusion": "success",
-      "start_s": 5,
-      "job_s": 143,
-      "phases": {
-        "build": 139.5,
-        "deps": 0.5,
-        "setup": 2.4
-      },
-      "url": "https://github.com/baney75/tentmaker/actions/runs/45063494656/job/137335945037"
-    },
-    {
-      "workload": "cross-build",
-      "platform": "tentmaker",
-      "round": "cold",
-      "rep": 2,
-      "ok": true,
-      "conclusion": "success",
-      "start_s": 2,
-      "job_s": 139,
-      "phases": {
-        "build": 134.7,
-        "deps": 0.3,
-        "setup": 2
-      },
-      "url": "https://github.com/baney75/tentmaker/actions/runs/45063494656/job/137335945037"
-    },
-    {
-      "workload": "cross-build",
-      "platform": "tentmaker",
-      "round": "cold",
-      "rep": 3,
-      "ok": true,
-      "conclusion": "success",
-      "start_s": 2,
-      "job_s": 2255,
-      "phases": {
-        "build": 133.9,
-        "deps": 0.4,
-        "setup": 2
-      },
-      "url": "https://github.com/baney75/tentmaker/actions/runs/45063494656/job/137335945037"
-    },
-    {
-      "workload": "cross-build",
-      "platform": "tentmaker",
-      "round": "warm",
-      "rep": 1,
-      "ok": true,
-      "conclusion": "success",
-      "start_s": 11,
-      "job_s": 5,
-      "phases": {
-        "build": 3.4,
-        "deps": 0,
-        "setup": 1.6
-      },
-      "url": "https://github.com/baney75/tentmaker/actions/runs/45063494656/job/137335945037"
-    },
-    {
-      "workload": "cross-build",
-      "platform": "tentmaker",
-      "round": "warm",
       "rep": 2,
       "ok": true,
       "conclusion": "success",
       "start_s": 18,
+      "job_s": 98,
+      "phases": {
+        "build": 78.6,
+        "deps": 0.3,
+        "setup": 11.8
+      },
+      "cache_hit": false,
+      "go": "go1.25.0",
+      "url": "https://github.com/baney75/tentmaker/actions/runs/45105047156/job/137464757200"
+    },
+    {
+      "workload": "cross-build",
+      "platform": "github",
+      "round": "cold",
+      "rep": 3,
+      "ok": true,
+      "conclusion": "success",
+      "start_s": 2,
+      "job_s": 123,
+      "phases": {
+        "build": 99.7,
+        "deps": 0.3,
+        "setup": 13.5
+      },
+      "cache_hit": false,
+      "go": "go1.25.0",
+      "url": "https://github.com/baney75/tentmaker/actions/runs/45105047156/job/137465371192"
+    },
+    {
+      "workload": "cross-build",
+      "platform": "github",
+      "round": "warm",
+      "rep": 1,
+      "ok": true,
+      "conclusion": "success",
+      "start_s": 1,
+      "job_s": 20,
+      "phases": {
+        "build": 3.8,
+        "deps": 0,
+        "setup": 13.7
+      },
+      "cache_hit": true,
+      "go": "go1.25.0",
+      "url": "https://github.com/baney75/tentmaker/actions/runs/45105047156/job/137466030635"
+    },
+    {
+      "workload": "cross-build",
+      "platform": "github",
+      "round": "warm",
+      "rep": 2,
+      "ok": true,
+      "conclusion": "success",
+      "start_s": 2,
+      "job_s": 20,
+      "phases": {
+        "build": 2.7,
+        "deps": 0,
+        "setup": 15.8
+      },
+      "cache_hit": true,
+      "go": "go1.25.0",
+      "url": "https://github.com/baney75/tentmaker/actions/runs/45105047156/job/137466146418"
+    },
+    {
+      "workload": "cross-build",
+      "platform": "github",
+      "round": "warm",
+      "rep": 3,
+      "ok": true,
+      "conclusion": "success",
+      "start_s": 2,
+      "job_s": 20,
+      "phases": {
+        "build": 3.7,
+        "deps": 0,
+        "setup": 13.8
+      },
+      "cache_hit": true,
+      "go": "go1.25.0",
+      "url": "https://github.com/baney75/tentmaker/actions/runs/45105047156/job/137466267565"
+    },
+    {
+      "workload": "cross-build",
+      "platform": "tentmaker",
+      "round": "cold",
+      "rep": 1,
+      "ok": false,
+      "conclusion": "none",
+      "start_s": 1,
+      "job_s": 0,
+      "phases": {
+        "build": 115.5,
+        "deps": 0.2,
+        "setup": 2.8
+      },
+      "cache_hit": false,
+      "go": "go1.25.0",
+      "url": "https://github.com/baney75/tentmaker/actions/runs/45105047156/job/137464292522"
+    },
+    {
+      "workload": "cross-build",
+      "platform": "tentmaker",
+      "round": "cold",
+      "rep": 2,
+      "ok": true,
+      "conclusion": "success",
+      "start_s": 2,
+      "job_s": 120,
+      "phases": {
+        "build": 117.5,
+        "deps": 0.2,
+        "setup": 1.3
+      },
+      "cache_hit": false,
+      "go": "go1.25.0",
+      "url": "https://github.com/baney75/tentmaker/actions/runs/45105047156/job/137464292522"
+    },
+    {
+      "workload": "cross-build",
+      "platform": "tentmaker",
+      "round": "cold",
+      "rep": 3,
+      "ok": true,
+      "conclusion": "success",
+      "start_s": 1,
+      "job_s": 120,
+      "phases": {
+        "build": 117.7,
+        "deps": 0.2,
+        "setup": 1.3
+      },
+      "cache_hit": false,
+      "go": "go1.25.0",
+      "url": "https://github.com/baney75/tentmaker/actions/runs/45105047156/job/137464292522"
+    },
+    {
+      "workload": "cross-build",
+      "platform": "tentmaker",
+      "round": "warm",
+      "rep": 1,
+      "ok": true,
+      "conclusion": "success",
+      "start_s": 1,
       "job_s": 6,
       "phases": {
         "build": 3.4,
         "deps": 0,
-        "setup": 1.7
+        "setup": 2.2
       },
-      "url": "https://github.com/baney75/tentmaker/actions/runs/45063494656/job/137335945037"
+      "cache_hit": true,
+      "go": "go1.25.0",
+      "url": "https://github.com/baney75/tentmaker/actions/runs/45105047156/job/137464292522"
+    },
+    {
+      "workload": "cross-build",
+      "platform": "tentmaker",
+      "round": "warm",
+      "rep": 2,
+      "ok": true,
+      "conclusion": "success",
+      "start_s": 0,
+      "job_s": 6,
+      "phases": {
+        "build": 3.2,
+        "deps": 0,
+        "setup": 2.3
+      },
+      "cache_hit": true,
+      "go": "go1.25.0",
+      "url": "https://github.com/baney75/tentmaker/actions/runs/45105047156/job/137464292522"
     },
     {
       "workload": "cross-build",
@@ -1376,176 +1557,178 @@
       "rep": 3,
       "ok": true,
       "conclusion": "success",
-      "start_s": 4,
-      "job_s": 6,
+      "start_s": 1,
+      "job_s": 5,
       "phases": {
-        "build": 3.3,
+        "build": 3.2,
         "deps": 0,
-        "setup": 1.6
+        "setup": 1.5
       },
-      "url": "https://github.com/baney75/tentmaker/actions/runs/45063494656/job/137335945037"
+      "cache_hit": true,
+      "go": "go1.25.0",
+      "url": "https://github.com/baney75/tentmaker/actions/runs/45105047156/job/137464292522"
     },
     {
       "workload": "docker",
       "platform": "github",
       "round": "cold",
       "rep": 1,
-      "ok": true,
-      "conclusion": "success",
-      "start_s": 1,
-      "job_s": 26,
-      "phases": {
-        "build": 21.4,
-        "setup": 2.9
-      },
-      "url": "https://github.com/baney75/tentmaker/actions/runs/45063494656/job/137335945245"
-    },
-    {
-      "workload": "docker",
-      "platform": "github",
-      "round": "cold",
-      "rep": 2,
-      "ok": true,
-      "conclusion": "success",
-      "start_s": 2,
-      "job_s": 31,
-      "phases": {
-        "build": 26.3,
-        "setup": 2.8
-      },
-      "url": "https://github.com/baney75/tentmaker/actions/runs/45063494656/job/137336079396"
-    },
-    {
-      "workload": "docker",
-      "platform": "github",
-      "round": "cold",
-      "rep": 3,
-      "ok": true,
-      "conclusion": "success",
-      "start_s": 2,
-      "job_s": 28,
-      "phases": {
-        "build": 23.4,
-        "setup": 3.3
-      },
-      "url": "https://github.com/baney75/tentmaker/actions/runs/45063494656/job/137336245738"
-    },
-    {
-      "workload": "docker",
-      "platform": "github",
-      "round": "warm",
-      "rep": 1,
-      "ok": true,
-      "conclusion": "success",
-      "start_s": 1,
-      "job_s": 27,
-      "phases": {
-        "build": 21.9,
-        "setup": 3.6
-      },
-      "url": "https://github.com/baney75/tentmaker/actions/runs/45063494656/job/137336397462"
-    },
-    {
-      "workload": "docker",
-      "platform": "github",
-      "round": "warm",
-      "rep": 2,
-      "ok": false,
-      "conclusion": "failure",
-      "start_s": 1,
-      "job_s": 9,
-      "phases": {},
-      "url": "https://github.com/baney75/tentmaker/actions/runs/45063494656/job/137336542451"
-    },
-    {
-      "workload": "docker",
-      "platform": "github",
-      "round": "warm",
-      "rep": 3,
-      "ok": true,
-      "conclusion": "success",
-      "start_s": 2,
-      "job_s": 28,
-      "phases": {
-        "build": 22.8,
-        "setup": 2.9
-      },
-      "url": "https://github.com/baney75/tentmaker/actions/runs/45063494656/job/137336592227"
-    },
-    {
-      "workload": "docker",
-      "platform": "tentmaker",
-      "round": "cold",
-      "rep": 1,
-      "ok": true,
-      "conclusion": "success",
-      "start_s": 4,
-      "job_s": 42,
-      "phases": {
-        "build": 37.8,
-        "setup": 1.7
-      },
-      "url": "https://github.com/baney75/tentmaker/actions/runs/45063494656/job/137335945033"
-    },
-    {
-      "workload": "docker",
-      "platform": "tentmaker",
-      "round": "cold",
-      "rep": 2,
-      "ok": true,
-      "conclusion": "success",
-      "start_s": 4,
-      "job_s": 39,
-      "phases": {
-        "build": 35.4,
-        "setup": 1.2
-      },
-      "url": "https://github.com/baney75/tentmaker/actions/runs/45063494656/job/137335945033"
-    },
-    {
-      "workload": "docker",
-      "platform": "tentmaker",
-      "round": "cold",
-      "rep": 3,
-      "ok": true,
-      "conclusion": "success",
-      "start_s": 2,
-      "job_s": 39,
-      "phases": {
-        "build": 35.1,
-        "setup": 2
-      },
-      "url": "https://github.com/baney75/tentmaker/actions/runs/45063494656/job/137335945033"
-    },
-    {
-      "workload": "docker",
-      "platform": "tentmaker",
-      "round": "warm",
-      "rep": 1,
-      "ok": true,
-      "conclusion": "success",
-      "start_s": 3,
-      "job_s": 41,
-      "phases": {
-        "build": 36.3,
-        "setup": 1.1
-      },
-      "url": "https://github.com/baney75/tentmaker/actions/runs/45063494656/job/137335945033"
-    },
-    {
-      "workload": "docker",
-      "platform": "tentmaker",
-      "round": "warm",
-      "rep": 2,
       "ok": true,
       "conclusion": "success",
       "start_s": 6,
-      "job_s": 41,
+      "job_s": 30,
       "phases": {
-        "build": 36.1,
+        "build": 21.6,
+        "setup": 6.6
+      },
+      "url": "https://github.com/baney75/tentmaker/actions/runs/45105047156/job/137464292766"
+    },
+    {
+      "workload": "docker",
+      "platform": "github",
+      "round": "cold",
+      "rep": 2,
+      "ok": false,
+      "conclusion": "failure",
+      "start_s": 13,
+      "job_s": 9,
+      "phases": {},
+      "url": "https://github.com/baney75/tentmaker/actions/runs/45105047156/job/137464487164"
+    },
+    {
+      "workload": "docker",
+      "platform": "github",
+      "round": "cold",
+      "rep": 3,
+      "ok": true,
+      "conclusion": "success",
+      "start_s": 48,
+      "job_s": 31,
+      "phases": {
+        "build": 27.6,
+        "setup": 2.4
+      },
+      "url": "https://github.com/baney75/tentmaker/actions/runs/45105047156/job/137464604136"
+    },
+    {
+      "workload": "docker",
+      "platform": "github",
+      "round": "warm",
+      "rep": 1,
+      "ok": true,
+      "conclusion": "success",
+      "start_s": 5,
+      "job_s": 27,
+      "phases": {
+        "build": 22.8,
+        "setup": 2.8
+      },
+      "url": "https://github.com/baney75/tentmaker/actions/runs/45105047156/job/137465017814"
+    },
+    {
+      "workload": "docker",
+      "platform": "github",
+      "round": "warm",
+      "rep": 2,
+      "ok": true,
+      "conclusion": "success",
+      "start_s": 9,
+      "job_s": 28,
+      "phases": {
+        "build": 22.3,
+        "setup": 3.6
+      },
+      "url": "https://github.com/baney75/tentmaker/actions/runs/45105047156/job/137465187757"
+    },
+    {
+      "workload": "docker",
+      "platform": "github",
+      "round": "warm",
+      "rep": 3,
+      "ok": true,
+      "conclusion": "success",
+      "start_s": 2,
+      "job_s": 26,
+      "phases": {
+        "build": 21.2,
+        "setup": 3
+      },
+      "url": "https://github.com/baney75/tentmaker/actions/runs/45105047156/job/137465389279"
+    },
+    {
+      "workload": "docker",
+      "platform": "tentmaker",
+      "round": "cold",
+      "rep": 1,
+      "ok": true,
+      "conclusion": "success",
+      "start_s": 1,
+      "job_s": 40,
+      "phases": {
+        "build": 36.7,
         "setup": 1.7
       },
-      "url": "https://github.com/baney75/tentmaker/actions/runs/45063494656/job/137335945033"
+      "url": "https://github.com/baney75/tentmaker/actions/runs/45105047156/job/137464292649"
+    },
+    {
+      "workload": "docker",
+      "platform": "tentmaker",
+      "round": "cold",
+      "rep": 2,
+      "ok": true,
+      "conclusion": "success",
+      "start_s": 1,
+      "job_s": 40,
+      "phases": {
+        "build": 37,
+        "setup": 1.5
+      },
+      "url": "https://github.com/baney75/tentmaker/actions/runs/45105047156/job/137464292649"
+    },
+    {
+      "workload": "docker",
+      "platform": "tentmaker",
+      "round": "cold",
+      "rep": 3,
+      "ok": true,
+      "conclusion": "success",
+      "start_s": 1,
+      "job_s": 41,
+      "phases": {
+        "build": 37.3,
+        "setup": 1.5
+      },
+      "url": "https://github.com/baney75/tentmaker/actions/runs/45105047156/job/137464292649"
+    },
+    {
+      "workload": "docker",
+      "platform": "tentmaker",
+      "round": "warm",
+      "rep": 1,
+      "ok": true,
+      "conclusion": "success",
+      "start_s": 1,
+      "job_s": 42,
+      "phases": {
+        "build": 36.8,
+        "setup": 1.7
+      },
+      "url": "https://github.com/baney75/tentmaker/actions/runs/45105047156/job/137464292649"
+    },
+    {
+      "workload": "docker",
+      "platform": "tentmaker",
+      "round": "warm",
+      "rep": 2,
+      "ok": true,
+      "conclusion": "success",
+      "start_s": 2,
+      "job_s": 41,
+      "phases": {
+        "build": 36.5,
+        "setup": 1.5
+      },
+      "url": "https://github.com/baney75/tentmaker/actions/runs/45105047156/job/137464292649"
     },
     {
       "workload": "docker",
@@ -1554,13 +1737,13 @@
       "rep": 3,
       "ok": true,
       "conclusion": "success",
-      "start_s": 5,
-      "job_s": 40,
+      "start_s": 1,
+      "job_s": 42,
       "phases": {
-        "build": 35.6,
-        "setup": 1.2
+        "build": 37.6,
+        "setup": 1.5
       },
-      "url": "https://github.com/baney75/tentmaker/actions/runs/45063494656/job/137335945033"
+      "url": "https://github.com/baney75/tentmaker/actions/runs/45105047156/job/137464292649"
     },
     {
       "workload": "go-test",
@@ -1569,14 +1752,16 @@
       "rep": 1,
       "ok": true,
       "conclusion": "success",
-      "start_s": 1,
-      "job_s": 79,
+      "start_s": 3,
+      "job_s": 95,
       "phases": {
-        "deps": 0.4,
-        "setup": 10.2,
-        "test": 63.6
+        "deps": 0.3,
+        "setup": 13.1,
+        "test": 75
       },
-      "url": "https://github.com/baney75/tentmaker/actions/runs/45063494656/job/137335945125"
+      "cache_hit": false,
+      "go": "go1.25.0",
+      "url": "https://github.com/baney75/tentmaker/actions/runs/45105047156/job/137464292589"
     },
     {
       "workload": "go-test",
@@ -1585,344 +1770,376 @@
       "rep": 2,
       "ok": true,
       "conclusion": "success",
-      "start_s": 2,
-      "job_s": 80,
-      "phases": {
-        "deps": 0.2,
-        "setup": 12.2,
-        "test": 64
-      },
-      "url": "https://github.com/baney75/tentmaker/actions/runs/45063494656/job/137336348995"
-    },
-    {
-      "workload": "go-test",
-      "platform": "github",
-      "round": "cold",
-      "rep": 3,
-      "ok": true,
-      "conclusion": "success",
-      "start_s": 2,
+      "start_s": 21,
       "job_s": 94,
       "phases": {
-        "deps": 0.3,
-        "setup": 12.6,
-        "test": 74.9
-      },
-      "url": "https://github.com/baney75/tentmaker/actions/runs/45063494656/job/137336765925"
-    },
-    {
-      "workload": "go-test",
-      "platform": "github",
-      "round": "warm",
-      "rep": 1,
-      "ok": true,
-      "conclusion": "success",
-      "start_s": 2,
-      "job_s": 28,
-      "phases": {
-        "deps": 0,
-        "setup": 11.1,
-        "test": 15.2
-      },
-      "url": "https://github.com/baney75/tentmaker/actions/runs/45063494656/job/137337248564"
-    },
-    {
-      "workload": "go-test",
-      "platform": "github",
-      "round": "warm",
-      "rep": 2,
-      "ok": true,
-      "conclusion": "success",
-      "start_s": 1,
-      "job_s": 31,
-      "phases": {
-        "deps": 0,
-        "setup": 12.8,
-        "test": 15.9
-      },
-      "url": "https://github.com/baney75/tentmaker/actions/runs/45063494656/job/137337401789"
-    },
-    {
-      "workload": "go-test",
-      "platform": "github",
-      "round": "warm",
-      "rep": 3,
-      "ok": true,
-      "conclusion": "success",
-      "start_s": 2,
-      "job_s": 25,
-      "phases": {
-        "deps": 0,
-        "setup": 10.6,
-        "test": 12.2
-      },
-      "url": "https://github.com/baney75/tentmaker/actions/runs/45063494656/job/137337556233"
-    },
-    {
-      "workload": "go-test",
-      "platform": "tentmaker",
-      "round": "cold",
-      "rep": 1,
-      "ok": true,
-      "conclusion": "success",
-      "start_s": 57,
-      "job_s": 148,
-      "phases": {
-        "deps": 0.3,
-        "setup": 1.3,
-        "test": 144.1
-      },
-      "url": "https://github.com/baney75/tentmaker/actions/runs/45063494656/job/137335944959"
-    },
-    {
-      "workload": "go-test",
-      "platform": "tentmaker",
-      "round": "cold",
-      "rep": 2,
-      "ok": true,
-      "conclusion": "success",
-      "start_s": 2235,
-      "job_s": 134,
-      "phases": {
         "deps": 0.2,
-        "setup": 1,
-        "test": 130.9
+        "setup": 13,
+        "test": 74.6
       },
-      "url": "https://github.com/baney75/tentmaker/actions/runs/45063494656/job/137335944959"
+      "cache_hit": false,
+      "go": "go1.25.0",
+      "url": "https://github.com/baney75/tentmaker/actions/runs/45105047156/job/137464811371"
     },
     {
       "workload": "go-test",
-      "platform": "tentmaker",
+      "platform": "github",
       "round": "cold",
-      "rep": 3,
-      "ok": true,
-      "conclusion": "success",
-      "start_s": 4,
-      "job_s": 135,
-      "phases": {
-        "deps": 0.3,
-        "setup": 1.2,
-        "test": 131.9
-      },
-      "url": "https://github.com/baney75/tentmaker/actions/runs/45063494656/job/137335944959"
-    },
-    {
-      "workload": "go-test",
-      "platform": "tentmaker",
-      "round": "warm",
-      "rep": 1,
-      "ok": true,
-      "conclusion": "success",
-      "start_s": 31,
-      "job_s": 138,
-      "phases": {
-        "deps": 0.3,
-        "setup": 1.7,
-        "test": 134.9
-      },
-      "url": "https://github.com/baney75/tentmaker/actions/runs/45063494656/job/137335944959"
-    },
-    {
-      "workload": "go-test",
-      "platform": "tentmaker",
-      "round": "warm",
-      "rep": 2,
-      "ok": true,
-      "conclusion": "success",
-      "start_s": 2,
-      "job_s": 22,
-      "phases": {
-        "deps": 0,
-        "setup": 1.5,
-        "test": 20
-      },
-      "url": "https://github.com/baney75/tentmaker/actions/runs/45063494656/job/137335944959"
-    },
-    {
-      "workload": "go-test",
-      "platform": "tentmaker",
-      "round": "warm",
       "rep": 3,
       "ok": true,
       "conclusion": "success",
       "start_s": 3,
+      "job_s": 95,
+      "phases": {
+        "deps": 0.2,
+        "setup": 12.2,
+        "test": 75.8
+      },
+      "cache_hit": false,
+      "go": "go1.25.0",
+      "url": "https://github.com/baney75/tentmaker/actions/runs/45105047156/job/137465428284"
+    },
+    {
+      "workload": "go-test",
+      "platform": "github",
+      "round": "warm",
+      "rep": 1,
+      "ok": true,
+      "conclusion": "success",
+      "start_s": 2,
+      "job_s": 30,
+      "phases": {
+        "deps": 0,
+        "setup": 11.1,
+        "test": 16.9
+      },
+      "cache_hit": true,
+      "go": "go1.25.0",
+      "url": "https://github.com/baney75/tentmaker/actions/runs/45105047156/job/137465940519"
+    },
+    {
+      "workload": "go-test",
+      "platform": "github",
+      "round": "warm",
+      "rep": 2,
+      "ok": true,
+      "conclusion": "success",
+      "start_s": 2,
+      "job_s": 37,
+      "phases": {
+        "deps": 0,
+        "setup": 19.1,
+        "test": 14.4
+      },
+      "cache_hit": true,
+      "go": "go1.25.0",
+      "url": "https://github.com/baney75/tentmaker/actions/runs/45105047156/job/137466107700"
+    },
+    {
+      "workload": "go-test",
+      "platform": "github",
+      "round": "warm",
+      "rep": 3,
+      "ok": true,
+      "conclusion": "success",
+      "start_s": 2,
+      "job_s": 33,
+      "phases": {
+        "deps": 0,
+        "setup": 12.3,
+        "test": 18.7
+      },
+      "cache_hit": true,
+      "go": "go1.25.0",
+      "url": "https://github.com/baney75/tentmaker/actions/runs/45105047156/job/137466318403"
+    },
+    {
+      "workload": "go-test",
+      "platform": "tentmaker",
+      "round": "cold",
+      "rep": 1,
+      "ok": true,
+      "conclusion": "success",
+      "start_s": 1,
+      "job_s": 115,
+      "phases": {
+        "deps": 0.3,
+        "setup": 2.3,
+        "test": 111.5
+      },
+      "cache_hit": false,
+      "go": "go1.25.0",
+      "url": "https://github.com/baney75/tentmaker/actions/runs/45105047156/job/137464292365"
+    },
+    {
+      "workload": "go-test",
+      "platform": "tentmaker",
+      "round": "cold",
+      "rep": 2,
+      "ok": true,
+      "conclusion": "success",
+      "start_s": 2,
+      "job_s": 113,
+      "phases": {
+        "deps": 0.3,
+        "setup": 1.6,
+        "test": 110.5
+      },
+      "cache_hit": false,
+      "go": "go1.25.0",
+      "url": "https://github.com/baney75/tentmaker/actions/runs/45105047156/job/137464292365"
+    },
+    {
+      "workload": "go-test",
+      "platform": "tentmaker",
+      "round": "cold",
+      "rep": 3,
+      "ok": true,
+      "conclusion": "success",
+      "start_s": 1,
+      "job_s": 112,
+      "phases": {
+        "deps": 0.3,
+        "setup": 1.8,
+        "test": 109.1
+      },
+      "cache_hit": false,
+      "go": "go1.25.0",
+      "url": "https://github.com/baney75/tentmaker/actions/runs/45105047156/job/137464292365"
+    },
+    {
+      "workload": "go-test",
+      "platform": "tentmaker",
+      "round": "warm",
+      "rep": 1,
+      "ok": true,
+      "conclusion": "success",
+      "start_s": 1,
       "job_s": 22,
       "phases": {
         "deps": 0,
-        "setup": 1.7,
-        "test": 19.8
+        "setup": 2.2,
+        "test": 20.1
       },
-      "url": "https://github.com/baney75/tentmaker/actions/runs/45063494656/job/137335944959"
+      "cache_hit": true,
+      "go": "go1.25.0",
+      "url": "https://github.com/baney75/tentmaker/actions/runs/45105047156/job/137464292365"
     },
     {
-      "workload": "node",
-      "platform": "github",
-      "round": "cold",
-      "rep": 1,
-      "ok": true,
-      "conclusion": "success",
-      "start_s": 1,
-      "job_s": 16,
-      "phases": {
-        "deps": 2.1,
-        "fetch": 0.2,
-        "setup": 3.7,
-        "test": 7.6
-      },
-      "url": "https://github.com/baney75/tentmaker/actions/runs/45063494656/job/137335945065"
-    },
-    {
-      "workload": "node",
-      "platform": "github",
-      "round": "cold",
+      "workload": "go-test",
+      "platform": "tentmaker",
+      "round": "warm",
       "rep": 2,
       "ok": true,
       "conclusion": "success",
       "start_s": 2,
       "job_s": 22,
       "phases": {
-        "deps": 3.4,
-        "fetch": 0.1,
-        "setup": 8,
-        "test": 8.2
+        "deps": 0,
+        "setup": 1.4,
+        "test": 20.1
       },
-      "url": "https://github.com/baney75/tentmaker/actions/runs/45063494656/job/137336032488"
+      "cache_hit": true,
+      "go": "go1.25.0",
+      "url": "https://github.com/baney75/tentmaker/actions/runs/45105047156/job/137464292365"
     },
     {
-      "workload": "node",
-      "platform": "github",
-      "round": "cold",
+      "workload": "go-test",
+      "platform": "tentmaker",
+      "round": "warm",
       "rep": 3,
-      "ok": true,
-      "conclusion": "success",
-      "start_s": 2,
-      "job_s": 16,
-      "phases": {
-        "deps": 2.3,
-        "fetch": 0,
-        "setup": 3.3,
-        "test": 8.1
-      },
-      "url": "https://github.com/baney75/tentmaker/actions/runs/45063494656/job/137336151300"
-    },
-    {
-      "workload": "node",
-      "platform": "github",
-      "round": "warm",
-      "rep": 1,
-      "ok": true,
-      "conclusion": "success",
-      "start_s": 2,
-      "job_s": 16,
-      "phases": {
-        "deps": 2.4,
-        "fetch": 0.3,
-        "setup": 4.6,
-        "test": 6.7
-      },
-      "url": "https://github.com/baney75/tentmaker/actions/runs/45063494656/job/137336243623"
-    },
-    {
-      "workload": "node",
-      "platform": "github",
-      "round": "warm",
-      "rep": 2,
       "ok": true,
       "conclusion": "success",
       "start_s": 1,
-      "job_s": 23,
+      "job_s": 22,
       "phases": {
-        "deps": 3.5,
-        "fetch": 0.1,
-        "setup": 6.9,
-        "test": 10.1
+        "deps": 0,
+        "setup": 1.8,
+        "test": 19.5
       },
-      "url": "https://github.com/baney75/tentmaker/actions/runs/45063494656/job/137336334218"
+      "cache_hit": true,
+      "go": "go1.25.0",
+      "url": "https://github.com/baney75/tentmaker/actions/runs/45105047156/job/137464292365"
     },
     {
       "workload": "node",
       "platform": "github",
-      "round": "warm",
-      "rep": 3,
-      "ok": true,
-      "conclusion": "success",
-      "start_s": 2,
-      "job_s": 18,
-      "phases": {
-        "deps": 1.5,
-        "fetch": 0.4,
-        "setup": 5.1,
-        "test": 7.9
-      },
-      "url": "https://github.com/baney75/tentmaker/actions/runs/45063494656/job/137336455202"
-    },
-    {
-      "workload": "node",
-      "platform": "tentmaker",
       "round": "cold",
-      "rep": 1,
-      "ok": true,
-      "conclusion": "success",
-      "start_s": 47,
-      "job_s": 31,
-      "phases": {
-        "deps": 2.6,
-        "fetch": 0.1,
-        "setup": 2.2,
-        "test": 14.4
-      },
-      "url": "https://github.com/baney75/tentmaker/actions/runs/45063494656/job/137335945043"
-    },
-    {
-      "workload": "node",
-      "platform": "tentmaker",
-      "round": "cold",
-      "rep": 2,
-      "ok": true,
-      "conclusion": "success",
-      "start_s": 2,
-      "job_s": 19,
-      "phases": {
-        "deps": 2.6,
-        "fetch": 0.1,
-        "setup": 1.5,
-        "test": 13.9
-      },
-      "url": "https://github.com/baney75/tentmaker/actions/runs/45063494656/job/137335945043"
-    },
-    {
-      "workload": "node",
-      "platform": "tentmaker",
-      "round": "cold",
-      "rep": 3,
-      "ok": true,
-      "conclusion": "success",
-      "start_s": 2,
-      "job_s": 19,
-      "phases": {
-        "deps": 2.5,
-        "fetch": 0.1,
-        "setup": 1.6,
-        "test": 13.9
-      },
-      "url": "https://github.com/baney75/tentmaker/actions/runs/45063494656/job/137335945043"
-    },
-    {
-      "workload": "node",
-      "platform": "tentmaker",
-      "round": "warm",
       "rep": 1,
       "ok": true,
       "conclusion": "success",
       "start_s": 3,
       "job_s": 20,
       "phases": {
-        "deps": 2.6,
-        "fetch": 0.1,
-        "setup": 1.7,
-        "test": 14.1
+        "deps": 2.3,
+        "fetch": 0.4,
+        "setup": 4.8,
+        "test": 8
       },
-      "url": "https://github.com/baney75/tentmaker/actions/runs/45063494656/job/137335945043"
+      "cache_hit": false,
+      "url": "https://github.com/baney75/tentmaker/actions/runs/45105047156/job/137464292915"
+    },
+    {
+      "workload": "node",
+      "platform": "github",
+      "round": "cold",
+      "rep": 2,
+      "ok": true,
+      "conclusion": "success",
+      "start_s": 2,
+      "job_s": 15,
+      "phases": {
+        "deps": 1.7,
+        "fetch": 0.2,
+        "setup": 3,
+        "test": 6.7
+      },
+      "cache_hit": false,
+      "url": "https://github.com/baney75/tentmaker/actions/runs/45105047156/job/137464415346"
+    },
+    {
+      "workload": "node",
+      "platform": "github",
+      "round": "cold",
+      "rep": 3,
+      "ok": true,
+      "conclusion": "success",
+      "start_s": 44,
+      "job_s": 16,
+      "phases": {
+        "deps": 1.9,
+        "fetch": 0.3,
+        "setup": 3.7,
+        "test": 7.1
+      },
+      "cache_hit": false,
+      "url": "https://github.com/baney75/tentmaker/actions/runs/45105047156/job/137464508442"
+    },
+    {
+      "workload": "node",
+      "platform": "github",
+      "round": "warm",
+      "rep": 1,
+      "ok": true,
+      "conclusion": "success",
+      "start_s": 36,
+      "job_s": 15,
+      "phases": {
+        "deps": 1.2,
+        "fetch": 0.2,
+        "setup": 4.4,
+        "test": 6.4
+      },
+      "cache_hit": true,
+      "url": "https://github.com/baney75/tentmaker/actions/runs/45105047156/job/137464817307"
+    },
+    {
+      "workload": "node",
+      "platform": "github",
+      "round": "warm",
+      "rep": 2,
+      "ok": true,
+      "conclusion": "success",
+      "start_s": 32,
+      "job_s": 19,
+      "phases": {
+        "deps": 2.3,
+        "fetch": 0.4,
+        "setup": 6.9,
+        "test": 6
+      },
+      "cache_hit": true,
+      "url": "https://github.com/baney75/tentmaker/actions/runs/45105047156/job/137465088815"
+    },
+    {
+      "workload": "node",
+      "platform": "github",
+      "round": "warm",
+      "rep": 3,
+      "ok": true,
+      "conclusion": "success",
+      "start_s": 1,
+      "job_s": 18,
+      "phases": {
+        "deps": 1.9,
+        "fetch": 0.1,
+        "setup": 4.5,
+        "test": 8.9
+      },
+      "cache_hit": true,
+      "url": "https://github.com/baney75/tentmaker/actions/runs/45105047156/job/137465364181"
+    },
+    {
+      "workload": "node",
+      "platform": "tentmaker",
+      "round": "cold",
+      "rep": 1,
+      "ok": true,
+      "conclusion": "success",
+      "start_s": 1,
+      "job_s": 20,
+      "phases": {
+        "deps": 2.7,
+        "fetch": 0.1,
+        "setup": 1.6,
+        "test": 14.7
+      },
+      "cache_hit": false,
+      "url": "https://github.com/baney75/tentmaker/actions/runs/45105047156/job/137464292598"
+    },
+    {
+      "workload": "node",
+      "platform": "tentmaker",
+      "round": "cold",
+      "rep": 2,
+      "ok": true,
+      "conclusion": "success",
+      "start_s": 1,
+      "job_s": 20,
+      "phases": {
+        "deps": 2.8,
+        "fetch": 0.1,
+        "setup": 1.6,
+        "test": 14.7
+      },
+      "cache_hit": false,
+      "url": "https://github.com/baney75/tentmaker/actions/runs/45105047156/job/137464292598"
+    },
+    {
+      "workload": "node",
+      "platform": "tentmaker",
+      "round": "cold",
+      "rep": 3,
+      "ok": true,
+      "conclusion": "success",
+      "start_s": 2,
+      "job_s": 20,
+      "phases": {
+        "deps": 2.7,
+        "fetch": 0.1,
+        "setup": 1.8,
+        "test": 14.6
+      },
+      "cache_hit": false,
+      "url": "https://github.com/baney75/tentmaker/actions/runs/45105047156/job/137464292598"
+    },
+    {
+      "workload": "node",
+      "platform": "tentmaker",
+      "round": "warm",
+      "rep": 1,
+      "ok": false,
+      "conclusion": "none",
+      "start_s": 1,
+      "job_s": 0,
+      "phases": {
+        "deps": 2,
+        "fetch": 0.1,
+        "setup": 1.6,
+        "test": 14.7
+      },
+      "cache_hit": true,
+      "url": "https://github.com/baney75/tentmaker/actions/runs/45105047156/job/137464292598"
     },
     {
       "workload": "node",
@@ -1931,15 +2148,16 @@
       "rep": 2,
       "ok": true,
       "conclusion": "success",
-      "start_s": 5,
-      "job_s": 18,
+      "start_s": 1,
+      "job_s": 19,
       "phases": {
-        "deps": 1.7,
+        "deps": 2,
         "fetch": 0.1,
         "setup": 1.5,
-        "test": 14
+        "test": 14.4
       },
-      "url": "https://github.com/baney75/tentmaker/actions/runs/45063494656/job/137335945043"
+      "cache_hit": true,
+      "url": "https://github.com/baney75/tentmaker/actions/runs/45105047156/job/137464292598"
     },
     {
       "workload": "node",
@@ -1948,15 +2166,16 @@
       "rep": 3,
       "ok": true,
       "conclusion": "success",
-      "start_s": 7,
-      "job_s": 18,
+      "start_s": 1,
+      "job_s": 19,
       "phases": {
-        "deps": 1.7,
+        "deps": 2,
         "fetch": 0.1,
         "setup": 1.7,
-        "test": 13.9
+        "test": 14.5
       },
-      "url": "https://github.com/baney75/tentmaker/actions/runs/45063494656/job/137335945043"
+      "cache_hit": true,
+      "url": "https://github.com/baney75/tentmaker/actions/runs/45105047156/job/137464292598"
     }
   ]
 }
