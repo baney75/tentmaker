@@ -32,7 +32,7 @@ var workloadInfo = []workload{
 	{"go-test", "Go test (this repo: gofmt, vet, go test -race)", true, true, true, nil},
 	{"cross-build", "Go cross build (this repo, 6 targets)", true, true, true, nil},
 	{"node", "Node: tj/commander.js v15.1.0, npm ci and npm test", true, true, false, nil},
-	{"docker", "Docker build, two stages (baseline: no layer cache yet)", false, false, false, nil},
+	{"docker", "Docker build, two stages (Tentmaker keeps the layer cache; the hosted runner starts empty)", false, false, false, nil},
 	{"cache", "Cache: 256 MiB blob save, then restore", true, true, false, []string{"restore"}},
 }
 
@@ -584,7 +584,7 @@ func Markdown(rep Report) string {
 	p("  [dependencies and sticky disks](https://docs.blacksmith.sh/blacksmith-caching/dependencies-sticky-disks.md)).\n")
 	p("- Docker: \"customers have reported 2x to 40x improvements in build times\" from their layer cache\n")
 	p("  ([Docker builds](https://docs.blacksmith.sh/blacksmith-caching/docker-builds.md)).\n\n")
-	p("Tentmaker has no Docker layer cache yet; the Docker row above is the baseline for that work.\n\n")
+	p("Tentmaker keeps each repo's Docker layers on the device between jobs. The hosted runner starts\nevery job with an empty layer cache and this bench gives it none, so the Docker row compares a\ncached build against an uncached one and is left out of the gate.\n\n")
 
 	p("## Reproduce\n\n")
 	p("```sh\ngh workflow run bench.yml --ref main\n```\n\n")
