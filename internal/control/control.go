@@ -239,6 +239,9 @@ func NewServer(h Handler, token string, ident Identify, log *slog.Logger) *Serve
 	if sh, ok := h.(SandboxHandler); ok {
 		s.sandboxRoutes(sh)
 	}
+	if lh, ok := h.(LendHandler); ok {
+		s.lendRoutes(lh)
+	}
 	return s
 }
 

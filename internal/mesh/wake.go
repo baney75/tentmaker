@@ -242,6 +242,11 @@ type knownDevice struct {
 	Device   string    `json:"device"`
 	Wake     *WakeInfo `json:"wake,omitempty"`
 	LastSeen time.Time `json:"last_seen"`
+	// Kind is what the node was to this device (owner, guest or host) and
+	// Login its tailnet user, for tentmaker devices. An older file has
+	// neither; such a device counts as the owner's.
+	Kind  string `json:"kind,omitempty"`
+	Login string `json:"login,omitempty"`
 }
 
 type knownFile struct {
@@ -293,7 +298,7 @@ func (n *Node) loadKnown() {
 }
 
 // noteKnown records a hello from pool peer id at now.
-func (n *Node) noteKnown(id string, h helloResponse, now time.Time) {
+func (n *Node) noteKnown(id string, h helloResponse, kind, login string, now time.Time) {
 	n.known.mu.Lock()
 	defer n.known.mu.Unlock()
 	d := n.known.devs[id]
@@ -302,10 +307,10 @@ func (n *Node) noteKnown(id string, h helloResponse, now time.Time) {
 		n.known.devs[id] = d
 		n.known.dirty = true
 	}
-	if d.Device != h.Device || !sameWake(d.Wake, h.Wake) {
+	if d.Device != h.Device || !sameWake(d.Wake, h.Wake) || d.Kind != kind || d.Login != login {
 		n.known.dirty = true
 	}
-	d.Device, d.Wake, d.LastSeen = h.Device, h.Wake, now
+	d.Device, d.Wake, d.LastSeen, d.Kind, d.Login = h.Device, h.Wake, now, kind, login
 	if now.Sub(n.known.savedAt[id]) >= knownSaveEvery {
 		n.known.dirty = true
 	}
@@ -376,12 +381,19 @@ func (n *Node) knownList() []knownDevice {
 	return out
 }
 
-// knownByName is the most recently seen known device with that name.
+// knownByName is the most recently seen known device with that name,
+// preferring one with wake facts: a guest that announces the name of the
+// owner's sleeping device must not stop it being woken.
 func (n *Node) knownByName(name string) (knownDevice, bool) {
 	var best knownDevice
 	found := false
 	for _, d := range n.knownList() {
-		if d.Device == name && (!found || d.LastSeen.After(best.LastSeen)) {
+		if d.Device != name {
+			continue
+		}
+		better := !found || (d.Wake != nil) != (best.Wake != nil) && d.Wake != nil ||
+			(d.Wake != nil) == (best.Wake != nil) && d.LastSeen.After(best.LastSeen)
+		if better {
 			best, found = d, true
 		}
 	}

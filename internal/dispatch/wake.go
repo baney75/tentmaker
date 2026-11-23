@@ -137,7 +137,9 @@ func (b *Broker) Waiting() []WaitingJob {
 // in the last takerFresh, isn't quarantined, has a free slot and fits.
 func (b *Broker) takerLocked(j WaitingJob, now time.Time) bool {
 	for _, d := range b.devices {
-		if d.Offline || d.Quarantine || d.Free < 1 || now.Sub(d.LastSeen) >= takerFresh {
+		// A lent device may not be allowed the job: it never counts, so
+		// the owner's sleeping device is still woken for it.
+		if d.Offline || d.Quarantine || d.Free < 1 || now.Sub(d.LastSeen) >= takerFresh || d.lend != nil {
 			continue
 		}
 		if j.Fits(d.labels, d.platforms) {

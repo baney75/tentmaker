@@ -90,7 +90,11 @@ func newCluster(t *testing.T, specs ...nodeSpec) []*member {
 			user = 1001
 		}
 		m.ts = newFakeTS()
-		m.ts.self = Peer{ID: m.id, HostName: m.spec.device, Online: true, UserID: 1001, LoginName: "alice@example.com",
+		selfLogin := "alice@example.com"
+		if user != 1001 {
+			selfLogin = "bob@example.com"
+		}
+		m.ts.self = Peer{ID: m.id, HostName: m.spec.device, Online: true, UserID: user, LoginName: selfLogin,
 			IPs: []netip.Addr{netip.MustParseAddr(fmt.Sprintf("100.64.1.%d", i+1))}}
 		for j, o := range ms {
 			if j == i {

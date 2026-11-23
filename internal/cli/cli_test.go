@@ -293,7 +293,12 @@ var usageCases = [][]string{
 	{"connect"},
 	{"connect", "svn"},
 	{"connect", "github", "--url", "ftp://x"},
-	{"devices"},
+	{"devices", "bogus"},
+	{"devices", "remove"},
+	{"join", "tm1-secret"},
+	{"invite", "--trust", "owner"},
+	{"invite", "--ttl", "90d"},
+	{"invite", "--trust", "public", "--repos", "a/b"},
 	{"devices", "add"},
 	{"devices", "add", "h", "--channel", "nightly"},
 	{"devices", "add", "h", "--memory", "lots"},
@@ -978,5 +983,19 @@ func TestDoctorAsUserSkipsSandboxChecks(t *testing.T) {
 	f.run("", "doctor", "--json")
 	if built != 1 || !strings.Contains(f.stdout.String(), `"check":"podman socket"`) {
 		t.Errorf("root doctor built the executors %d times and did not report their problem:\n%s", built, f.stdout)
+	}
+}
+
+// A join code on the command line is refused without echoing it.
+func TestJoinNeverEchoesACodeArgument(t *testing.T) {
+	const code = "tm1-abcdefghijklmnopqrstuvwxyz234567@100.64.0.1:7433"
+	for _, args := range [][]string{{"join", code}, {"join", code, "--json"}} {
+		f := newFixture(t)
+		if c := f.run("", args...); c != ExitUsage {
+			t.Fatalf("%v: exit %d", args, c)
+		}
+		if strings.Contains(f.stderr.String()+f.stdout.String(), "abcdefghij") {
+			t.Fatalf("%v echoed the code: %q", args, f.stderr.String()+f.stdout.String())
+		}
 	}
 }

@@ -119,6 +119,7 @@ type fakeBroker struct {
 	secret []byte
 	mu     sync.Mutex
 	reqs   []core.WorkRequest
+	lends  []*core.Lend // the caller's lend per request, nil for an owner's
 	err    error
 	// archives makes the broker a core.ArchiveSource: ref -> archive.
 	archives map[string]fakeArchive
@@ -148,6 +149,11 @@ func (b *fakeBroker) Name() string { return "fake" }
 func (b *fakeBroker) Work(ctx context.Context, req core.WorkRequest) (core.WorkResponse, error) {
 	b.mu.Lock()
 	b.reqs = append(b.reqs, req)
+	if l, ok := core.CallerLend(ctx); ok {
+		b.lends = append(b.lends, &l)
+	} else {
+		b.lends = append(b.lends, nil)
+	}
 	err := b.err
 	b.mu.Unlock()
 	if err != nil {

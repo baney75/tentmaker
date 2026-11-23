@@ -778,12 +778,34 @@ The broker ticks every second and a repo is due 100 ms early, so a 1 s poll does
 `BrokerStatus.API` holds each `core.APICounter` forge's `APIStats` by forge name.
 on `Work`, matches queued jobs (oldest first) to the request: a job matches when it asks for
 `tentmaker` and every label it asks for is in the worker's labels for one of its platforms;
-refuses forks, denied repos (`deny_repo_patterns`), public repos without `allow_public`, and runs
+refuses forks (except to a public lent device, below), denied repos (`deny_repo_patterns`), public repos without `allow_public`, and runs
 whose head repo differs; claims through `Claimer`; grants a runner; records (runner, device, job,
 time) in its state. It monitors every granted runner: busy on an unidentifiable job for 30 s,
 idle past `idle_ttl`, or busy on a fork job means `Stop` to that worker on its next request (and
 `CancelRun` for a fork), plus `DeleteRunner`. A worker silent for 2 minutes gets its runners
 deleted. Never grants more runners for one job than one per worker.
+
+Lent devices (Mesh: lent devices). `Work` reads the caller's lend (`core.CallerLend`, set by the
+mesh from its guest table); a revoked one gets no grants. A trusted lend gets a job only of a repo
+on its list, never a fork's or `pull_request_target` job, and only where `runnerCacheSafeLocked`
+vouches no fork can reach the runner; a check job only of a listed repo. A public lend gets no
+check job, and a runner only for a fork's `pull_request` job of a repo the forge says is public
+and whose config sets `lend_public` (which needs `allow_public` and runner mode); the other job
+rules (status, labels, age) still apply. Before it registers a runner, `realize` checks the offer
+with `core.LendRefusal` and drops the grant on a refusal; a public grant never carries `Cache` or
+`Actions`. The grant records the lend (`grantRec.Lend`). When the forge reports the job a runner
+took, `takenRefusal` stops it, cancels the run, deletes the runner and quarantines the device
+until a reset, as for a fork on an owner device: a fork's job on an owner or trusted device, a
+`pull_request_target` job on a trusted one, and anything but a fork's `pull_request` job on a
+public one. A lent device never counts as a taker for the wake loop. The worker checks the same
+rules on its side (`core.LendRefusal` on every offer from a `core.LentSource` whose `Lend` is not
+nil, and `core.TakenRefusal` on each confirmed job), forces `Cache` off and `Actions` nil for a
+public lend, and asks a revoked source for nothing, so neither side trusts the other.
+
+Residual risk, public trust: a JIT runner takes any queued job its labels fit, so a public lent
+runner can take a push job of the same repo before the broker sees it and stops it. That is why
+public needs the repo's own `lend_public` opt-in: set it only on a repo where no job a Tentmaker
+runner could take uses a secret.
 
 Each grant records the tailnet node that asked for it: `core.CallerNode(ctx)`, the WhoIs stable
 node ID the mesh puts in the context with `core.WithCallerNode`, or "" for the broker's own
@@ -1123,7 +1145,7 @@ type Options struct {
     Sender    Sender                             // sends magic packets; nil = this device sends none
     WakeNeeds func() []WakeNeed                  // jobs no awake device takes; nil = no wake loop
     WakeLog   *WakeLog                           // records and counters, owned by the daemon across rebuilds
-    StateDir  string                             // keeps mesh-devices.json, the known pool devices
+    StateDir  string                             // keeps mesh-devices.json, mesh-guests.json and mesh-lent.json
 }
 func New(o Options) *Node
 func (n *Node) Run(ctx context.Context) error    // serve the peer API on this device's tailnet IPs only
@@ -1133,6 +1155,13 @@ func (n *Node) Pool(ctx context.Context) ([]DeviceStatus, error)
 func RemoteInstall(ctx context.Context, host string, args InstallArgs) error  // over `tailscale ssh`
 func (n *Node) WakeTick(ctx context.Context)     // one wake decision pass; Run calls it every 5 s
 func (n *Node) WakeStatus() WakeStatus           // status --json "wake"
+func (n *Node) Invite(ctx, trust string, repos []string, ttl time.Duration) (InviteCode, error)
+func (n *Node) Join(ctx, code string) (Lent, error)      // lend this device to the code's pool
+func (n *Node) Leave(ctx) (Lent, error)                  // drop out of it
+func (n *Node) RevokeGuest(ctx, name string) ([]Guest, error)
+func (n *Node) Devices(ctx) []PoolDevice                 // tentmaker devices
+func (n *Node) LendStatus() LendStatus                   // status --json mesh.lent, mesh.guests
+func (n *Node) PoolName() string                         // the joined pool while lent, else Options.Pool
 
 type LAN struct { Interface, MAC, Subnet, Broadcast string; Wired, Wakeable bool; Note string }
 func ProbeLAN() (LAN, error)                     // this host's best LAN interface
@@ -1145,8 +1174,9 @@ type WakeNeed struct { Key, Job string; Since time.Time; Fits func([]string, []c
 ```
 
 Peer API (HTTP on the tailnet address, `mesh.port`, default 7433). Every request's remote
-address goes through `WhoIs`; only the same tailnet user (or `members`) is served, and only
-devices whose `/v1/hello` pool name matches. A request from this device itself is refused (403)
+address goes through `WhoIs`; only the same tailnet user (or `members`), a lent device in the
+guest table (see Lent devices) and, on a lent device, its pool owner's devices are served, each
+only the routes its kind may use, and only devices whose `/v1/hello` pool name matches. A request from this device itself is refused (403)
 before `WhoIs`: a loopback source, one of this device's tailnet IPs (IPv4-mapped too), or an
 address `WhoIs` names with one of those IPs. A device never calls its own peer API over the
 network, and such a caller is a local process, such as a CI job on Windows, where the firewall
@@ -1239,6 +1269,72 @@ each known device with `awake`, `can_wake`, `why` and the last `WakeRecord`: tim
 sender, job, error, seconds until online, misses, next allowed) and as counts: `sent`, `failed`
 (no awake device shares its LAN, or every sender failed), then `online` or `timeout` for each one
 sent. The `WakeLog` lives as long as the daemon, so a mesh rebuild keeps the counts.
+
+Wake facts come only from the same tailnet user (#58). `/v1/hello` carries `wake` (and the guest
+table's revision, `guests`) only to a caller of this device's own tailnet user; discovery drops
+both from any other device's hello before it records it, so a `members` login or a lent device
+can't steer the broker's wakes with made-up facts. `POST /v1/wake` answers 403 to anyone but the
+same user. A name a lent device announces never displaces an owner device's record: a name lookup
+prefers the record with wake facts.
+
+### Lent devices
+
+Another tailnet user can lend a device to a pool without a hand-edited `members` list.
+`tentmaker invite [--trust trusted|public] [--repos owner/a,owner/b] [--ttl 24h]` asks the
+daemon (`POST /v1/invite` on the control API, token only) for a one-time code
+`tm1-<secret>@<tailnet ip>:<port>`: 160 random bits, lowercase base32, and this device's peer
+API address. The CLI prints it once on stdout. Only its SHA-256 is kept, with the trust, repos,
+creation and expiry (1m to 30d, default 24h), in `<state_dir>/mesh-guests.json` (0600,
+`config.WriteAtomic`); at most 100 open invites. A lent device can't invite.
+
+`tentmaker join` reads the code from the terminal without echo, or from stdin, never from argv or
+the environment, and posts it to its own daemon (`POST /v1/join`, token only). The guest's node
+parses it, takes the inviting device's identity from its own `WhoIs` of the code's address (a
+tagged device, a device with no user, or its own user's device is refused), and posts
+`POST /v1/join {code: <secret>, device}` there. The host serves `/v1/join` to any `WhoIs`-named
+caller before the usual admission. It refuses a tagged caller or one with no user (403) and one
+already an owner device (409), then compares the hash in constant time with every unexpired
+invite. A wrong, used or expired code gets one answer (403, "that join code is not valid") and
+counts a failure: 5 failures per node or 30 from everyone in 10 minutes and every join answers 429
+until the window passes. A match burns the invite and records a `Guest`: the caller's stable node
+ID, user ID and login from `WhoIs`, the trust and repos from the invite, and the name it announces
+(for people only). Nothing in the body but the secret counts. When the save fails the invite is
+put back. The answer names the pool, the host device, and the trust and repos; the guest saves
+them with its own `WhoIs` facts as `Lent` in `<state_dir>/mesh-lent.json` and works for that pool
+from then on (`PoolName`), until `tentmaker leave`. No message, log line or error on either side
+carries the code.
+
+The owner's devices share the guest table. A join or a removal is posted to every same-user peer
+(`POST /v1/guests`), and each hello names the table's revision, so a device that missed the post
+fetches it (`GET /v1/guests`) on its next discovery. A merge keeps the newer record of each guest,
+and a removal wins a tie. Only the same tailnet user reaches `/v1/guests`.
+
+Who reaches which route (`routeAllows`): `/v1/hello` anyone admitted; `/v1/status` owner devices
+and, on a lent device, the host's; `/v1/work` and `/v1/archive` owner devices and guests;
+`/v1/wake` and `/v1/guests` the same tailnet user only; `/v1/leave` guests; every other route
+owner devices only. A guest's work and archive calls carry its lend (`core.WithCallerLend`, from
+the guest table, never from the request) to the broker. A device is an owner device when it is
+the same tailnet user or a `members` login, as before: `members` keeps owner trust. When a guest
+and an owner device announce one name, the owner device keeps it.
+
+Trust levels (enforced in Dispatch, on both sides):
+
+- owner: the same tailnet user or a `members` login. Every job the broker hands out.
+- trusted: the invite's repos (every repo when it lists none). Only jobs no fork can reach (a
+  runner of a private repo whose fork PR workflows are off, or a check job), never a fork's,
+  `pull_request_target` or otherwise untrusted job.
+- public: only fork `pull_request` jobs of public repos that set `lend_public`, with no cache of
+  any kind: no repo cache, no Actions cache, no build cache, so nothing it writes is read by an
+  owner device. GitHub gives a fork's `pull_request` run no repo secrets.
+
+`tentmaker devices [--json]` lists every device this one knows: name, owner login, trust, repos,
+online (answered in the last 75 s) or asleep, and lent. `tentmaker devices remove NAME` revokes
+the guest with that name or node ID at once: the record stays, marked revoked (kept 30 days), its
+calls carry the revoked trust, and the broker grants it nothing; its running jobs finish or end
+under the usual drain and silence rules. `tentmaker leave` on the guest tells the host (best
+effort) and deletes `mesh-lent.json`; the guest keeps its own budget, pause, schedule and drain
+the whole time. `status --json` shows `mesh.pool`, `mesh.lent` (the pool this device is lent to,
+its trust and repos) and `mesh.guests` (the devices lent to this pool).
 
 ## Metrics and status page (internal/observe)
 
@@ -1723,7 +1819,10 @@ section is rewritten.
 **mesh**
 
 - `Options` has `Version` and `Platforms` for `/v1/hello` and pool views.
-- Served callers are the same tailnet user OR a login in `members`.
+- Served callers are the same tailnet user OR a login in `members` (owner trust), a guest in the
+  guest table (its invite's trust), or on a lent device the pool owner's devices.
+- Wake facts and `/v1/wake` are honored only from the same tailnet user, not from `members`
+  (closes the first item of #58): a member is trusted to run work, not to steer wakes on the LAN.
 - Tagged devices are served only when `members` contains `tagged-devices`.
 - Every endpoint but `/v1/hello` needs a matching `Tentmaker-Pool` header.
 - A member's device acts only as itself: binding the device name to the WhoIs-checked source

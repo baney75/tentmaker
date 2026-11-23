@@ -1213,6 +1213,8 @@ func (d *Daemon) Status(ctx context.Context) Status {
 	if n := d.currentNode(); n != nil {
 		ws := n.WakeStatus()
 		s.Wake = &ws
+		ls := n.LendStatus()
+		s.Mesh.Pool, s.Mesh.Lent, s.Mesh.Guests = n.PoolName(), ls.Lent, ls.Guests
 	}
 	s.Next = NextStep(s)
 	rt := readRuntime(started, d.o.Now())
