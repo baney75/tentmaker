@@ -620,6 +620,15 @@ func (w *Worker) inUse(exName string) (core.Resources, int) {
 	return r, n
 }
 
+// cpuCeilingLocked is the CPU ceiling for a job starting now: the pool's
+// current CPU limit, so a job alone gets every CPU the pool allows. job.cpus
+// stays its reservation for slot counting, and the pool's own cap (SetPoolLimit)
+// holds all jobs together. It drops with the limit (battery, a profile
+// change) for jobs that start after.
+func (w *Worker) cpuCeilingLocked() float64 {
+	return core.CPUCeiling(w.limits, w.decision.Limit.CPUs)
+}
+
 func (w *Worker) applyPoolLimits(ctx context.Context, d core.Decision) {
 	for _, e := range w.execs {
 		w.mu.Lock()
@@ -1046,6 +1055,7 @@ func (w *Worker) start(ctx context.Context, src core.WorkSource, off core.WorkOf
 	// a Hold, Pause or Shutdown since exchange counted free slots must
 	// see either this job or no start (review r2 partA sol-F1).
 	w.mu.Lock()
+	spec.CPUCeiling = w.cpuCeilingLocked()
 	if w.freeLocked(w.decision, w.now()) == 0 || w.capacityLocked(e) == 0 {
 		w.dropRelaysLocked(name)
 		w.mu.Unlock()

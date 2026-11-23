@@ -382,6 +382,7 @@ func spec(name, kind string) core.ExecSpec {
 		Grant:       core.Grant{RunnerName: name, Secret: secret},
 		Platform:    core.Platform{OS: "linux", Arch: "x64"},
 		Limits:      core.Resources{MemoryBytes: 2 << 30, CPUs: 1.5},
+		CPUCeiling:  4, // the pool's CPU limit
 		MaxDuration: 90 * time.Minute,
 		TestWorkers: 4,
 	}
@@ -449,7 +450,9 @@ func TestStartRunner(t *testing.T) {
 	want := []string{
 		"--quiet", "--no-ask-password",
 		"--unit=tentmaker-job-job-abc.service", "--slice=tentmaker.slice", "--uid=1234", "--gid=1235",
-		"-p", "Type=exec", "-p", "MemoryMax=2147483648", "-p", "MemorySwapMax=0", "-p", "OOMPolicy=stop", "-p", "CPUQuota=150%",
+		"-p", "Type=exec", "-p", "MemoryMax=2147483648", "-p", "MemorySwapMax=0", "-p", "OOMPolicy=stop",
+		// The pool's CPU limit, not the job's 1.5 CPU reservation; memory stays the job's.
+		"-p", "CPUQuota=400%", "-p", "CPUWeight=100",
 		"-p", "TasksMax=4096", "-p", "Nice=10", "-p", "IOSchedulingClass=idle", "-p", "RuntimeMaxSec=5400",
 		"-p", "TimeoutStopSec=30", "-p", "NoNewPrivileges=yes", "-p", "PrivateTmp=yes",
 		"-p", "NetworkNamespacePath=" + filepath.Join(v.dir, "proc", "4242", "ns", "net"),

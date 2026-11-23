@@ -117,6 +117,13 @@ Decision order (first match decides the profile, later steps can only lower it):
 
 Then: `Limit` = the profile's resources (zero for `off`). `Slots = min(floor(Limit.Memory /
 job.memory), floor(Limit.CPUs / job.cpus), job.max_slots if > 0)`. Guards run before `Limit`.
+`job.cpus` is what a job reserves: it counts slots and the pool's use. It is not the job's CPU
+ceiling. The worker sets `ExecSpec.CPUCeiling` (and `DebugSpec.CPUCeiling`) to `Limit.CPUs` when
+the job starts (never below `job.cpus`, see `core.CPUCeiling`), so a job alone on the device gets
+every CPU the pool allows; jobs that start after `Limit` drops (battery, a profile change) get the
+lower ceiling. An executor honors it only where its `SetPoolLimit` caps all jobs together:
+linux-podman does; macos-tart and windows-job have no pool-wide cap and keep each job at
+`job.cpus`, or two jobs could use twice the pool.
 Safety guards (free memory, free disk) set `Admit=false` (and `Evict=true` for
 `stop_below_disk`). Busy guards (`pause_when_running`, `max_load_per_cpu`) set `Busy`, which
 lowers `boost` to `everyday` and never blocks `everyday`; a busy probe that can't be read counts
@@ -239,7 +246,8 @@ setup`), idempotent and safe to rerun. `Options.Phase func(name string)`, when s
   and no docker group; a root-owned runner template (actions/runner pinned version and sha256);
   per job a fresh copy (`externals` a symlink and `bin/` hard links to the template, never
   chowned; top-level files and any file the CI user could write are copied), own HOME, a transient systemd unit in `tentmaker.slice` with `MemoryMax`
-  = job memory, `CPUQuota` = job CPUs, Nice 10, idle IO; rootless podman socket for container
+  = job memory, `CPUQuota` = `ExecSpec.CPUCeiling` (the pool's CPU limit at start), `CPUWeight`
+  100 on every job so jobs that share the pool split it evenly, Nice 10, idle IO; rootless podman socket for container
   jobs with `DOCKER_HOST` and `DOCKER_BUILDKIT=0` (podman serves docker's classic build API,
   building with buildah in its own store, but not BuildKit's) (the runner's manager gets its own `XDG_CONFIG_HOME` and
   `XDG_RUNTIME_DIR` from a root-owned `environment.d/zz-tentmaker.conf`, which sorts after
@@ -959,7 +967,7 @@ type JobReporter interface {                  // a Forge that reports a finished
     JobReport(ctx context.Context, repo string, jobID, maxLog int64) (JobReport, error)
 }
 
-type DebugSpec struct { Limits Resources; Timeout time.Duration; MaxOutput int64 }
+type DebugSpec struct { Limits Resources; CPUCeiling float64; Timeout time.Duration; MaxOutput int64 }
 type DebugResult struct { ExitCode int; Output []byte; Truncated, TimedOut bool }
 type Debugger interface {                     // an Executor that can keep a failed job's sandbox
     Keep(ctx context.Context, name string) error
