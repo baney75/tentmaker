@@ -58,6 +58,11 @@ type Record struct {
 	// CacheBytes is the size of the repo cache the job started with, when
 	// it had one.
 	CacheBytes int64 `json:"cache_bytes,omitempty"`
+	// RepoCache and ContainerStore say whether the job started warm
+	// (core.CacheHit, core.CacheMiss, or "" when it had no such cache);
+	// see core.Usage.
+	RepoCache      string `json:"repo_cache,omitempty"`
+	ContainerStore string `json:"container_store,omitempty"`
 	// HasLog says the device keeps a log tail for the job.
 	HasLog bool `json:"has_log,omitempty"`
 	// LogSource says where a runner job's conclusion and log came from:
@@ -83,9 +88,9 @@ const (
 // conclusion the pool waits for the broker's forge result.
 const ForgeGrace = 2 * time.Minute
 
-// awaitingForge reports whether r ended without a conclusion and the
+// AwaitingForge reports whether r ended without a conclusion and the
 // broker's forge result may still come.
-func (r Record) awaitingForge(now time.Time) bool {
+func (r Record) AwaitingForge(now time.Time) bool {
 	return r.Kind == "runner" && r.Conclusion == Unknown && r.LogSource != LogForge &&
 		!r.EndedAt.IsZero() && now.Sub(r.EndedAt) < ForgeGrace
 }

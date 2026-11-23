@@ -220,14 +220,15 @@ func (e *Executor) claimStore(ctx context.Context, spec core.ExecSpec, uid, gid 
 	if err != nil || !ok {
 		return nil
 	}
+	c := core.CacheRepo{Forge: r.Forge, Repo: r.Repo}
 	if bound && b.Key == r.Key {
+		e.markStoreWarm(spec.Name, c)
 		return nil
 	}
 	if !e.idleLocked(ctx, spec.Name) {
 		e.log.Info("job runs without its container store: other jobs use podman", "name", spec.Name, "repo", r.Repo)
 		return nil
 	}
-	c := core.CacheRepo{Forge: r.Forge, Repo: r.Repo}
 	src, err := e.cache.PrepareContainers(c, uid, gid)
 	if err != nil {
 		e.log.Warn("job runs without its container store", "name", spec.Name, "repo", r.Repo, "error", err)
@@ -252,6 +253,7 @@ func (e *Executor) claimStore(ctx context.Context, spec core.ExecSpec, uid, gid 
 	}
 	if why == "" {
 		e.log.Info("container store bound", "name", spec.Name, "repo", r.Repo, "took", time.Since(t0).Round(time.Millisecond).String())
+		e.markStoreWarm(spec.Name, c)
 		return nil
 	}
 	e.log.Warn("job runs without its container store", "name", spec.Name, "repo", r.Repo, "error", why)
@@ -359,4 +361,12 @@ func (e *Executor) storeBind(store string) []string {
 		return nil
 	}
 	return []string{"BindPaths=" + store + ":" + e.storeMount()}
+}
+
+// markStoreWarm records that job name starts with its repo's store bound,
+// warm when the store already holds images.
+func (e *Executor) markStoreWarm(name string, c core.CacheRepo) {
+	if e.cache.ContainersWarm(c) {
+		e.markSlot(name, func(r *slotRec) { r.StoreWarm = true })
+	}
 }

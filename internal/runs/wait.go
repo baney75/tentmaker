@@ -114,7 +114,7 @@ func settled(s Snapshot, now time.Time) bool {
 		return false
 	}
 	for _, r := range s.Records {
-		if !r.Ended() || r.awaitingForge(now) {
+		if !r.Ended() || r.AwaitingForge(now) {
 			return false
 		}
 	}

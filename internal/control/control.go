@@ -7,7 +7,8 @@
 // account of the process that owns the TCP connection. A CI job (the
 // runner user, or on Linux one of its subordinate uids) gets 403 on every
 // route, wherever the job fence leaks; Windows Firewall doesn't filter
-// loopback at all. Anyone else may read status and pool. Doctor makes the
+// loopback at all. Anyone else may read status and pool, the metrics
+// (GET /metrics) and the status page (GET /). Doctor makes the
 // daemon call the forges, so it needs the token or an admin caller (root,
 // SYSTEM or an elevated Administrator). POSTs (pause, resume, reload) need
 // the token from <state>/control.token, which only root (or SYSTEM and
@@ -89,6 +90,13 @@ type Handler interface {
 // caller gets the pull request's number and URL.
 type PROpener interface {
 	OpenPR(ctx context.Context, pr core.PullRequest) (core.PullRequestResult, error)
+}
+
+// ViewsHandler serves the metrics and the status page (internal/observe):
+// GET /metrics, and the page at GET / and GET /status. They are open like
+// status, so every caller check in ServeHTTP applies and a CI job gets 403.
+type ViewsHandler interface {
+	Views() http.Handler
 }
 
 // Relayer streams check jobs' source archives. An unknown or expired id is
@@ -200,6 +208,13 @@ func NewServer(h Handler, token string, ident Identify, log *slog.Logger) *Serve
 	s.mux.HandleFunc("POST /v1/reload", s.auth(func(w http.ResponseWriter, r *http.Request) {
 		s.reply(w, nil, h.Reload(r.Context()))
 	}))
+	if vh, ok := h.(ViewsHandler); ok {
+		if v := vh.Views(); v != nil {
+			s.mux.Handle("GET /metrics", v)
+			s.mux.Handle("GET /status", v)
+			s.mux.Handle("GET /{$}", v)
+		}
+	}
 	if rh, ok := h.(RunsHandler); ok {
 		s.addRuns(rh)
 	}

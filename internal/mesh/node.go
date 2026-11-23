@@ -49,6 +49,13 @@ type Options struct {
 	Status func() any // this device's status for pool views
 	// Runs is this device's run history; nil serves an empty one.
 	Runs RunsSource
+	// Views serves GET /metrics and the status page (GET / and GET
+	// /status) to the same callers as the rest of the peer API. A browser
+	// or Prometheus sends no pool header, so these GETs need none; instead
+	// the Host header must name this device (one of its tailnet IPs or
+	// MagicDNS names), so a web page that rebinds its own name to a tailnet
+	// address can't read them. nil serves 404.
+	Views http.Handler
 
 	// Version and Platforms are reported by /v1/hello.
 	Version   string
@@ -327,6 +334,10 @@ func (n *Node) handler() http.Handler {
 			return
 		}
 		r = r.WithContext(context.WithValue(r.Context(), callerKey{}, id))
+		if isView(r.URL.Path) {
+			n.serveView(w, r)
+			return
+		}
 		if r.URL.Path != "/v1/hello" && r.Header.Get(poolHeader) != n.o.Pool {
 			n.refuse(r, "", "pool mismatch")
 			writeErr(w, http.StatusForbidden, "this device is in another pool")
@@ -363,6 +374,52 @@ func (n *Node) handler() http.Handler {
 			writeErr(w, http.StatusNotFound, "no such endpoint")
 		}
 	})
+}
+
+// isView reports whether path is one of the read-only views Options.Views
+// serves.
+func isView(path string) bool { return path == "/metrics" || path == "/" || path == "/status" }
+
+// serveView serves a view to a caller authorize already let in, when the
+// Host header names this device.
+func (n *Node) serveView(w http.ResponseWriter, r *http.Request) {
+	if n.o.Views == nil {
+		writeErr(w, http.StatusNotFound, "no such endpoint")
+		return
+	}
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		writeErr(w, http.StatusMethodNotAllowed, "use GET")
+		return
+	}
+	self, err := n.selfPeer(r.Context(), false)
+	if err != nil || !hostIsSelf(self, r.Host) {
+		n.refuse(r, "", "the Host header names another site")
+		writeErr(w, http.StatusForbidden, "use this device's tailnet address or name")
+		return
+	}
+	n.o.Views.ServeHTTP(w, r)
+}
+
+// hostIsSelf reports whether host (a Host header, port optional) is one of
+// self's tailnet IPs, its MagicDNS name or that name's first label.
+func hostIsSelf(self Peer, host string) bool {
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	host = strings.ToLower(strings.TrimSuffix(strings.Trim(host, "[]"), "."))
+	if host == "" {
+		return false
+	}
+	if ip, err := netip.ParseAddr(host); err == nil {
+		return slices.Contains(self.IPs, ip.Unmap().WithZone(""))
+	}
+	dns := strings.ToLower(strings.TrimSuffix(self.DNSName, "."))
+	if dns == "" {
+		return false
+	}
+	short, _, _ := strings.Cut(dns, ".")
+	return host == dns || host == short
 }
 
 func (n *Node) route(w http.ResponseWriter, r *http.Request, method string, h http.HandlerFunc) {

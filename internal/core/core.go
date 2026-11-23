@@ -367,12 +367,37 @@ type JobLog struct {
 }
 
 // Usage is what one job used, read from its sandbox. Zero fields are
-// unknown.
+// unknown, so a reading that comes with an error may still carry the
+// fields it could read.
 type Usage struct {
 	PeakMemoryBytes int64   `json:"peak_memory_bytes,omitempty"`
 	CPUSeconds      float64 `json:"cpu_seconds,omitempty"`
 	// CacheBytes is the size of the repo cache the job started with.
 	CacheBytes int64 `json:"cache_bytes,omitempty"`
+	// RepoCache says whether the job started with a warm repo cache:
+	// CacheHit, CacheMiss, or "" for a job with no repo cache.
+	RepoCache string `json:"repo_cache,omitempty"`
+	// ContainerStore says whether the job's container work started warm:
+	// CacheHit when its repo's container store was bound for it and held
+	// images; CacheMiss when the store holds images but the job started
+	// without them (unbound, or bound while still empty); "" when the job
+	// had no repo cache or the store never held an image.
+	ContainerStore string `json:"container_store,omitempty"`
+}
+
+// Cache outcomes for Usage.RepoCache and Usage.ContainerStore.
+const (
+	CacheHit  = "hit"
+	CacheMiss = "miss"
+)
+
+// MergeCache combines two readings of one cache outcome: a hit stays a
+// hit, and a later reading fills one that was unknown.
+func MergeCache(old, v string) string {
+	if old == "" || v == CacheHit {
+		return v
+	}
+	return old
 }
 
 // JobInspector is an executor that can show a job's log and what it used,
@@ -478,6 +503,10 @@ type Decision struct {
 	Admit   bool      `json:"admit"`   // may start new jobs
 	Evict   bool      `json:"evict"`   // must stop running jobs (hard guard tripped)
 	Reasons []string  `json:"reasons"` // plain-language why, for status and logs
+	// Guards names the guards that hold CI back now, each a fixed word
+	// (guards.Guard* and the budget's power and battery guards), so
+	// metrics can count them; Reasons says why in words.
+	Guards []string `json:"guards,omitempty"`
 }
 
 // Budgeter decides the current Decision.

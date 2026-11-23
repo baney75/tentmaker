@@ -153,11 +153,10 @@ func (w *Worker) sampleUsage(ctx context.Context, e *execInfo, j *jobRec, now ti
 		return
 	}
 	uctx, cancel := context.WithTimeout(ctx, execTimeout)
-	u, err := in.JobUsage(uctx, j.Name)
+	// A reading with an error still carries what it knows (a job whose
+	// cgroup is gone keeps its cache outcomes); zero fields change nothing.
+	u, _ := in.JobUsage(uctx, j.Name)
 	cancel()
-	if err != nil {
-		return
-	}
 	w.mu.Lock()
 	mergeUsage(&j.Usage, u)
 	w.mu.Unlock()
@@ -169,6 +168,8 @@ func mergeUsage(dst *core.Usage, u core.Usage) {
 	dst.PeakMemoryBytes = max(dst.PeakMemoryBytes, u.PeakMemoryBytes)
 	dst.CPUSeconds = max(dst.CPUSeconds, u.CPUSeconds)
 	dst.CacheBytes = max(dst.CacheBytes, u.CacheBytes)
+	dst.RepoCache = core.MergeCache(dst.RepoCache, u.RepoCache)
+	dst.ContainerStore = core.MergeCache(dst.ContainerStore, u.ContainerStore)
 }
 
 type collected struct {
@@ -196,9 +197,8 @@ func (w *Worker) collect(ctx context.Context, e *execInfo, j *jobRec) collected 
 		return c
 	}
 	uctx, cancel := context.WithTimeout(ctx, execTimeout)
-	if u, err := in.JobUsage(uctx, j.Name); err == nil {
-		mergeUsage(&c.usage, u)
-	}
+	u, _ := in.JobUsage(uctx, j.Name)
+	mergeUsage(&c.usage, u)
 	cancel()
 	lctx, cancel := context.WithTimeout(ctx, execTimeout)
 	if l, err := in.JobLog(lctx, j.Name, runs.LogTailBytes); err == nil {
@@ -224,6 +224,7 @@ func (w *Worker) baseRecord(j *jobRec) runs.Record {
 		JobID: j.JobID, RunID: j.RunID, RunURL: j.RunURL, Ref: j.Ref, SHA: j.SHA, Device: w.device,
 		Executor: j.Executor, Platform: j.Platform.String(), Slot: j.Slot, QueuedAt: j.Queued, StartedAt: j.Started,
 		PeakMemoryBytes: j.Usage.PeakMemoryBytes, CPUSeconds: j.Usage.CPUSeconds, CacheBytes: j.Usage.CacheBytes,
+		RepoCache: j.Usage.RepoCache, ContainerStore: j.Usage.ContainerStore,
 	}
 }
 
@@ -235,6 +236,7 @@ func (w *Worker) endRecord(j *jobRec, res *core.CheckResult, why string, c colle
 	w.mu.Unlock()
 	rec.EndedAt = c.ended
 	rec.PeakMemoryBytes, rec.CPUSeconds, rec.CacheBytes = c.usage.PeakMemoryBytes, c.usage.CPUSeconds, c.usage.CacheBytes
+	rec.RepoCache, rec.ContainerStore = c.usage.RepoCache, c.usage.ContainerStore
 	log := c.log
 	switch {
 	case res != nil:

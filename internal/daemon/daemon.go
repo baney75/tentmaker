@@ -641,6 +641,7 @@ func (d *Daemon) apply(cfg config.Config) {
 				Tailscale: d.o.Tailscale, Broker: src, Version: d.o.Version,
 				Status: func() any { return d.Status(context.Background()) },
 				Runs:   runsSource{d},
+				Views:  d.Views(),
 				Log:    log,
 			})
 			nc := startComp(d.runCtx, log, "mesh", n.Run)

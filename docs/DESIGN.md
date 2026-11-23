@@ -66,6 +66,7 @@ internal/dispatch/        Broker (forge side) and Worker (device side)
 internal/mesh/            tailnet peer API: discovery, WhoIs auth, remote WorkSource, claims
 internal/runs/            run history: records, log tails, redaction, stats, wait
 internal/alerts/          webhooks on failure, recovery and slow jobs
+internal/observe/         GET /metrics (Prometheus text) and the read-only pool status page
 internal/executor/joblog/ reads a job's log from its job folder without following the job's links
 internal/testresults/     finds JUnit reports in a job's workspace and go test -json in its log
 internal/service/         install the daemon as a systemd / launchd / Windows service
@@ -99,7 +100,11 @@ type Probe interface {
     Processes(ctx context.Context) ([]string, error)        // lowercase executable names
 }
 func NewHostProbe(stateDir string) Probe
-type Result struct { Admit, Evict, Busy bool; Reasons []string }
+type Result struct { Admit, Evict, Busy bool; Reasons, Guards []string }
+// Guards names each tripped guard once: GuardProbe "probe", GuardMemory "memory",
+// GuardDisk "disk", GuardDiskStop "disk_stop", GuardLoad "load", GuardProcess "process".
+// budget adds GuardPower "power", GuardBattery "battery", GuardBatteryStop "battery_stop";
+// core.Decision.Guards carries both. The names never change, so metrics can label by them.
 func Check(ctx context.Context, g config.Guards, job config.Job, p Probe, stateDir string, running int) Result
 ```
 
@@ -856,6 +861,7 @@ type Options struct {
     Tailscale Tailscale
     Broker    core.WorkSource                    // nil if this device has no credentials
     Status    func() any                         // this device's status for pool views
+    Views     http.Handler                       // GET /metrics, / and /status; nil serves 404
     Log       *slog.Logger
 }
 func New(o Options) *Node
@@ -894,6 +900,73 @@ report a peer that failed in `Answer.Errors`. Answers are capped at 8 MiB (runs)
 Bodies are JSON, capped at 1 MiB, 10 s
 timeouts, except the archive stream (10 min, 2 GiB) and the run history answers. Peers
 are rediscovered every 30 s; a peer failing 3 calls in a row is skipped for a minute.
+
+`GET /metrics`, `GET /` and `GET /status` (`Options.Views`) pass the same self and `WhoIs` checks
+as every route, but not the pool-name check, since a browser or a Prometheus server is not a pool
+device. They also need a `Host` header naming this device (one of its tailnet IPs, its MagicDNS
+name or that name's first label), so a page on another site can't read them through DNS
+rebinding (403 otherwise). Any other method is 405.
+
+## Metrics and status page (internal/observe)
+
+```go
+type Device struct { ... }                    // the fields of daemon.Status (status --json) the views read
+func ParseDevice(raw json.RawMessage) (Device, bool)
+type MetricsInput struct { Now time.Time; Self Device; Runs []runs.Record }
+type PageInput struct { Now time.Time; Self, Pool string; Devices []mesh.DeviceStatus; Runs []runs.Record; Errors []string }
+type Source interface { MetricsInput(ctx) (MetricsInput, error); PageInput(ctx) (PageInput, error) }
+func Handler(src Source) http.Handler         // GET /metrics, GET / and GET /status; checks no caller
+func Metrics(in MetricsInput) []byte          // Prometheus text format 0.0.4
+func Page(in PageInput) ([]byte, error)
+// control
+type ViewsHandler interface { Views() http.Handler }   // a Handler that serves the views
+```
+
+The daemon serves both on the control API (behind its caller checks: a CI job or a caller it
+can't name gets 403) and on the mesh peer API (behind `WhoIs` and the Host rule above). It binds
+no new listener: the control API is local only, so a Prometheus server or a browser on another
+tailnet device uses the peer API's tailnet address. Each view has 8 s, inside the mesh's 10 s
+write timeout; a source that fails answers 503 with no detail.
+
+No counter of their own. Every number comes from the daemon's `Status` (marshaled to JSON and
+read back with `ParseDevice`, so the views follow the `status --json` contract) or the run
+history:
+
+- Per device gauges: `tentmaker_info{device,version,pool}`, `_paused`, `_budget_profile{profile}`,
+  `_budget_cpus`, `_budget_memory_bytes`, `_budget_admit`, `_budget_evict`,
+  `_guard_active{guard}` (every known guard, 0 or 1), `_problems`, `_slots{state}`,
+  `_jobs_running`, `_executor_ready{executor}`.
+- On a broker: `_jobs_queued{forge,repo,mode}` (runner mode: queued at the forge; checks mode:
+  planned jobs with no status), `_broker_device_runners{worker}`, `_online`, `_quarantined`,
+  `_forge_api_requests_total`, `_billed_total`, `_not_modified_total`, `_rate_limited_total`,
+  `_forge_api_rate_remaining` and `_rate_limit` (only when the forge said), and
+  `_rate_reset_timestamp_seconds`.
+- From the run history: `tentmaker_jobs_finished_total{result}`,
+  `tentmaker_job_start_latency_seconds` (histogram, queued at the forge to running; buckets 1, 2,
+  5, 10, 15, 30, 60, 120, 300 and 600 s) and `tentmaker_cache_jobs_total{cache,result}`
+  (`cache` is `repo` or `container_store`). They count the jobs that ran on this device and ended
+  since the daemon started (`Status.StartedAt`), so they start at 0 with the daemon as a counter
+  should. A runner job that is `AwaitingForge` counts once the forge's result is in, so a job
+  never moves between `result` series. The history keeps `history_max` jobs (default 2000): a
+  device that ends more than that without a restart sees the counters fall, which Prometheus reads
+  as a reset.
+
+Cache outcomes are facts recorded once, when the Linux executor claims a job's cache: the repo
+cache is a hit when the repo's folder already held files; the container store is a hit when the
+job was bound to a store that already held images (`repocache.ContainersWarm`, read through
+`os.Root` so a link a job left can't point it elsewhere), and a miss when the store held images
+but the job started without it. Both are kept in the slot record (`Warm`, `StoreWarm`) and reach
+the run record through `core.Usage`.
+
+The status page is one HTML document: the style, the script and the mark are inline, with a CSP
+of `default-src 'none'` and sha256 hashes for the style and script, `img-src data:`, `connect-src
+'self'`, no framing and no referrer. It follows `prefers-color-scheme`, stacks its rows under 640
+px, and shows each device's budget and why, its guards and next fix, running jobs, the forge
+queue, the last 10 failures and each broker's API quota, with links to the forge. Links are http
+or https with no userinfo; any other is shown as text. The script fetches the page again every
+15 s and swaps `<main>`: one fetch at a time with a 10 s timeout, none while the tab is hidden,
+and on failure the wait doubles up to 5 minutes with jitter. Every free text in either view
+(reasons, errors, names, steps) passes through `runs.Redact`.
 
 ## Updates and channels (internal/update, scripts/)
 
@@ -992,7 +1065,11 @@ Windows and times it (`go run ./scripts/bench install`, docs/BENCHMARKS.md "Inst
 ```go
 // core
 type JobLog struct { Data []byte; Size int64 }
-type Usage struct { PeakMemoryBytes int64; CPUSeconds float64; CacheBytes int64 }
+type Usage struct { PeakMemoryBytes int64; CPUSeconds float64; CacheBytes int64
+    RepoCache, ContainerStore string }        // CacheHit "hit", CacheMiss "miss" or "" (no cache)
+func MergeCache(old, v string) string         // a hit seen once stays a hit
+// JobUsage may return what it read with an error (the cgroup is gone): the cache
+// outcomes come from the slot record, so the worker merges them anyway.
 type JobInspector interface {                 // an Executor that can show a job
     JobLog(ctx context.Context, name string, max int64) (JobLog, error)
     JobUsage(ctx context.Context, name string) (Usage, error)
@@ -1034,7 +1111,9 @@ type Record struct { ID, Kind, Forge, Repo, Workflow, Job string; JobID, RunID i
     SHA, Device, Executor, Platform string; Slot int; QueuedAt, StartedAt, EndedAt time.Time;
     Conclusion, FailedStep, Note string; PeakMemoryBytes int64; CPUSeconds float64;
     CacheBytes int64; HasLog bool; LogSource string;   // LogSource: "forge" or "runner-diag"
-    Tests *TestSummary; KeptUntil time.Time }
+    Tests *TestSummary; KeptUntil time.Time;
+    RepoCache, ContainerStore string }               // from core.Usage: "hit", "miss" or ""
+func (r Record) AwaitingForge(now time.Time) bool  // a runner job ended in the last ForgeGrace with no forge result yet
 type ForgeReport struct { ID, Device, Forge, Repo, Job string; JobID, RunID int64; RunURL string;
     EndedAt time.Time; Conclusion, FailedStep string; Log []byte }
 type Query struct { Repo, SHA, ID string; RunID int64; Failed bool; Since time.Time; Limit int }
@@ -1328,6 +1407,12 @@ section is rewritten.
 - A device refuses peer API requests from itself (fence verification, item 19): loopback, its
   own tailnet IPs, or an address `WhoIs` ties to them. WhoIs called such a caller this device,
   the most trusted peer.
+- The metrics and the status page (issue #45) bind no listener of their own. The issue asked for
+  the tailnet-only control listener, but the control API is local (a Unix socket, or loopback on
+  Windows) and the tailnet listener is the peer API. So the control API serves them to local
+  readers behind its usual checks, and the peer API serves them to the same tailnet user behind
+  `WhoIs`, minus the pool-name check a scraper can't pass and plus a Host check. A new listener
+  would have been a second set of caller rules to keep in step.
 - `CheckBundle.ArchiveRef` replaces the forge URL and header the broker used to send (review finding: a check job could read the forge token from its bundle). `Header` stays in the struct only so a worker can recognize and refuse an older broker's bundle.
 - An empty `Platform.Arch` means any arch. Hosted `runs-on` labels (ubuntu-latest, macos-15,
   windows-2022) name an OS, not an arch, so Plan leaves Arch empty for them; only `-arm`/`-arm64`
