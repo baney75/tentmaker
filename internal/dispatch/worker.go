@@ -180,7 +180,7 @@ type jobRec struct {
 	sampled time.Time
 	// Expires and Owner are set on sandboxes (Kind core.KindSandbox): it is
 	// stopped and deleted at Expires, and Owner asked for it.
-	Expires time.Time `json:"expires,omitempty"`
+	Expires time.Time `json:"expires,omitzero"`
 	Owner   string    `json:"owner,omitempty"`
 
 	// starting is set while the executor's Start runs, off the tick, so a
@@ -1447,7 +1447,7 @@ type RunningJob struct {
 	// Starting is set while the executor's Start has not returned.
 	Starting bool `json:"starting,omitempty"`
 	// Expires is when a sandbox is deleted.
-	Expires time.Time `json:"expires,omitempty"`
+	Expires time.Time `json:"expires,omitzero"`
 }
 
 // ExecutorStatus is one executor's health.

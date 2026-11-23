@@ -3,6 +3,7 @@ package dispatch
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"strings"
@@ -507,5 +508,19 @@ func TestNoBrokerSeesOrStopsASandbox(t *testing.T) {
 	}
 	if _, err := wr.w.Sandbox("sbx-000000000001"); err != nil || called(wr.ex, "Stop", "sbx-000000000001") {
 		t.Fatalf("a broker stopped a sandbox: %v", err)
+	}
+}
+
+// Only a sandbox expires. A CI job's status and state record carry no
+// expires at all, not a zero time a reader would take as long past.
+func TestOnlySandboxesHaveAnExpiry(t *testing.T) {
+	for _, v := range []any{RunningJob{Name: "tm-1"}, jobRec{Name: "tm-1"}} {
+		b, err := json.Marshal(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(b), "expires") {
+			t.Fatalf("%T has an expiry: %s", v, b)
+		}
 	}
 }
