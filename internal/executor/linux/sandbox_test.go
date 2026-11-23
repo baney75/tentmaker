@@ -265,3 +265,115 @@ func TestSandboxExecStopsItsUnitWhenCut(t *testing.T) {
 		t.Fatalf("the command's unit was not stopped: %v", v.f.commands())
 	}
 }
+
+// holderExited answers systemctl for a sandbox whose holder ended while a
+// command unit still runs in its slice. The command stops with the slice
+// only when stops is true.
+func holderExited(stops bool) (respond func(Cmd) (Result, error), live func() bool) {
+	cmd := ExecPrefix + sbx + "-0a0b0c0d0e0f.service"
+	running := true
+	respond = func(c Cmd) (Result, error) {
+		if c.Path != "systemctl" || len(c.Args) == 0 {
+			return Result{}, nil
+		}
+		switch c.Args[0] {
+		case "show":
+			return Result{Stdout: "ActiveState=inactive\nLoadState=loaded\n"}, nil
+		case "stop":
+			if stops && slices.Contains(c.Args, sandboxSlice(sbx)) {
+				running = false
+			}
+		case "list-units":
+			if slices.Contains(c.Args, "--type=service,slice") && running {
+				return Result{Stdout: cmd + " loaded active running Command\n" +
+					sandboxSlice(sbx) + " loaded active active Slice\n"}, nil
+			}
+		}
+		return Result{}, nil
+	}
+	return respond, func() bool { return running }
+}
+
+// The holder can end before its commands (its RuntimeMaxSec, a kill from
+// inside the sandbox). Clean then stops the whole slice and keeps the
+// limits, the namespace and the folder until nothing in it runs.
+func TestSandboxCleanStopsCommandsThatOutliveTheHolder(t *testing.T) {
+	v := newEnv(t)
+	v.installed(t)
+	if err := v.e.Start(context.Background(), sandboxSpec()); err != nil {
+		t.Fatal(err)
+	}
+	respond, live := holderExited(false)
+	v.f.respond = respond
+	if err := v.e.Clean(context.Background(), sbx); err == nil || !strings.Contains(err.Error(), "still runs") {
+		t.Fatalf("clean with a live command: %v", err)
+	}
+	if !live() {
+		t.Fatal("the fake lost its command")
+	}
+	cmds := v.f.commands()
+	if !slices.Contains(cmds, "systemctl stop "+sandboxSlice(sbx)) {
+		t.Fatalf("clean did not stop the slice: %v", cmds)
+	}
+	if slices.Contains(cmds, "systemctl revert "+sandboxSlice(sbx)) {
+		t.Fatal("clean reverted the slice's limits under a live command")
+	}
+	if _, err := os.Stat(v.e.limitsPath(sbx)); err != nil {
+		t.Fatalf("clean removed the limits file under a live command: %v", err)
+	}
+	if _, err := os.Stat(v.e.jobDir(sbx)); err != nil {
+		t.Fatalf("clean removed the job folder under a live command: %v", err)
+	}
+	// Stop fails the same way: the sandbox has not stopped.
+	if err := v.e.Stop(context.Background(), sbx); err == nil {
+		t.Fatal("stop with a live command")
+	}
+
+	// Once the slice's stop ends the command, Clean goes on.
+	respond, live = holderExited(true)
+	v.f.respond = respond
+	v.f.mu.Lock()
+	v.f.cmds = nil
+	v.f.mu.Unlock()
+	if err := v.e.Clean(context.Background(), sbx); err != nil {
+		t.Fatal(err)
+	}
+	if live() {
+		t.Fatal("the command still runs")
+	}
+	cmds = v.f.commands()
+	stop, revert := slices.Index(cmds, "systemctl stop "+sandboxSlice(sbx)), slices.Index(cmds, "systemctl revert "+sandboxSlice(sbx))
+	if stop < 0 || revert < 0 || stop > revert {
+		t.Fatalf("clean must stop the slice, then revert it: %v", cmds)
+	}
+	if _, err := os.Stat(v.e.limitsPath(sbx)); err == nil {
+		t.Fatal("clean left the limits file")
+	}
+}
+
+// Reset runs only when no job runs, so a sandbox's command or slice left
+// then is stopped, and a reset that can't stop it is refused.
+func TestResetStopsSandboxLeftovers(t *testing.T) {
+	v := newEnv(t)
+	v.installed(t)
+	respond, _ := holderExited(false)
+	v.f.respond = respond
+	err := v.e.Reset(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "reset refused") {
+		t.Fatalf("reset with a live sandbox command: %v", err)
+	}
+	if !slices.Contains(v.f.commands(), "systemctl stop "+ExecPrefix+sbx+"-0a0b0c0d0e0f.service") {
+		t.Fatalf("reset did not stop the command: %v", v.f.commands())
+	}
+	respond, live := holderExited(true)
+	v.f.respond = respond
+	if err := v.e.Reset(context.Background()); err != nil && strings.Contains(err.Error(), "refused") {
+		t.Fatalf("reset refused once the leftovers stopped: %v", err)
+	}
+	if live() {
+		t.Fatal("reset left the sandbox's command running")
+	}
+	if !slices.Contains(v.f.commands(), "systemctl revert "+sandboxSlice(sbx)) {
+		t.Fatalf("reset did not revert the slice: %v", v.f.commands())
+	}
+}

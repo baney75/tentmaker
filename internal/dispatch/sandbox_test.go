@@ -365,3 +365,41 @@ func TestNoSandboxStartsDuringAReset(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// A sandbox whose holder ended while its commands still run can't be
+// cleaned. It keeps its slots, fails closed, and is stopped and cleaned
+// again each tick until Clean confirms nothing is left.
+func TestSandboxKeepsItsSlotsUntilCleaned(t *testing.T) {
+	r := newRig(t)
+	wr := r.addWorker("w1", 2)
+	r.tick()
+	if _, err := wr.w.StartSandbox(bg, sbxSpec("sbx-000000000001", func(s *SandboxSpec) { s.Limits.MemoryBytes = 4 << 30 })); err != nil {
+		t.Fatal(err)
+	}
+	wr.ex.SetCleanErr(errors.New("sandbox sbx-000000000001 still runs tentmaker-exec-sbx-000000000001-ab.service after stop"))
+	wr.ex.Exit("sbx-000000000001")
+	r.run(time.Minute, 10*time.Second)
+	info, err := wr.w.Sandbox("sbx-000000000001")
+	if err != nil {
+		t.Fatalf("a sandbox that could not be cleaned was dropped: %v", err)
+	}
+	if info.State != "stopping" {
+		t.Fatalf("state %q, want stopping", info.State)
+	}
+	if got := wr.w.Status().Slots.Used; got != 2 {
+		t.Fatalf("slots used %d, want the sandbox's 2", got)
+	}
+	_, err = wr.w.StartSandbox(bg, sbxSpec("sbx-000000000002"))
+	noRoom(t, err, "2 in use")
+	if err := wr.w.StopSandbox(bg, "sbx-000000000001", "removed"); err == nil || !strings.Contains(err.Error(), "still runs") {
+		t.Fatalf("remove reported %v", err)
+	}
+	wr.ex.SetCleanErr(nil)
+	r.run(30*time.Second, 10*time.Second)
+	if _, err := wr.w.Sandbox("sbx-000000000001"); !errors.Is(err, ErrNoSandbox) {
+		t.Fatalf("still there after a clean worked: %v", err)
+	}
+	if got := wr.w.Status().Slots.Used; got != 0 {
+		t.Fatalf("slots used %d after the clean", got)
+	}
+}

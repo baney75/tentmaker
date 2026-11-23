@@ -833,8 +833,11 @@ func (e *Executor) Stop(ctx context.Context, name string) error {
 	}
 	os.Remove(e.secretPath(name))
 	if isSandboxName(name) {
-		// The slice holds the sandbox's commands; stopping it ends them all.
-		e.h.Run(ctx, Cmd{Path: "systemctl", Args: []string{"stop", sandboxSlice(name)}, Timeout: 90 * time.Second})
+		// The slice holds the holder and every command; stopping it ends
+		// them all, and a sandbox has stopped only once it is empty.
+		if err := e.stopSlice(ctx, name); err != nil {
+			return err
+		}
 	}
 	// A unit that isn't loaded makes stop fail; the state check below decides.
 	e.h.Run(ctx, Cmd{Path: "systemctl", Args: []string{"stop", unitName(name)}, Timeout: 90 * time.Second})
@@ -862,6 +865,13 @@ func (e *Executor) Clean(ctx context.Context, name string) error {
 	}
 	if st == core.ExecRunning || st == core.ExecUnknown {
 		return fmt.Errorf("job %s still runs; stop it first", name)
+	}
+	if isSandboxName(name) {
+		// Its holder ended, but its commands may not have: nothing they
+		// use (limits, namespace, folder) goes until the slice is empty.
+		if err := e.stopSlice(ctx, name); err != nil {
+			return err
+		}
 	}
 	os.Remove(e.secretPath(name))
 	// A failed unit stays loaded (no --collect) until this.
@@ -988,6 +998,29 @@ func (e *Executor) Reset(ctx context.Context) error {
 			return fmt.Errorf("reset refused: job %s is %s", n, st)
 		}
 	}
+	// No job runs, so no sandbox's command or slice should either; one can
+	// outlive its holder. Stop what is left and refuse if any of it runs.
+	sbxUnits, _, err := e.sandboxUnits(ctx, ExecPrefix+"*", "tentmaker-"+SandboxPrefix+"*.slice")
+	if err != nil {
+		return err
+	}
+	for _, u := range sbxUnits {
+		e.h.Run(ctx, Cmd{Path: "systemctl", Args: []string{"stop", u}, Timeout: 90 * time.Second})
+	}
+	if len(sbxUnits) > 0 {
+		_, live, err := e.sandboxUnits(ctx, ExecPrefix+"*", "tentmaker-"+SandboxPrefix+"*.slice")
+		if err != nil {
+			return err
+		}
+		if len(live) > 0 {
+			return fmt.Errorf("reset refused: %s still runs after stop", strings.Join(live, " "))
+		}
+		for _, u := range sbxUnits {
+			if strings.HasSuffix(u, ".slice") {
+				e.h.Run(ctx, Cmd{Path: "systemctl", Args: []string{"revert", u}, Timeout: 30 * time.Second})
+			}
+		}
+	}
 	// No job runs, so no job namespace should either.
 	nsUnits, err := e.netnsUnits(ctx)
 	if err != nil {
@@ -1043,6 +1076,11 @@ func (e *Executor) Reset(ctx context.Context) error {
 	if ents, err := os.ReadDir(e.secretDir()); err == nil {
 		for _, ent := range ents {
 			os.Remove(filepath.Join(e.secretDir(), ent.Name()))
+		}
+	}
+	if ents, err := os.ReadDir(e.sandboxesDir()); err == nil {
+		for _, ent := range ents {
+			os.Remove(filepath.Join(e.sandboxesDir(), ent.Name()))
 		}
 	}
 	// The job folders are gone, so are their slots. The caches stay.

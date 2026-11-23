@@ -34,11 +34,52 @@ func isSandboxName(name string) bool {
 // are the sandbox's.
 func sandboxSlice(name string) string { return "tentmaker-" + name + ".slice" }
 
+// sandboxUnits lists the loaded units that match patterns (command units
+// and sandbox slices) and which of them still run: any state but inactive
+// or failed. A unit that isn't loaded runs nothing. A list that fails is an
+// error, never "nothing runs".
+func (e *Executor) sandboxUnits(ctx context.Context, patterns ...string) (all, live []string, err error) {
+	args := append([]string{"list-units", "--all", "--plain", "--no-legend", "--type=service,slice"}, patterns...)
+	res, err := e.h.Run(ctx, Cmd{Path: "systemctl", Args: args, Timeout: 30 * time.Second})
+	if err != nil {
+		return nil, nil, fmt.Errorf("list sandbox units: %v", err)
+	}
+	for _, line := range strings.Split(res.Stdout, "\n") {
+		f := strings.Fields(line)
+		if len(f) < 3 || !(strings.HasPrefix(f[0], ExecPrefix) || strings.HasPrefix(f[0], "tentmaker-"+SandboxPrefix)) {
+			continue
+		}
+		all = append(all, f[0])
+		if f[2] != "inactive" && f[2] != "failed" {
+			live = append(live, f[0])
+		}
+	}
+	return all, live, nil
+}
+
+// stopSlice stops a sandbox's slice, which ends its holder and every
+// command in it, and confirms nothing in it still runs. The holder can end
+// before its commands (its RuntimeMaxSec, a kill from inside), so its
+// state alone says nothing about them.
+func (e *Executor) stopSlice(ctx context.Context, name string) error {
+	e.h.Run(ctx, Cmd{Path: "systemctl", Args: []string{"stop", sandboxSlice(name)}, Timeout: 90 * time.Second})
+	_, live, err := e.sandboxUnits(ctx, ExecPrefix+name+"-*", sandboxSlice(name))
+	if err != nil {
+		return err
+	}
+	if len(live) > 0 {
+		return fmt.Errorf("sandbox %s still runs %s after stop", name, strings.Join(live, " "))
+	}
+	return nil
+}
+
 // limitsPath is where a sandbox's limits are kept, root only, for the units
 // of its commands.
 func (e *Executor) limitsPath(name string) string {
-	return filepath.Join(e.priv, "sandboxes", name+".limits")
+	return filepath.Join(e.sandboxesDir(), name+".limits")
 }
+
+func (e *Executor) sandboxesDir() string { return filepath.Join(e.priv, "sandboxes") }
 
 var _ core.Sandboxer = (*Executor)(nil)
 

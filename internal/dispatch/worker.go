@@ -527,6 +527,24 @@ func (w *Worker) finish(ctx context.Context, e *execInfo, j *jobRec, why string)
 		cctx, cancel := context.WithTimeout(ctx, stopTimeout)
 		err := e.ex.Clean(cctx, j.Name)
 		cancel()
+		if err != nil && j.Kind == core.KindSandbox {
+			// Its commands can outlive its holder, and Clean refuses while
+			// any runs. It keeps its slots and memory, and pollJobs stops
+			// and cleans it again, until Clean confirms nothing is left.
+			w.mu.Lock()
+			first := j.Stopping == ""
+			if why == "" {
+				why = "it ended"
+			}
+			j.Stopping, j.StopErr = why, "its clean failed: "+err.Error()
+			w.markDirtyLocked()
+			w.errs.add(w.now(), e.name, "clean "+j.Name+": "+err.Error())
+			w.mu.Unlock()
+			if first {
+				w.log.Warn("sandbox clean failed; it stays counted and is retried", "executor", e.name, "sandbox", j.Name, "error", err)
+			}
+			return
+		}
 		if err != nil {
 			w.log.Warn("clean failed; retrying", "executor", e.name, "runner", j.Name, "error", err)
 			w.mu.Lock()
