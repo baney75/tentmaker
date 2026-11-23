@@ -338,3 +338,45 @@ func TestIdleHoldEmptiesTheDeviceForAWaitingRepo(t *testing.T) {
 		t.Fatalf("app's job did not start after the reset: %v", started(w.ex))
 	}
 }
+
+// A reset that fails after it released the repo's data (the Linux
+// executor's container store is unbound, a later step reports a problem)
+// ends the hold, so a waiting repo's job starts although the reset keeps
+// failing. A reset that fails before then keeps the hold.
+func TestFailedResetAfterReleaseFreesTheHold(t *testing.T) {
+	r := newRig(t, checksRepo(repoSite), checksRepo(repoApp))
+	w := r.addWorker("alpha", 8)
+	w.ex.SetCachesRepos(true)
+	r.forge.SetFile(repoSite, sha1, ciWorkflow, []byte("test\n"))
+	r.forge.SetCommits(repoSite, []core.Commit{{SHA: sha1, Ref: "main", Author: "baney75"}})
+	r.tick()
+	first := started(w.ex)
+	if len(first) != 1 {
+		t.Fatalf("starts = %v", first)
+	}
+	held := func() *core.CacheRepo {
+		w.w.mu.Lock()
+		defer w.w.mu.Unlock()
+		return w.w.st.Held
+	}
+	w.ex.SetResetErr(errors.New("reset: podman could not start again without the container store"))
+	w.ex.SetResult(first[0], core.CheckResult{State: "success", Description: "ok"})
+	w.ex.Exit(first[0])
+	r.run(3*time.Second, time.Second)
+	if h := held(); h == nil {
+		t.Fatal("a reset that failed before releasing the store freed the hold")
+	}
+	w.ex.SetResetErr(&core.CacheFreedError{Err: errors.New("reset: images left after reset")})
+	r.forge.SetFile(repoApp, sha1, ciWorkflow, []byte("test\n"))
+	r.forge.SetCommits(repoApp, []core.Commit{{SHA: sha1, Ref: "main", Author: "baney75"}})
+	r.run(3*time.Minute, 5*time.Second)
+	app := false
+	for _, n := range started(w.ex) {
+		if spec, _ := w.ex.Spec(n); spec.Grant.Repo == repoApp {
+			app = true
+		}
+	}
+	if !app {
+		t.Fatalf("app's job did not start while the reset fails after the release: %v (held %+v)", started(w.ex), held())
+	}
+}

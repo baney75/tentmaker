@@ -651,7 +651,10 @@ was vouched safe for, and `jobRec.Cached`, both in state.json):
 - While the device holds repo R's cache, an offer not vouched safe for R (another repo, a fork,
   an untrusted job of R) is declined. The device holds it from the start of a job that got it
   until the next successful reset (`held_cache` in state.json), not only while that job runs:
-  R's container store stays bound to podman until the reset.
+  R's container store stays bound to podman until the reset. A reset that fails after every
+  executor keeping repo caches released them returns a `core.CacheFreedError` (Linux: after
+  podman came back unbound); the hold ends then though the device stays dirty, so a later
+  step that keeps failing doesn't keep the device to R. A reset that fails earlier keeps it.
 - A job gets R's cache only if it is vouched safe for R, its executor is a `core.RepoCacher` that
   `CachesRepos()`, the offer isn't `Drain`, and every job on the device is vouched safe for R.
 - One response with offers of more than one repo (or trusted and untrusted ones) runs them all

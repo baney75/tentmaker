@@ -506,6 +506,16 @@ type RepoCacher interface {
 	CachesRepos() bool
 }
 
+// CacheFreedError is a failed Reset that still released every repo's data
+// the executor kept reachable between jobs (a Linux container store bound
+// to podman). The device stays dirty, but the worker's cache hold
+// (state.json held_cache) ends, so a failing later step of the reset
+// doesn't keep the device to one repo.
+type CacheFreedError struct{ Err error }
+
+func (e *CacheFreedError) Error() string { return e.Err.Error() }
+func (e *CacheFreedError) Unwrap() error { return e.Err }
+
 // WorkResponse answers a WorkRequest.
 type WorkResponse struct {
 	Offers []WorkOffer `json:"offers"`

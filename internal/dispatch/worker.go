@@ -646,7 +646,9 @@ func (w *Worker) maybeReset(ctx context.Context, now time.Time) {
 	if !due {
 		return
 	}
-	ok := true
+	// freed: every executor that keeps repo caches released them, even if
+	// its reset failed later (core.CacheFreedError), so the hold can end.
+	ok, freed := true, true
 	for _, e := range w.execs {
 		rctx, cancel := context.WithTimeout(ctx, resetTimeout)
 		err := e.ex.Reset(rctx)
@@ -654,11 +656,19 @@ func (w *Worker) maybeReset(ctx context.Context, now time.Time) {
 		if err != nil {
 			ok = false
 			w.noteErr(e.name, "reset", err)
+			var cf *core.CacheFreedError
+			if rc, caches := e.ex.(core.RepoCacher); caches && rc.CachesRepos() && !errors.As(err, &cf) {
+				freed = false
+			}
 		}
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if !ok {
+		if freed && w.st.Held != nil {
+			w.log.Info("cache hold ended: the reset failed after it released every repo's data", "repo", w.st.Held.Repo)
+			w.st.Held = nil
+		}
 		w.log.Warn("node reset failed; retrying in a minute")
 		return
 	}

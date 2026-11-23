@@ -977,9 +977,10 @@ func (e *Executor) Reset(ctx context.Context) error {
 			problems = append(problems, "images left after reset")
 		}
 	}
+	// No store is bound from here on: a failure below is a CacheFreedError.
 	entries, err := os.ReadDir(e.jobsDir())
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
+		return &core.CacheFreedError{Err: err}
 	}
 	for _, ent := range entries {
 		if err := e.removeJobDir(ctx, filepath.Join(e.jobsDir(), ent.Name())); err != nil {
@@ -1011,7 +1012,7 @@ func (e *Executor) Reset(ctx context.Context) error {
 		e.log.Info("repo caches evicted", "repos", strings.Join(evicted, " "))
 	}
 	if len(problems) > 0 {
-		return errors.New("reset: " + strings.Join(problems, "; "))
+		return &core.CacheFreedError{Err: errors.New("reset: " + strings.Join(problems, "; "))}
 	}
 	e.log.Info("reset", "executor", Name, "images_wiped", !e.o.KeepImages)
 	return nil

@@ -483,3 +483,34 @@ func TestContainerStoreChecksTheService(t *testing.T) {
 		t.Fatalf("the log lacks podman's reason:\n%s", v.logs.String())
 	}
 }
+
+// Reset says whether it failed before or after podman came back unbound:
+// only after it is the failure a core.CacheFreedError, which lets the
+// worker end its cache hold.
+func TestResetErrorSaysWhetherTheStoreIsFree(t *testing.T) {
+	v, _ := storeTestEnv(t)
+	ctx := context.Background()
+	must(t, v.e.Start(ctx, cachedSpec("chk-app", core.KindCheck, "acme/app")))
+	next := v.f.respond
+	v.f.respond = func(c Cmd) (Result, error) {
+		if strings.Contains(strings.Join(c.Args, " "), "podman images -q") {
+			return Result{Stdout: "abc123\n"}, nil
+		}
+		return next(c)
+	}
+	err := v.e.Reset(ctx)
+	var cf *core.CacheFreedError
+	if err == nil || !errors.As(err, &cf) || !strings.Contains(err.Error(), "images left") {
+		t.Fatalf("reset after the unbind: %v, want a CacheFreedError", err)
+	}
+
+	v2, sh2 := storeTestEnv(t)
+	must(t, v2.e.Start(ctx, cachedSpec("chk-app", core.KindCheck, "acme/app")))
+	sh2.mu.Lock()
+	sh2.podnsFail = sh2.podns + 1
+	sh2.mu.Unlock()
+	err = v2.e.Reset(ctx)
+	if err == nil || errors.As(err, &cf) {
+		t.Fatalf("reset whose unbind failed: %v, want a plain error", err)
+	}
+}
