@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -33,11 +34,26 @@ func (admitAll) Decide(ctx context.Context, now time.Time, running int) core.Dec
 	return core.Decision{Profile: "everyday", Slots: 4, Admit: running < 4, Limit: core.Resources{MemoryBytes: 8 << 30, CPUs: 8}}
 }
 
+// sandboxRig's caller and users are read by the server's goroutines while
+// a test changes them, so they are set and read under mu.
 type sandboxRig struct {
 	f      *fixture
 	w      *dispatch.Worker
+	mu     sync.Mutex
 	caller control.Caller
 	users  []string
+}
+
+func (r *sandboxRig) setCaller(c control.Caller) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.caller = c
+}
+
+func (r *sandboxRig) setUsers(u ...string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.users = u
 }
 
 // serveSandboxes starts the control API with sandboxes, as caller.
@@ -52,9 +68,13 @@ func serveSandboxes(t *testing.T, f *fixture, caller control.Caller) *sandboxRig
 	}
 	r := &sandboxRig{f: f, w: w, caller: caller}
 	m := sandbox.New(sandbox.Options{
-		Worker:   func() sandbox.Worker { return w },
-		Device:   func() string { return "box" },
-		Users:    func() []string { return r.users },
+		Worker: func() sandbox.Worker { return w },
+		Device: func() string { return "box" },
+		Users: func() []string {
+			r.mu.Lock()
+			defer r.mu.Unlock()
+			return append([]string(nil), r.users...)
+		},
 		LookupID: func(name string) (string, error) { return map[string]string{"alice": "1000"}[name], nil },
 	})
 	if err := os.MkdirAll(f.env.Paths.State, 0o755); err != nil {
@@ -64,7 +84,11 @@ func serveSandboxes(t *testing.T, f *fixture, caller control.Caller) *sandboxRig
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctl := control.NewServer(sandboxDaemon{f.daemon, m}, tok, func(net.Conn) (control.Caller, error) { return r.caller, nil }, nil)
+	ctl := control.NewServer(sandboxDaemon{f.daemon, m}, tok, func(net.Conn) (control.Caller, error) {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		return r.caller, nil
+	}, nil)
 	srv := httptest.NewUnstartedServer(ctl)
 	srv.Config.ConnContext = ctl.ConnContext
 	// The caller is named once per connection; the tests change it
@@ -188,7 +212,7 @@ func TestSandboxAccess(t *testing.T) {
 	// The token is root's; an ordinary account can't read it. Point the
 	// client at a token path that doesn't exist.
 	f.env.Control.TokenPath = filepath.Join(t.TempDir(), "none")
-	r.caller = control.Caller{ID: "1000", Who: "uid 1000"}
+	r.setCaller(control.Caller{ID: "1000", Who: "uid 1000"})
 
 	args := []string{"sandbox", "create", "--json"}
 	if code := f.run("", args...); code != ExitFailed {
@@ -202,7 +226,7 @@ func TestSandboxAccess(t *testing.T) {
 	}
 
 	// Listed by name (looked up to uid 1000), alice may.
-	r.users = []string{"alice"}
+	r.setUsers("alice")
 	if code := f.run("", args...); code != 0 {
 		t.Fatalf("alice: %d %s", code, f.stdout)
 	}
@@ -212,8 +236,8 @@ func TestSandboxAccess(t *testing.T) {
 	}
 
 	// Another listed account can't see, use or remove alice's sandbox.
-	r.users = []string{"alice", "1001"}
-	r.caller = control.Caller{ID: "1001", Who: "uid 1001"}
+	r.setUsers("alice", "1001")
+	r.setCaller(control.Caller{ID: "1001", Who: "uid 1001"})
 	args = []string{"sandbox", "ls", "--json"}
 	f.run("", args...)
 	if l := f.jsonObject(args)["sandboxes"].([]any); len(l) != 0 {
@@ -233,7 +257,7 @@ func TestSandboxAccess(t *testing.T) {
 	}
 
 	// An admin sees every sandbox.
-	r.caller = control.Caller{Admin: true, ID: "0"}
+	r.setCaller(control.Caller{Admin: true, ID: "0"})
 	args = []string{"sandbox", "ls", "--json"}
 	f.run("", args...)
 	if l := f.jsonObject(args)["sandboxes"].([]any); len(l) != 1 {
