@@ -71,6 +71,25 @@ func TestJSONOneLineOffATerminal(t *testing.T) {
 	if !strings.Contains(f.stdout.String(), "\n  \"") {
 		t.Errorf("not indented on a terminal: %q", f.stdout)
 	}
+	// An installer's --json run on an agent's pty still gets one line.
+	f.env.Getenv = func(k string) string { return map[string]string{"TENTMAKER_JSON_ONELINE": "1"}[k] }
+	f.run("", "version", "--json")
+	if s := strings.TrimSuffix(f.stdout.String(), "\n"); s == "" || strings.Contains(s, "\n") {
+		t.Errorf("not one line on a pty with TENTMAKER_JSON_ONELINE: %q", f.stdout)
+	}
+}
+
+// TestJSONErrorSaysNotOK: a caller that checks "ok" reads an error as one.
+func TestJSONErrorSaysNotOK(t *testing.T) {
+	f := newFixture(t)
+	f.isRoot = false
+	if code := f.run("", "setup", "--yes", "--json"); code == ExitOK {
+		t.Fatalf("setup without root exited 0")
+	}
+	out := f.jsonObject([]string{"setup", "--yes", "--json"})
+	if ok, has := out["ok"]; !has || ok != false || out["error"] == nil {
+		t.Errorf("error object without \"ok\": false: %v", out)
+	}
 }
 
 // TestFirstFix: the first failed check's fix comes before any warning's.

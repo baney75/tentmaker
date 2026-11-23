@@ -5,8 +5,9 @@ This file is the contract for `internal/cli`, `internal/daemon`, `internal/contr
 any command change.
 
 Every command that prints takes `--json` and then prints exactly one JSON object on stdout
-(errors too: `{"error": "...", "fix": "..."}`) and nothing else. When stdout is not a terminal
-(a pipe, a file, an agent) the object is on one line; on a terminal it is indented. Every command and subcommand
+(errors too: `{"ok": false, "error": "...", "fix": "..."}`) and nothing else. When stdout is not a
+terminal (a pipe, a file, an agent) the object is on one line; on a terminal it is indented, unless
+`TENTMAKER_JSON_ONELINE` is set (the installers set it, since an agent's terminal is often a pty). Every command and subcommand
 takes `--help`, which prints its usage and exits 0. Exit codes: 0 ok, 1 failed,
 2 usage error, 3 needs root/Administrator, 4 not set up yet. No command ever prompts when
 stdin is not a terminal or `--yes` is given; a missing required answer is a usage error that

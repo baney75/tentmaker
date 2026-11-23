@@ -351,8 +351,9 @@ func Run(env *Env, args []string) int {
 	}
 	if _, quiet := res.(silentExit); a.json && res != nil && !quiet {
 		enc := json.NewEncoder(env.Stdout)
-		// One line for a pipe or an agent; indented for a person.
-		if env.StdoutTTY {
+		// One line for a pipe or an agent; indented for a person. The
+		// installers set TENTMAKER_JSON_ONELINE: an agent's pty is no person.
+		if env.StdoutTTY && (env.Getenv == nil || env.Getenv("TENTMAKER_JSON_ONELINE") == "") {
 			enc.SetIndent("", "  ")
 		}
 		if err := enc.Encode(res); err != nil {
@@ -379,7 +380,11 @@ func (a *app) fail(err error) int {
 		return ExitOK
 	}
 	if a.json {
-		b, _ := json.Marshal(map[string]string{"error": ce.msg, "fix": ce.fix})
+		b, _ := json.Marshal(struct {
+			OK    bool   `json:"ok"`
+			Error string `json:"error"`
+			Fix   string `json:"fix"`
+		}{false, ce.msg, ce.fix})
 		fmt.Fprintln(a.env.Stdout, string(b))
 	} else {
 		fmt.Fprintln(a.env.Stderr, "tentmaker: "+ce.msg)
