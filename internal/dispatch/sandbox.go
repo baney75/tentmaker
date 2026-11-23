@@ -117,18 +117,21 @@ func (w *Worker) StartSandbox(ctx context.Context, spec SandboxSpec) (SandboxInf
 	// A sandbox runs whatever an agent sends, as the user every job runs
 	// as, so no repo gets a cache again until the next reset.
 	w.markDirtyLocked()
+	// Shutdown waits for this start until its state and any cleanup are
+	// settled. Add here, under the lock that checked shutting, so no
+	// Shutdown can start waiting before it.
+	w.starts.Add(1)
 	w.mu.Unlock()
+	defer w.starts.Done()
 	if err := w.save(); err != nil {
 		w.log.Error("state not saved before a sandbox start", "error", err)
 	}
 
 	execSpec := core.ExecSpec{Kind: core.KindSandbox, Name: spec.Name, Platform: plat, Limits: limits,
 		MaxDuration: spec.TTL, TestWorkers: max(1, int(math.Floor(limits.CPUs)))}
-	w.starts.Add(1)
 	sctx, cancel := context.WithTimeout(ctx, startTimeout)
 	err := e.ex.Start(sctx, execSpec)
 	cancel()
-	w.starts.Done()
 	if err != nil {
 		w.log.Warn("sandbox start failed", "executor", e.name, "sandbox", spec.Name, "error", err)
 		w.mu.Lock()

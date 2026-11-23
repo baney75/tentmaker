@@ -403,3 +403,58 @@ func TestSandboxKeepsItsSlotsUntilCleaned(t *testing.T) {
 		t.Fatalf("slots used %d after the clean", got)
 	}
 }
+
+// Shutdown waits for a sandbox start in flight, from the moment its record
+// is published until its state is settled, so it never returns while a
+// start can still make a sandbox that outlives the daemon.
+func TestShutdownWaitsForASandboxStart(t *testing.T) {
+	r := newRig(t)
+	wr := r.addWorker("w1", 2)
+	r.tick()
+	// Hold the state file's lock: the start stops right after it
+	// publishes its record, in its save.
+	wr.w.saveMu.Lock()
+	type result struct {
+		info SandboxInfo
+		err  error
+	}
+	started := make(chan result, 1)
+	go func() {
+		info, err := wr.w.StartSandbox(bg, sbxSpec("sbx-000000000001"))
+		started <- result{info, err}
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for len(wr.w.Sandboxes()) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the start never published its record")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	stopped := make(chan struct{})
+	go func() {
+		wr.w.Shutdown(bg)
+		close(stopped)
+	}()
+	time.Sleep(50 * time.Millisecond)
+	wr.w.mu.Lock()
+	j := wr.w.sandboxLocked("sbx-000000000001")
+	early := j == nil || j.Stopping != ""
+	wr.w.mu.Unlock()
+	select {
+	case <-stopped:
+		early = true
+	default:
+	}
+	wr.w.saveMu.Unlock()
+	if early {
+		t.Fatal("shutdown went on while a sandbox start was in flight")
+	}
+	res := <-started
+	<-stopped
+	if res.err != nil {
+		t.Fatalf("the start failed: %v", res.err)
+	}
+	if !called(wr.ex, "Stop", "sbx-000000000001") || len(wr.w.Sandboxes()) != 0 {
+		t.Fatalf("shutdown left %v", wr.w.Sandboxes())
+	}
+}
