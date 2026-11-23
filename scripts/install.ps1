@@ -83,13 +83,22 @@ function Install-Tentmaker {
     $rawInstall = 'irm https://raw.githubusercontent.com/baney75/tentmaker/main/scripts/install.ps1 | iex'
 
     function Say([string]$msg) { Write-Host "tentmaker-install: $msg" }
+    $emitted = @{ done = $false }
     function Fail([string]$msg, [string]$fix) {
         if ($Json -and -not $setupRan) {
             Write-Output ([ordered]@{ ok = $false; error = $msg; fix = $fix } | ConvertTo-Json -Compress)
+            $emitted.done = $true
         }
         $text = "tentmaker-install: error: $msg"
         if ($fix) { $text += "`ntentmaker-install: fix: $fix" }
         throw $text
+    }
+    # Any other error (a folder this user can't write) still gets one line.
+    trap {
+        if ($Json -and -not $setupRan -and -not $emitted.done) {
+            Write-Output ([ordered]@{ ok = $false; error = "$($_.Exception.Message)"; fix = "fix the error above and run the installer again, from an Administrator PowerShell or with TENTMAKER_INSTALL_DIR set to a folder you can write" } | ConvertTo-Json -Compress)
+        }
+        break
     }
 
     if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
@@ -346,8 +355,11 @@ function Install-Tentmaker {
             Say "running: tentmaker setup --yes $($SetupArgs -join ' ')"
             $ErrorActionPreference = 'Continue'
             $setupRan = $true
+            # One JSON line even when an agent's console is a terminal.
+            $env:TENTMAKER_JSON_ONELINE = '1'
             & $target setup --yes @SetupArgs
             $code = $LASTEXITCODE
+            Remove-Item Env:TENTMAKER_JSON_ONELINE -ErrorAction SilentlyContinue
             $ErrorActionPreference = 'Stop'
             if ($code -ne 0) {
                 Fail "setup failed (exit $code)" "fix the error above, then run: tentmaker setup --yes $($SetupArgs -join ' ')"

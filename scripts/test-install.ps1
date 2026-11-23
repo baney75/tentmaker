@@ -99,6 +99,14 @@ try {
     try { & $installer -InstallDir (Join-Path $work 'install5') -NoSetup -Json 6>$null | ForEach-Object { $lines += $_ } } catch { $msg = "$_" }
     $v = if ($lines.Count -eq 1) { $lines[0] | ConvertFrom-Json } else { $null }
     if ($v -and $v.ok -eq $false -and $v.error -match 'checksum mismatch' -and $v.fix) { Pass '-Json failure is one JSON line' } else { Bad "-Json failure printed: $($lines -join ' | ')" }
+    # An error Fail does not raise (a file where the folder goes) is one line too.
+    $env:TENTMAKER_DOWNLOAD_BASE = Join-Path $work 'good'
+    $blocker = Join-Path $work 'install6'
+    Set-Content -LiteralPath $blocker -Value 'not a folder'
+    $lines = @()
+    try { & $installer -InstallDir $blocker -NoSetup -Json 6>$null | ForEach-Object { $lines += $_ } } catch { $msg = "$_" }
+    $v = if ($lines.Count -eq 1) { $lines[0] | ConvertFrom-Json } else { $null }
+    if ($v -and $v.ok -eq $false -and $v.error -and $v.fix) { Pass '-Json unexpected error is one JSON line' } else { Bad "-Json unexpected error printed: $($lines -join ' | ')" }
 
     # 5. Bad channel.
     $threw = $false
