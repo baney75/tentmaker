@@ -316,8 +316,8 @@ func (w *Worker) RunningRecords() []runs.Record {
 	defer w.mu.Unlock()
 	out := make([]runs.Record, 0, len(w.st.Jobs))
 	for _, j := range w.st.Jobs {
-		if j.kept() {
-			continue // ended; its record is in the history
+		if j.kept() || j.Kind == core.KindSandbox {
+			continue // ended, its record in the history; or no CI job
 		}
 		r := w.baseRecord(j)
 		r.Conclusion = runs.Running

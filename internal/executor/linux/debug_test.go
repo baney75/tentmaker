@@ -15,7 +15,13 @@ import (
 	"github.com/baney75/tentmaker/internal/core"
 )
 
-func (f *fakeHost) Stream(ctx context.Context, c Cmd, stdin io.Reader, stdout io.Writer) (int, error) {
+func (f *fakeHost) Stream(ctx context.Context, c Cmd, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
+	if fn := streamFn; fn != nil { // a sandbox test's
+		f.mu.Lock()
+		f.cmds = append(f.cmds, c)
+		f.mu.Unlock()
+		return fn(c, stdin, stdout, stderr)
+	}
 	in, _ := io.ReadAll(stdin)
 	f.mu.Lock()
 	f.cmds = append(f.cmds, c)
@@ -175,7 +181,7 @@ func TestStreamEndsWithOpenStdin(t *testing.T) {
 	r, w := io.Pipe()
 	defer w.Close()
 	start := time.Now()
-	code, err := OSHost{}.Stream(context.Background(), Cmd{Path: "/bin/sh", Args: []string{"-c", "exit 0"}, Timeout: time.Minute}, r, io.Discard)
+	code, err := OSHost{}.Stream(context.Background(), Cmd{Path: "/bin/sh", Args: []string{"-c", "exit 0"}, Timeout: time.Minute}, r, io.Discard, io.Discard)
 	if err != nil || code != 0 || time.Since(start) > 3*time.Second {
 		t.Fatalf("code %d err %v after %s", code, err, time.Since(start))
 	}

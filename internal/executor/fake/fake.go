@@ -49,6 +49,7 @@ type Executor struct {
 	results    map[string]core.CheckResult
 	resultErrs map[string]error
 	resetErr   error
+	resetHook  func() // runs at the start of each Reset, outside the lock
 	listErr    error
 	stopErr    error
 	cleanErr   error
@@ -75,6 +76,10 @@ type Executor struct {
 	keepErr    error
 	debugExec  func(name, command string) (core.DebugResult, error)
 	debugCalls []DebugCall
+
+	execFn ExecFunc
+	execs  map[string][][]string
+	files  map[string]map[string]string // sandbox -> path -> content
 }
 
 var _ core.Executor = (*Executor)(nil)
@@ -250,6 +255,14 @@ func (e *Executor) SetResetErr(err error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.resetErr = err
+}
+
+// SetResetHook makes every Reset call f first, as if f ran while the
+// reset was under way (nil clears it).
+func (e *Executor) SetResetHook(f func()) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.resetHook = f
 }
 
 // SetListErr makes List fail with err (nil clears it).
@@ -476,6 +489,7 @@ func (e *Executor) Clean(ctx context.Context, name string) error {
 	}
 	delete(e.runs, name)
 	delete(e.kept, name)
+	delete(e.files, name)
 	return nil
 }
 
@@ -498,6 +512,12 @@ func (e *Executor) List(ctx context.Context) ([]string, error) {
 // Reset implements core.Executor. It fails (and records a violation) when a
 // runner is still running.
 func (e *Executor) Reset(ctx context.Context) error {
+	e.mu.Lock()
+	hook := e.resetHook
+	e.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.record("Reset", "")

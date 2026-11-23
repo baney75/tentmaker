@@ -771,6 +771,92 @@ written to `state.json` and holds its slot and memory from the moment it is acce
 reported in `Running` only once `Start` returns, so the broker's start grace still covers it.
 A stop asked for while it starts waits for `Start` to return (review r1 partA sol-F4).
 
+## Sandboxes (internal/dispatch, internal/executor/linux)
+
+A sandbox is a job with no forge: an agent asks for one, runs commands in it, copies files in and
+out, and removes it. It reuses everything a CI job gets, so it adds no new isolation to trust.
+
+```go
+// core
+const KindSandbox = "sandbox"
+type SandboxExec struct { Argv []string; Dir string; Timeout time.Duration }
+func (r SandboxExec) WorkDir() (string, error) // Dir cleaned; absolute or outside the work folder: error
+type Sandboxer interface { // an Executor that can hold sandboxes
+    Exec(ctx, name string, req SandboxExec, stdin io.Reader, stdout, stderr io.Writer) (exitCode int, err error)
+}
+
+// dispatch
+func (w *Worker) StartSandbox(ctx, SandboxSpec) (SandboxInfo, error) // *NoRoomError: nothing started
+func (w *Worker) ExecSandbox(ctx, name string, SandboxExec, stdin, stdout, stderr) (int, error)
+func (w *Worker) StopSandbox(ctx, name, why string) error
+func (w *Worker) Sandbox(name string) (SandboxInfo, error); func (w *Worker) Sandboxes() []SandboxInfo
+```
+
+**Placement.** `StartSandbox` admits a sandbox under the worker's lock with the same checks as a
+job, each failing closed with the reason: not shutting down, not paused, no update hold, no reset
+under way, no repo cache held, the budget decided at least once and admitting, free slots, the
+memory and CPU budget, and an executor that runs the asked platform, implements
+`core.Sandboxer`, is usable and has capacity. A sandbox is a `jobRec` with `Kind` "sandbox" and
+`Source` "sandbox"; `exchange` skips `KindSandbox` records, so no broker is told one runs or can
+stop one, whatever a source is named.
+
+A sandbox runs whatever an agent sends, as the user every job runs as, so it can reach anything
+beside it through `/proc`. While the device holds a repo's cache (`cachedRepoLocked`: a job holds
+it, or one did since the last reset) no sandbox is admitted, and reserving one marks the node
+dirty for no repo (`markDirtyLocked`), so no job gets a cache again until the next reset
+(review r1 first-F1, sol-F1). `maybeReset` sets `resetting` under the worker's lock in the same
+critical section that decides a reset is due and clears it when the reset is done; admission
+refuses while it is set, so a reset never stops a sandbox it didn't know about (sol-F2). The
+admission, the record and `starts.Add` share one critical section, and `starts.Done` waits until
+the start's state and any cleanup are settled, so `Shutdown` never returns while a sandbox start
+is in flight (sol-F4). It takes `ceil(max(memory / job memory, CPUs / job CPUs))` slots, at
+least one, so a sandbox twice a job's size takes two; jobs count one each. Free slots are
+`budget slots - used slots`, so CI jobs see the room sandboxes hold. The default size is one
+job's. The control API, CLI and MCP tools that hand sandboxes to agents come in the changes
+stacked on this one.
+
+**Lifetime.** Every sandbox has a TTL (default 30 min, at most `[sandbox] max_ttl`, default 4 h,
+at least 1 min). Each tick stops a sandbox whose `Expires` has passed. `Shutdown` stops every
+sandbox, and a worker that loads a sandbox from `state.json` (a crash, a restart, or a config
+reload that rebuilds the worker) stops it: a sandbox never outlives the daemon that made it.
+`ExecSandbox` checks `Dir` (`WorkDir`) and caps each command's timeout at the time the sandbox
+has left. A sandbox whose stop or clean fails stays counted, with its slots and memory, and each
+tick stops and cleans it again until `Clean` works; it never becomes a leftover that frees them. A sandbox is no CI job: it never enters run
+history (records, `runs`, stats) and is never kept for debugging.
+
+**Linux.** `Start` with `KindSandbox` (name exactly `sbx-` and 12 hex digits, which `Start` and
+`Exec` check: a dash in a slice's name nests it, so any other shape could put one sandbox's slice
+under another's; no grant) makes the job dir
+(no runner copy), the network namespace and uplink, and a holder unit `tentmaker-job-<name>` that
+runs `sleep infinity` with the job unit's properties (user, `MemoryMax`, `CPUQuota`,
+`RuntimeMaxSec` = TTL, the namespace, the job mounts) in a slice of its own,
+`tentmaker-<name>.slice` under `tentmaker.slice`. `systemctl set-property --runtime` gives that
+slice the sandbox's `MemoryMax`, `MemorySwapMax=0`, `CPUQuota` and `TasksMax`, so all its commands
+together stay in its limits; without that nothing starts. The limits are also kept root-only at
+`<state>/linux-private/sandboxes/<name>.limits` (`config.WriteAtomic`), and `Exec` refuses when
+the file is missing or malformed. Each command is `systemd-run --pipe --wait --collect` as unit
+`tentmaker-exec-<name>-<hex>.service` in that slice with the same properties and environment,
+working directory `<job dir>/work`, or `Dir` under it (an absolute `Dir` or one that climbs out is
+refused). Its argv reaches the unit base64-encoded behind
+`/bin/sh -c 'eval "$(echo B64 | base64 -d)"'`: systemd before 254 expands `$VAR` in a command's
+arguments and later versions don't, and the wrapper has nothing either would expand. `Exec` checks
+the fence (`ensureNet`) and the namespace holder first and fails closed. If `systemd-run` ends
+before the command (a cut connection, a timeout), the command's unit is stopped. A command systemd
+ended for it, at its `RuntimeMaxSec` or because the sandbox stopped under it, is an error, not an
+exit code. The holder can end before its commands (its `RuntimeMaxSec`, a kill from inside), so
+`Stop` and `Clean` stop the whole slice and confirm with `systemctl list-units` that no
+`tentmaker-exec-<name>-*` unit or the slice still runs (a list that fails counts as running)
+before anything else; only then does `Clean` revert the slice's runtime drop-in, remove the limits
+file, the namespace and the folder. `Reset` runs only with no job, so it stops any
+`tentmaker-exec-*` unit and `tentmaker-sbx-*.slice` left, refuses while any still runs, and
+reverts their drop-ins (sol-F3, first-F2). `Exec` is admitted before its checks, and `Stop` or
+`Clean` first marks the sandbox closing, which refuses any new `Exec`; it then stops the slice again
+until every `Exec` admitted before has returned (at most 2 minutes), so no command starts after the
+last check that the slice is empty (review r2 sol-F1).
+
+**macOS and Windows** executors don't implement `core.Sandboxer` yet, so a request for those
+OSes is refused with "can't hold sandboxes yet".
+
 ## Checks mode (internal/checks, internal/forge/gitlab)
 
 Runner mode needs the forge's own runner (GitHub actions/runner, Forgejo act_runner). Checks mode

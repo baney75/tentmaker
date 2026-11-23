@@ -124,6 +124,8 @@ type Options struct {
 	// WorkerDLL overrides the pinned Runner.Worker.dll hashes (tests).
 	WorkerDLL *DLLPin
 	Sleep     func(time.Duration)
+	// Now is the clock; nil is time.Now (tests).
+	Now func() time.Time
 	// CacheMax caps the repo caches under <CacheDir>/repos (config
 	// cache_max); 0 means repocache.DefaultMax, below 0 turns them off.
 	CacheMax int64
@@ -153,6 +155,8 @@ type Executor struct {
 	// job starts; starting names the jobs whose Start is in flight.
 	podMu    sync.Mutex
 	starting map[string]bool
+	sbxMu    sync.Mutex // guards gates (sandbox.go)
+	gates    map[string]*sbxGate
 	// patchMu guards the Actions cache patch state (patch.go).
 	patchMu        sync.Mutex
 	patchFor       string // the template the result is for
@@ -179,6 +183,9 @@ func New(o Options) *Executor {
 	}
 	if o.Sleep == nil {
 		o.Sleep = time.Sleep
+	}
+	if o.Now == nil {
+		o.Now = time.Now
 	}
 	e := &Executor{o: o, p: o.Paths.withDefaults(), log: o.Log, h: o.Host, arch: o.Arch}
 	e.root = filepath.Join(o.StateDir, "linux")
@@ -308,13 +315,17 @@ func (e *Executor) Start(ctx context.Context, spec core.ExecSpec) (err error) {
 	if kind == "" {
 		kind = core.KindRunner
 	}
-	if kind != core.KindRunner && kind != core.KindCheck {
+	if kind != core.KindRunner && kind != core.KindCheck && kind != core.KindSandbox {
 		return fmt.Errorf("unknown job kind %q", trunc(kind, 20))
 	}
 	if spec.Platform.OS != "linux" || spec.Platform.Arch != e.arch {
 		return fmt.Errorf("%s runs linux/%s, not %s", Name, e.arch, spec.Platform)
 	}
-	if len(spec.Grant.Secret) == 0 {
+	if kind == core.KindSandbox {
+		if !isSandboxName(spec.Name) {
+			return fmt.Errorf("a sandbox's name is %q and 12 hex digits", SandboxPrefix)
+		}
+	} else if len(spec.Grant.Secret) == 0 {
 		return errors.New("the grant has no secret")
 	}
 	if spec.Limits.MemoryBytes <= 0 || spec.Limits.CPUs <= 0 {
@@ -362,6 +373,9 @@ func (e *Executor) Start(ctx context.Context, spec core.ExecSpec) (err error) {
 	if err != nil {
 		undo()
 		return fmt.Errorf("%v; no job runs without a network namespace of its own", err)
+	}
+	if kind == core.KindSandbox {
+		return e.startSandbox(ctx, spec, uid, gid, netns)
 	}
 	// The secret waits in a root-only 0600 file. systemd opens it as the
 	// unit's stdin before it drops to the runner user; it is gone as soon as
@@ -522,17 +536,64 @@ func overrideEnv(env, over []string) []string {
 	return env
 }
 
-// unitArgs is the systemd-run argv for one job. It holds no secret.
+// unitArgs is the systemd-run argv for one job. It holds no secret. A
+// sandbox's unit runs nothing but sleep in its own slice: its commands run
+// as units of their own in that slice (sandbox.go), which holds the limits.
 func (e *Executor) unitArgs(spec core.ExecSpec, kind string, uid, gid int, stdinFile, netns string) []string {
 	dir := e.jobDir(spec.Name)
+	slice := Slice
+	if kind == core.KindSandbox {
+		slice = sandboxSlice(spec.Name)
+	}
 	args := []string{
 		// No --collect: a failed unit stays loaded until Clean, so
 		// CheckResult can read why it ended (Result=oom-kill).
 		"--quiet", "--no-ask-password",
 		"--unit=" + unitName(spec.Name),
-		"--slice=" + Slice,
+		"--slice=" + slice,
 		"--uid=" + strconv.Itoa(uid),
 		"--gid=" + strconv.Itoa(gid),
+	}
+	args = append(args, e.jobProps(spec, uid, netns, maxDuration(spec.MaxDuration))...)
+	// Its own repo's cache, in its own mount namespace only. A sandbox
+	// has no repo, so neither of these binds anything for one.
+	if src := e.cacheSource(spec.Name); src != "" {
+		args = append(args, "-p", "BindPaths="+src+":"+e.cacheMount())
+	}
+	// Its repo's container store when bound, as podman's namespaces see it.
+	for _, p := range e.storeBind(e.storeFor(spec.Name)) {
+		args = append(args, "-p", p)
+	}
+	stdin := "StandardInput=file:" + stdinFile
+	if stdinFile == "" {
+		stdin = "StandardInput=null"
+	}
+	args = append(args,
+		"-p", stdin,
+		"-p", "StandardOutput=journal",
+		"-p", "StandardError=journal",
+	)
+	for _, kv := range e.jobEnv(spec, uid) {
+		args = append(args, "--setenv="+kv)
+	}
+	switch kind {
+	case core.KindSandbox:
+		args = append(args, "--working-directory="+filepath.Join(dir, "work"), "--", "sleep", "infinity")
+	case core.KindCheck:
+		args = append(args, "--working-directory="+filepath.Join(dir, "work"), "--",
+			e.guestBinary(), "check-run", "--out", filepath.Join(dir, "out"))
+	default:
+		args = append(args, "--working-directory="+filepath.Join(dir, "runner"), "--",
+			e.jobScript(), e.jobsDir(), filepath.Base(dir))
+	}
+	return args
+}
+
+// jobProps are the limits and walls of a job's unit, and of every command
+// a sandbox runs: memory, CPU, its own network namespace, the job mounts.
+func (e *Executor) jobProps(spec core.ExecSpec, uid int, netns string, maxRun time.Duration) []string {
+	secs := int64(runtimeMax(maxRun) / time.Second)
+	args := []string{
 		"-p", "Type=exec",
 		"-p", "MemoryMax=" + strconv.FormatInt(spec.Limits.MemoryBytes, 10),
 		"-p", "MemorySwapMax=0",
@@ -546,7 +607,7 @@ func (e *Executor) unitArgs(spec core.ExecSpec, kind string, uid, gid int, stdin
 		"-p", "TasksMax=4096",
 		"-p", "Nice=10",
 		"-p", "IOSchedulingClass=idle",
-		"-p", "RuntimeMaxSec=" + strconv.FormatInt(int64(maxDuration(spec.MaxDuration)/time.Second), 10),
+		"-p", "RuntimeMaxSec=" + strconv.FormatInt(secs, 10),
 		"-p", "TimeoutStopSec=30",
 		"-p", "NoNewPrivileges=yes",
 		"-p", "PrivateTmp=yes",
@@ -555,32 +616,8 @@ func (e *Executor) unitArgs(spec core.ExecSpec, kind string, uid, gid int, stdin
 		"-p", "NetworkNamespacePath=" + netns,
 	}
 	// The same mounts as podman's namespaces (podns.go).
-	for _, p := range e.jobMounts(uid, dir) {
+	for _, p := range e.jobMounts(uid, e.jobDir(spec.Name)) {
 		args = append(args, "-p", p)
-	}
-	// Its own repo's cache, in its own mount namespace only.
-	if src := e.cacheSource(spec.Name); src != "" {
-		args = append(args, "-p", "BindPaths="+src+":"+e.cacheMount())
-	}
-	// Its repo's container store when bound, as podman's namespaces see it.
-	for _, p := range e.storeBind(e.storeFor(spec.Name)) {
-		args = append(args, "-p", p)
-	}
-	args = append(args,
-		"-p", "StandardInput=file:"+stdinFile,
-		"-p", "StandardOutput=journal",
-		"-p", "StandardError=journal",
-	)
-	for _, kv := range e.jobEnv(spec, uid) {
-		args = append(args, "--setenv="+kv)
-	}
-	switch kind {
-	case core.KindCheck:
-		args = append(args, "--working-directory="+filepath.Join(dir, "work"), "--",
-			e.guestBinary(), "check-run", "--out", filepath.Join(dir, "out"))
-	default:
-		args = append(args, "--working-directory="+filepath.Join(dir, "runner"), "--",
-			e.jobScript(), e.jobsDir(), filepath.Base(dir))
 	}
 	return args
 }
@@ -602,7 +639,7 @@ func (e *Executor) prepareJob(dir, kind string, spec core.ExecSpec, uid, gid int
 		if err := os.Mkdir(filepath.Join(dir, "out"), 0o700); err != nil {
 			return err
 		}
-	} else {
+	} else if kind != core.KindSandbox {
 		tpl, err := filepath.EvalSymlinks(e.template())
 		if err != nil {
 			return fmt.Errorf("runner template: %w (run tentmaker setup)", err)
@@ -804,6 +841,13 @@ func (e *Executor) Stop(ctx context.Context, name string) error {
 		return err
 	}
 	os.Remove(e.secretPath(name))
+	if isSandboxName(name) {
+		// The slice holds the holder and every command; stopping it ends
+		// them all, and a sandbox has stopped only once it is empty.
+		if err := e.settleSandbox(ctx, name); err != nil {
+			return err
+		}
+	}
 	// A unit that isn't loaded makes stop fail; the state check below decides.
 	e.h.Run(ctx, Cmd{Path: "systemctl", Args: []string{"stop", unitName(name)}, Timeout: 90 * time.Second})
 	st, err := e.State(ctx, name)
@@ -831,10 +875,22 @@ func (e *Executor) Clean(ctx context.Context, name string) error {
 	if st == core.ExecRunning || st == core.ExecUnknown {
 		return fmt.Errorf("job %s still runs; stop it first", name)
 	}
+	if isSandboxName(name) {
+		// Its holder ended, but its commands may not have: nothing they
+		// use (limits, namespace, folder) goes until the slice is empty.
+		if err := e.settleSandbox(ctx, name); err != nil {
+			return err
+		}
+	}
 	os.Remove(e.secretPath(name))
 	// A failed unit stays loaded (no --collect) until this.
 	e.h.Run(ctx, Cmd{Path: "systemctl", Args: []string{"reset-failed", unitName(name)}, Timeout: 30 * time.Second})
 	e.stopDebug(ctx, name)
+	if isSandboxName(name) {
+		// set-property left a runtime drop-in for the slice.
+		e.h.Run(ctx, Cmd{Path: "systemctl", Args: []string{"revert", sandboxSlice(name)}, Timeout: 30 * time.Second})
+		os.Remove(e.limitsPath(name))
+	}
 	e.stopNetns(ctx, name)
 	rec, cached, err := e.slotOf(name)
 	if err != nil {
@@ -845,6 +901,7 @@ func (e *Executor) Clean(ctx context.Context, name string) error {
 	if err := e.removeJobDir(ctx, e.jobDir(name)); err != nil {
 		return err
 	}
+	e.dropGate(name)
 	if cached {
 		e.dropSlot(name)
 		evicted, err := e.cache.Done(core.CacheRepo{Forge: rec.Forge, Repo: rec.Repo})
@@ -951,6 +1008,29 @@ func (e *Executor) Reset(ctx context.Context) error {
 			return fmt.Errorf("reset refused: job %s is %s", n, st)
 		}
 	}
+	// No job runs, so no sandbox's command or slice should either; one can
+	// outlive its holder. Stop what is left and refuse if any of it runs.
+	sbxUnits, _, err := e.sandboxUnits(ctx, ExecPrefix+"*", "tentmaker-"+SandboxPrefix+"*.slice")
+	if err != nil {
+		return err
+	}
+	for _, u := range sbxUnits {
+		e.h.Run(ctx, Cmd{Path: "systemctl", Args: []string{"stop", u}, Timeout: 90 * time.Second})
+	}
+	if len(sbxUnits) > 0 {
+		_, live, err := e.sandboxUnits(ctx, ExecPrefix+"*", "tentmaker-"+SandboxPrefix+"*.slice")
+		if err != nil {
+			return err
+		}
+		if len(live) > 0 {
+			return fmt.Errorf("reset refused: %s still runs after stop", strings.Join(live, " "))
+		}
+		for _, u := range sbxUnits {
+			if strings.HasSuffix(u, ".slice") {
+				e.h.Run(ctx, Cmd{Path: "systemctl", Args: []string{"revert", u}, Timeout: 30 * time.Second})
+			}
+		}
+	}
 	// No job runs, so no job namespace should either.
 	nsUnits, err := e.netnsUnits(ctx)
 	if err != nil {
@@ -1006,6 +1086,11 @@ func (e *Executor) Reset(ctx context.Context) error {
 	if ents, err := os.ReadDir(e.secretDir()); err == nil {
 		for _, ent := range ents {
 			os.Remove(filepath.Join(e.secretDir(), ent.Name()))
+		}
+	}
+	if ents, err := os.ReadDir(e.sandboxesDir()); err == nil {
+		for _, ent := range ents {
+			os.Remove(filepath.Join(e.sandboxesDir(), ent.Name()))
 		}
 	}
 	// The job folders are gone, so are their slots. The caches stay.

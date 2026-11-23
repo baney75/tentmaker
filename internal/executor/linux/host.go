@@ -119,7 +119,7 @@ func (OSHost) Run(ctx context.Context, c Cmd) (Result, error) {
 }
 
 // Stream implements Streamer.
-func (OSHost) Stream(ctx context.Context, c Cmd, stdin io.Reader, stdout io.Writer) (int, error) {
+func (OSHost) Stream(ctx context.Context, c Cmd, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
 	path, err := lookPath(c.Path)
 	if err != nil {
 		return -1, err
@@ -136,7 +136,7 @@ func (OSHost) Stream(ctx context.Context, c Cmd, stdin io.Reader, stdout io.Writ
 		cmd.Env = baseEnv
 	}
 	cmd.Dir = "/"
-	cmd.Stdout, cmd.Stderr = stdout, stdout
+	cmd.Stdout, cmd.Stderr = stdout, stderr
 	if stdin != nil {
 		// Copy stdin ourselves: exec's own copy would keep Wait waiting on a
 		// stdin (a debug shell's connection) that never ends after the
