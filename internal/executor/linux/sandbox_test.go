@@ -377,3 +377,26 @@ func TestResetStopsSandboxLeftovers(t *testing.T) {
 		t.Fatalf("reset did not revert the slice: %v", v.f.commands())
 	}
 }
+
+// A dash in a slice's name nests it, so a sandbox's name is exactly sbx-
+// and 12 hex digits: no sandbox's slice can hold another's.
+func TestSandboxNameIsExact(t *testing.T) {
+	v := newEnv(t)
+	v.installed(t)
+	v.f.respond = running
+	for _, name := range []string{"sbx-aaa-bbb", "sbx-0123456789ab-c", "sbx-0123456789AB", "sbx-0123456789a"} {
+		s := sandboxSpec()
+		s.Name = name
+		if err := v.e.Start(context.Background(), s); err == nil {
+			t.Errorf("Start took %q", name)
+		}
+		if _, err := v.e.Exec(context.Background(), name, core.SandboxExec{Argv: []string{"true"}}, nil, io.Discard, io.Discard); err == nil || !strings.Contains(err.Error(), "not a sandbox") {
+			t.Errorf("Exec in %q: %v", name, err)
+		}
+	}
+	for _, c := range v.f.cmds {
+		if c.Path == "systemd-run" {
+			t.Fatalf("a unit started: %v", c.Args)
+		}
+	}
+}

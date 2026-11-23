@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -25,9 +26,14 @@ const SandboxPrefix = "sbx-"
 // ExecPrefix starts the unit of each command a sandbox runs.
 const ExecPrefix = "tentmaker-exec-"
 
-func isSandboxName(name string) bool {
-	return strings.HasPrefix(name, SandboxPrefix) && core.NamePattern.MatchString(name)
-}
+// sandboxName is a sandbox's whole name: the prefix and 12 hex digits. A
+// dash in a slice's name nests it under the slice named by what comes
+// before, so with any other shape one sandbox's slice could hold another's
+// (sbx-aaa-bbb under sbx-aaa): the parent's limits would cover both and
+// its stop would end both.
+var sandboxName = regexp.MustCompile(`^` + SandboxPrefix + `[0-9a-f]{12}$`)
+
+func isSandboxName(name string) bool { return sandboxName.MatchString(name) }
 
 // sandboxSlice holds a sandbox's idle unit and every command it runs, under
 // tentmaker.slice (so the pool limit covers it); its MemoryMax and CPUQuota

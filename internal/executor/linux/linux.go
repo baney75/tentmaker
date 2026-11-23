@@ -316,7 +316,7 @@ func (e *Executor) Start(ctx context.Context, spec core.ExecSpec) (err error) {
 	}
 	if kind == core.KindSandbox {
 		if !isSandboxName(spec.Name) {
-			return fmt.Errorf("a sandbox's name starts with %q", SandboxPrefix)
+			return fmt.Errorf("a sandbox's name is %q and 12 hex digits", SandboxPrefix)
 		}
 	} else if len(spec.Grant.Secret) == 0 {
 		return errors.New("the grant has no secret")
