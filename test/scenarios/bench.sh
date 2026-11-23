@@ -103,9 +103,16 @@ sample() {
 
 # reset_caches: the next cold run starts with no repo cache, and no job
 # slots or podman images (the daemon's reset at start drops both).
+#
+# podman's namespace unit outlives the daemon and keeps the repo's container
+# store bound, so it stops before the store goes, as in the daemon's own
+# reset. Deleting the store under it made its podman spin about 24 s in
+# storage's lock code and die of a stack overflow when the daemon's reset
+# stopped it, and that wait was the next cold run's start latency (issue #39).
 reset_caches() {
 	sleep 5 # the ended job's cleanup
 	timeout 120 sudo systemctl stop tentmaker
+	timeout 60 sudo systemctl stop tentmaker-podns.service 2>/dev/null || true
 	sudo find /var/cache/tentmaker/repos -mindepth 1 -delete 2>/dev/null || true
 	timeout 120 sudo systemctl start tentmaker
 	wait_service_up 60 || die "the service did not come back after the cache reset"

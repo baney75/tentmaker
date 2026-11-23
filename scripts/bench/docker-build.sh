@@ -23,6 +23,12 @@
 # store. A bound store that an earlier run never filled is a miss, as an
 # emptied Go cache is for hit.sh. The hosted runner keeps no layer cache, so
 # it records neither.
+#
+# Both sides pull the digest-pinned base images (test/bench/Dockerfile) from
+# the first mirror that serves them all, and record it as "registry". ECR
+# Public alone refused GitHub's runners with "toomanyrequests: Data limit
+# exceeded" (issue #39). The pulls are part of the timed build on both sides;
+# the hosted runner still starts with no image or layer cache.
 set -euo pipefail
 tag=localhost/tm-bench:${GITHUB_SHA:-local}
 mark=localhost/tm-bench-mark:latest
@@ -41,7 +47,27 @@ if [ "$engine" = podman ]; then
 	"$here/phase.sh" meta store_bound "$bound"
 	"$here/phase.sh" meta cache_hit "$hit"
 fi
-"$engine" build --pull -f test/bench/Dockerfile -t "$tag" .
+bases=$(sed -n 's|^FROM \${BASE}/\([^ ]*\).*|\1|p' test/bench/Dockerfile)
+[ -n "$bases" ] || { echo "docker-build.sh: no FROM \${BASE}/ line in test/bench/Dockerfile" >&2; exit 1; }
+base=
+for b in mirror.gcr.io/library public.ecr.aws/docker/library; do
+	ok=1
+	for img in $bases; do
+		if ! timeout 300 "$engine" pull -q "$b/$img" >/dev/null; then
+			echo "docker-build.sh: could not pull $b/$img; trying the next mirror" >&2
+			ok=0
+			break
+		fi
+	done
+	if [ "$ok" = 1 ]; then
+		base=$b
+		break
+	fi
+done
+[ -n "$base" ] || { echo "docker-build.sh: no mirror served the base images" >&2; exit 1; }
+"$here/phase.sh" meta registry "${base%%/*}"
+# The base images are pulled by digest above, so the build needs no --pull.
+"$engine" build --build-arg "BASE=$base" -f test/bench/Dockerfile -t "$tag" .
 "$engine" run --rm "$tag" version
 if [ "$engine" = podman ]; then
 	podman tag "$tag" "$mark"

@@ -27,7 +27,7 @@ permissions:
 jobs:
   docker:
     runs-on: ubuntu-latest
-    # The gate leaves Docker out, so a failed Docker build (an ECR 429, say)
+    # The gate leaves Docker out, so a failed Docker build (every mirror refused, say)
     # must not fail the bench run: the report counts it as failed and the
     # gate step alone decides. Checks mode ignores this key.
     continue-on-error: true
