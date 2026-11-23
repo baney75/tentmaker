@@ -11,7 +11,7 @@ import (
 // fleet makes three cold and three warm passing runs of every workload on
 // both platforms: GitHub-hosted at ghJob seconds, Tentmaker at tmJob,
 // Tentmaker starting in tmStart seconds. Warm runs of cached workloads hit
-// the cache, Go workloads record go1.25.0 on both sides, and the cache
+// the cache (Docker's on Tentmaker only), Go workloads record go1.25.0 on both sides, and the cache
 // workload also gets restore and save rates.
 func fleet(ghJob, tmJob, tmStart float64) []Sample {
 	var out []Sample
@@ -20,9 +20,15 @@ func fleet(ghJob, tmJob, tmStart float64) []Sample {
 			for rep := 1; rep <= 3; rep++ {
 				g := Sample{Workload: wi.Name, Platform: "github", Round: round, Rep: rep, OK: true, Conclusion: "success", StartS: 4, JobS: ghJob}
 				m := Sample{Workload: wi.Name, Platform: "tentmaker", Round: round, Rep: rep, OK: true, Conclusion: "success", StartS: tmStart, JobS: tmJob}
-				if wi.Cached {
-					hit := round == "warm"
-					g.CacheHit, m.CacheHit = ptr(hit), ptr(hit)
+				hit := round == "warm"
+				if wi.tracksHit("github") {
+					g.CacheHit = ptr(hit)
+				}
+				if wi.tracksHit("tentmaker") {
+					m.CacheHit = ptr(hit)
+				}
+				if wi.Store {
+					m.StoreBound = ptr(true)
 				}
 				if wi.Go {
 					g.Go, m.Go = "go1.25.0", "go1.25.0"
@@ -180,6 +186,52 @@ func TestWarmMissLeftOut(t *testing.T) {
 	}
 	if !strings.Contains(md, "- go-test: GitHub-hosted go1.25.0; Tentmaker go1.25.0") {
 		t.Fatalf("the page doesn't say which Go each side used:\n%s", md)
+	}
+}
+
+// TestDockerStoreMissLeftOut: issue 33. A Tentmaker Docker warm run that
+// started without its repo's container store, or with one no earlier run
+// filled, is a cold build in disguise; it must not move the warm median.
+// The hosted runner keeps no layer cache, so its warm runs all count.
+func TestDockerStoreMissLeftOut(t *testing.T) {
+	ss := fleet(30, 5, 3)
+	ss = append(ss,
+		Sample{Workload: "docker", Platform: "tentmaker", Round: "warm", Rep: 4, OK: true, Conclusion: "success",
+			StartS: 3, JobS: 19, CacheHit: ptr(false), StoreBound: ptr(false)},
+		Sample{Workload: "docker", Platform: "tentmaker", Round: "warm", Rep: 5, OK: true, Conclusion: "success",
+			StartS: 3, JobS: 21, CacheHit: ptr(false), StoreBound: ptr(true)})
+	rep := Summarize(Run{Samples: ss})
+	var w WorkloadResult
+	for _, x := range rep.Workloads {
+		if x.Name == "docker" {
+			w = x
+		}
+	}
+	tw, gw := w.Tentmaker["warm"], w.GitHub["warm"]
+	if tw.Job.Median != 5 || tw.Job.N != 3 || tw.Hits != 3 || tw.Missed != 2 || tw.Unbound != 1 || tw.Runs != 5 {
+		t.Fatalf("Tentmaker docker warm = %+v, want median 5 over 3 hits, 2 missed, 1 unbound", tw)
+	}
+	if gw.Job.N != 3 || gw.Hits+gw.Missed+gw.Unrecorded != 0 {
+		t.Fatalf("GitHub-hosted docker warm = %+v, want all 3 runs counted and no cache accounting", gw)
+	}
+	if w.SpeedupWarm != 6 {
+		t.Fatalf("docker speedup = %v, want 6 (30 s / 5 s)", w.SpeedupWarm)
+	}
+	md := Markdown(rep)
+	for _, want := range []string{
+		"- docker, Tentmaker: 3 of 5 passing warm runs hit the cache\n",
+		"- docker, Tentmaker: 2 warm runs missed the cache and are left out (1 ran without the repo's container store bound)\n",
+		"| Docker build, two stages (Tentmaker keeps the layer cache; the hosted runner starts empty) | 30.0 s | 30.0 s | 5.0 s | 5.0 s | 6.0x | 3 / 3 |",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("the page lacks %q:\n%s", want, md)
+		}
+	}
+	if strings.Contains(md, "docker, GitHub-hosted") {
+		t.Errorf("the page counts hosted Docker cache hits; the hosted runner has no layer cache:\n%s", md)
+	}
+	if !rep.Gate.Pass {
+		t.Fatalf("gate = %+v; Docker is not gated", rep.Gate)
 	}
 }
 

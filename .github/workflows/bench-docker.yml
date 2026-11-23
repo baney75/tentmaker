@@ -1,4 +1,7 @@
-# Bench workload: a pinned two-stage Docker build (test/bench/Dockerfile). Neither side keeps a layer cache, so this is the baseline for one.
+# Bench workload: a pinned two-stage Docker build (test/bench/Dockerfile).
+# Tentmaker keeps the repo's container store between jobs and the hosted
+# runner starts empty; scripts/bench/docker-build.sh records whether a
+# Tentmaker job got the store.
 # bench.yml runs it on GitHub's hosted runners (workflow_call, cold then warm
 # with the same cache key) and test/scenarios/bench.sh runs the same file under
 # Tentmaker as .tm-scn/wf.yml. Every timed step goes through

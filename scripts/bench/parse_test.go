@@ -105,6 +105,19 @@ func TestParseMeta(t *testing.T) {
 	if s.CacheHit == nil || *s.CacheHit || s.Go != "go1.25.0" {
 		t.Fatalf("cache hit %v, Go %q; want a recorded miss and go1.25.0", s.CacheHit, s.Go)
 	}
+	if s.StoreBound != nil {
+		t.Fatalf("store bound %v; the log didn't record it", s.StoreBound)
+	}
+	s = Sample{OK: true}
+	readLog(&s, "BENCH_PHASE build begin 1\nBENCH_PHASE build end 2 0\nBENCH_META store_bound 0\nBENCH_META cache_hit 0\n", 0)
+	if s.StoreBound == nil || *s.StoreBound || s.CacheHit == nil || *s.CacheHit {
+		t.Fatalf("store bound %v, cache hit %v; want both recorded as 0", s.StoreBound, s.CacheHit)
+	}
+	s = Sample{OK: true}
+	readLog(&s, "BENCH_PHASE build begin 1\nBENCH_PHASE build end 2 0\nBENCH_META store_bound 1\nBENCH_META cache_hit 1\n", 0)
+	if s.StoreBound == nil || !*s.StoreBound || s.CacheHit == nil || !*s.CacheHit {
+		t.Fatalf("store bound %v, cache hit %v; want both recorded as 1", s.StoreBound, s.CacheHit)
+	}
 	s = Sample{OK: true}
 	if why := readLog(&s, "BENCH_PHASE build begin 1\nBENCH_PHASE build end 2 0\n", 0); why != "" || s.CacheHit != nil || s.Go != "" {
 		t.Fatalf("a log with no BENCH_META: why %q, hit %v, Go %q", why, s.CacheHit, s.Go)

@@ -27,9 +27,12 @@ type Sample struct {
 	MBps       map[string]float64 `json:"mbps,omitempty"`
 	// CacheHit says whether the job started with the cache an earlier run
 	// of the workload left; nil when the job didn't record it.
-	CacheHit *bool  `json:"cache_hit,omitempty"`
-	Go       string `json:"go,omitempty"` // the Go that compiled, as `go env GOVERSION` printed it
-	URL      string `json:"url,omitempty"`
+	CacheHit *bool `json:"cache_hit,omitempty"`
+	// StoreBound says whether a Tentmaker Docker job ran with its repo's
+	// container store bound; nil when the job didn't record it.
+	StoreBound *bool  `json:"store_bound,omitempty"`
+	Go         string `json:"go,omitempty"` // the Go that compiled, as `go env GOVERSION` printed it
+	URL        string `json:"url,omitempty"`
 }
 
 // Device describes the machine Tentmaker ran on, as bench.sh recorded it.
@@ -106,7 +109,7 @@ func parseMeta(log string) map[string]string {
 }
 
 // readLog fills the parts of s that come from its job log: phases, rates,
-// the cache hit and the Go version. A passing job always ends with
+// the cache hit, the container store bind and the Go version. A passing job always ends with
 // phase.sh report, so a log with no marks means the job didn't finish
 // its work (or its log is gone): the sample doesn't count as passing.
 // It returns why, or "".
@@ -114,12 +117,8 @@ func readLog(s *Sample, log string, jobStart float64) string {
 	marks := parsePhases(log)
 	s.Phases, s.MBps = phaseTimes(marks, jobStart)
 	meta := parseMeta(log)
-	switch meta["cache_hit"] {
-	case "1":
-		s.CacheHit = ptr(true)
-	case "0":
-		s.CacheHit = ptr(false)
-	}
+	s.CacheHit = boolMeta(meta["cache_hit"])
+	s.StoreBound = boolMeta(meta["store_bound"])
 	s.Go = meta["go"]
 	if s.OK && len(marks) == 0 {
 		s.OK = false
@@ -129,6 +128,17 @@ func readLog(s *Sample, log string, jobStart float64) string {
 }
 
 func ptr[T any](v T) *T { return &v }
+
+// boolMeta reads a 1 or 0 fact; anything else is not recorded.
+func boolMeta(v string) *bool {
+	switch v {
+	case "1":
+		return ptr(true)
+	case "0":
+		return ptr(false)
+	}
+	return nil
+}
 
 type mark struct {
 	begin, end float64
