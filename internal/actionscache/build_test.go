@@ -125,6 +125,19 @@ func TestBuildCacheUnconfirmedAndPullRequestOnlyRead(t *testing.T) {
 	if _, how := h.client("pusher", "").bput("/cache/k2", blob); how != "stored" {
 		t.Fatalf("confirmed push PUT not kept: %q", how)
 	}
+	// A confirmed push of another branch writes its own Actions scope, but
+	// the build cache has one scope main reads too: it only reads.
+	f := Binding{Job: "feature", Repo: repo, Ref: "refs/heads/feature", Default: "refs/heads/main", Access: Write, Store: h.store}
+	if err := h.svc.Grant(f.Confirm("push", "feature")); err != nil {
+		t.Fatal(err)
+	}
+	fc := h.client("feature", "")
+	if code, got := fc.get(h.base + "/cache/k1"); code != 200 || !bytes.Equal(got, blob) {
+		t.Fatalf("feature GET: %d", code)
+	}
+	if _, how := fc.bput("/cache/k3", blob); how != "not-stored" {
+		t.Fatalf("feature branch PUT kept where main reads it: %q", how)
+	}
 }
 
 func TestNoBuildCacheWithoutOption(t *testing.T) {

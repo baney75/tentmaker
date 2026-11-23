@@ -560,6 +560,11 @@ func (e *Executor) unitArgs(spec core.ExecSpec, kind string, uid, gid int, stdin
 	if src := e.cacheSource(spec.Name); src != "" {
 		args = append(args, "-p", "BindPaths="+src+":"+e.cacheMount())
 	}
+	if spec.ActionsCache != "" && kind != core.KindSandbox {
+		// The job's bazelrc with the device's build cache, read before the
+		// workspace's (buildcache.go). "-": no file, no bind.
+		args = append(args, "-p", "BindReadOnlyPaths=-"+filepath.Join(e.jobDir(spec.Name), jobBazelRC)+":"+hostBazelRC)
+	}
 	// Its repo's container store when bound, as podman's namespaces see it.
 	for _, p := range e.storeBind(e.storeFor(spec.Name)) {
 		args = append(args, "-p", p)
@@ -673,7 +678,7 @@ func (e *Executor) prepareJob(dir, kind string, spec core.ExecSpec, uid, gid int
 			for _, kv := range buildCacheEnv(base) {
 				env.WriteString(kv + "\n")
 			}
-			if err := writeBuildCacheFiles(filepath.Join(dir, "home"), base); err != nil {
+			if err := writeBuildCacheFiles(dir, base); err != nil {
 				return fmt.Errorf("the build cache files: %w", err)
 			}
 		}

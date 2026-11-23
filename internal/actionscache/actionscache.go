@@ -553,9 +553,12 @@ func (s *Service) build(w http.ResponseWriter, r *http.Request) {
 		Repo: rk,
 		Open: func(create bool) (*os.Root, error) { return st.ActionsRoot(repo, create) },
 		// The job's grant as it is now: Limit, Confirm and Revoke replace it.
+		// The store has one scope per repo, which every branch reads, so only
+		// a push to the default branch may fill it: a feature branch writing
+		// here would reach main (review first-F1).
 		MayWrite: func() bool {
 			ng := s.grantOf(job)
-			if ng == nil || ng.Repo != repo {
+			if ng == nil || ng.Repo != repo || ng.Ref == "" || ng.Ref != ng.Default {
 				return false
 			}
 			ok, _ := s.mayWrite(ng)

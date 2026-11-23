@@ -514,14 +514,15 @@ Bazel, Gradle and Turborepo hit a warm cache at local disk speed with no workflo
   with a `buildcache.Caller`, so the build cache has exactly the Actions cache's grants. No job
   on the connection, or a grant at `None`, is 404 (a miss). Any grant at `Read` or above reads
   the repo's whole build cache. A write is kept only when the job could save an Actions cache
-  entry now, asked when the write starts and again under the repo lock just before the rename:
-  confirmed, `Write`, and not held (`Service.Hold`: every other job on the device is a
-  confirmed writer of its repo and ref). So confirmed trusted push jobs read and write;
+  entry now and its own ref is the default branch, asked when the write starts and again under
+  the repo lock just before the rename: confirmed, `Write`, not held (`Service.Hold`: every
+  other job on the device is a confirmed writer of its repo and ref), and `Ref == Default`. So
+  confirmed trusted pushes to the default branch read and write; pushes to other branches,
   `pull_request` jobs, jobs not yet confirmed and held jobs read only; a job whose neighbor of
   another trust started (`limitActionsLocked`) and any job without a repo cache (untrusted and
-  fork jobs, which never get a grant) get nothing. One store per repo, not per ref: entries are
-  keyed by their inputs, and only confirmed trusted pushes write, so a PR or a feature branch
-  reads what main and other trusted pushes built.
+  fork jobs, which never get a grant) get nothing. One store per repo, not per ref, which every
+  branch reads, so only the default branch fills it: a feature branch that wrote here would
+  reach main (review first-F1). A PR or a feature branch reads what main built.
 - Fail open for speed, closed for safety: a lookup that can't be answered (no folder, a torn
   entry, an I/O error) is a 404 miss. A write the job may not make, or one the device can't keep
   (a full disk), is read and dropped and answered as success (200, 202 for turbo) with
@@ -552,14 +553,18 @@ Bazel, Gradle and Turborepo hit a warm cache at local disk speed with no workflo
     on; this one is a fixed word and no secret, since the cache names the job by its connection.
     A workflow that sets its own `TURBO_API` keeps it (workflow env wins over `.env`); one that
     sets only `TURBO_TOKEN` and `TURBO_TEAM` sends them to the device, which ignores them.
-  - Gradle: `~/.gradle/init.d/tentmaker-build-cache.gradle` in the job home. It turns the build
-    cache on (`startParameter.buildCacheEnabled`) and, after settings, sets an `HttpBuildCache`
-    remote at `<url>cache/` with `push = true` only when the build configured no remote of its
-    own. Every step is in a try block, so it never fails a build. A workflow that sets
-    `GRADLE_USER_HOME` elsewhere, or passes `--no-build-cache`, does without it.
-  - Bazel: `~/.bazelrc` in the job home with `build --remote_cache=<url>`. Bazel reads it after
-    the workspace `.bazelrc`, so it wins over a remote cache the workspace sets; a
-    `--remote_cache` on the command line still wins over it, and `--nohome_rc` drops it.
+  - Gradle: `~/.gradle/init.d/tentmaker-build-cache.gradle` in the job home. After settings it
+    sets an `HttpBuildCache` remote at `<url>cache/` with `push = true` only when the build
+    configured no remote of its own. It leaves caching itself to the build, so it is used only
+    when the build turns caching on (`org.gradle.caching=true` or `--build-cache`), and an
+    opt-out stays out (review first-F3). Every step is in a try block, so it never fails a
+    build. A workflow that sets `GRADLE_USER_HOME` elsewhere does without it.
+  - Bazel: a system rc, `bazel.bazelrc` in the job dir, with the host's `/etc/bazel.bazelrc`
+    lines and then `build --remote_cache=<url>`; the job unit binds it read only over
+    `/etc/bazel.bazelrc` (`BindReadOnlyPaths=-`, so no file, no bind). Bazel reads the system
+    rc before the workspace and home ones, so a remote cache or remote executor the repo sets
+    wins over it (review first-F2), and so does `--remote_cache` on the command line;
+    `--nosystem_rc` drops it.
   - No secret in any of them, and none in argv.
 - Metrics: `tentmaker_build_cache_requests_total{tool,result}` (`hit`, `miss`, `stored`,
   `not_stored`) and `tentmaker_build_cache_bytes_total{tool,direction}` (`served`, `stored`),
