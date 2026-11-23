@@ -69,6 +69,7 @@ func (b *budget) Decide(ctx context.Context, now time.Time, running int) core.De
 	d := b.d
 	d.Reasons = append([]string(nil), b.d.Reasons...)
 	if running >= d.Slots {
+		d.Full = d.Admit && !d.Evict && d.Slots > 0
 		d.Admit = false
 	}
 	return d

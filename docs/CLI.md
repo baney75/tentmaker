@@ -64,6 +64,12 @@ tentmaker debug JOB-ID [--exec CMD] [--timeout 60s] [--max-bytes N] [--release] 
 tentmaker update [--channel stable|dev] [--check]
 tentmaker rollback
 tentmaker uninstall [--purge] [--yes]
+tentmaker sandbox create [--os linux|macos|windows] [--device D] [--cpus N] [--memory S]
+                         [--ttl 30m] [--copy DIR]
+tentmaker sandbox exec ID [--dir D] [--timeout D] [-i] -- COMMAND [ARGS...]
+tentmaker sandbox cp LOCAL ID:FOLDER | ID:PATH LOCAL_FOLDER
+tentmaker sandbox ls
+tentmaker sandbox rm ID...
 tentmaker mcp                     Stdio MCP server for agents (internal/mcp over a Controller).
 tentmaker version [--json]        --json prints {"version": "X", "os": "...", "arch": "...", "channel": "..."}.
 tentmaker daemon                  Run by the service. Not for people.
@@ -278,6 +284,30 @@ that the hosted runners still work as the fallback, and the jobs it left alone. 
 | service | systemd unit tentmaker.service | launchd /Library/LaunchDaemons/dev.tentmaker.daemon.plist | Windows service "Tentmaker" |
 
 `state_dir` and `cache_dir` in config override the defaults. Log files rotate at 10 MiB, 5 kept.
+
+## sandbox
+
+A sandbox is a throwaway machine for an agent: the isolation a CI job gets, counted against
+the device's budget like a job (see DESIGN.md, Sandboxes). The commands talk to the daemon,
+so they need it running, and don't need root: root, an elevated Administrator and the holder
+of the control token may use every sandbox; other accounts must be listed in `[sandbox] users`
+and see only their own.
+
+- `create` prints the ID (`sbx-` and 12 hex digits); `--json` prints the sandbox's details.
+  `--ttl` defaults to 30m and is capped by `[sandbox] max_ttl`. `--cpus` and `--memory`
+  default to one job's size. `--copy DIR` copies DIR's working tree into the sandbox's work
+  folder (in a Git work tree: tracked files as they are on disk, plus untracked files Git
+  doesn't ignore, no `.git`); if the copy fails the sandbox is removed. `--device` names
+  this device only in this version. No room, a paused device or an OS this device can't
+  run is exit 1 with the reason and a fix.
+- `exec` streams the command's stdout and stderr and exits with its exit code. `-i` passes
+  stdin; otherwise the command reads nothing. `--timeout` bounds the command; it never runs
+  past the sandbox's TTL. With `--json` it prints `{"id", "exit_code", "stdout", "stderr", "seconds"}`
+  (each stream capped at 1 MiB, with `stdout_truncated` or `stderr_truncated` set when cut).
+- `cp LOCAL ID:FOLDER` copies a file or folder into FOLDER (made if missing; relative to the
+  work folder). `cp ID:PATH LOCAL_FOLDER` copies a file or folder out into LOCAL_FOLDER; links
+  in it are skipped and counted.
+- `ls` lists the caller's sandboxes; `rm` removes them.
 
 ## Control API (internal/control)
 

@@ -146,7 +146,8 @@ Safety guards (free memory, free disk) set `Admit=false` (and `Evict=true` for
 `stop_below_disk`). Busy guards (`pause_when_running`, `max_load_per_cpu`) set `Busy`, which
 lowers `boost` to `everyday` and never blocks `everyday`; a busy probe that can't be read counts
 as busy. `Admit` is also false when
-`running >= Slots`. Every downgrade appends a plain reason, like "on battery at 31%, below 40%" or
+`running >= Slots`; when that is the only reason, `Full` is set, and a sandbox create counts the
+slots in use live instead, so a sandbox removed since the last tick frees its slot at once. Every downgrade appends a plain reason, like "on battery at 31%, below 40%" or
 "steam.exe is running". A boost profile with zero memory means "same as everyday".
 
 Power per OS: Linux reads `/sys/class/power_supply/*/{type,online,capacity}` (Mains online, or no
@@ -885,6 +886,13 @@ it into DIR (made if missing) with `tar` run inside the sandbox as its user; `GE
 only regular files and folders, never links, nothing outside the destination, at most 2 GiB.
 Errors are `{"error", "fix"}` with a status: 400 bad request, 403 not allowed, 404 no such
 sandbox, 409 no room or not running, 501 not supported, 503 no worker.
+
+**CLI.** `tentmaker sandbox create|exec|cp|ls|rm` calls the API. `create --copy DIR` sends
+DIR's working tree: in a Git work tree the files `git ls-files -z --cached --others
+--exclude-standard` lists, read from disk (so uncommitted changes and untracked, non-ignored
+files, and no `.git`); elsewhere the whole folder. A failed copy removes the sandbox. `exec`
+streams and exits with the command's code; with `--json` it keeps up to 1 MiB of each stream and
+says when it cut one.
 
 ## Checks mode (internal/checks, internal/forge/gitlab)
 

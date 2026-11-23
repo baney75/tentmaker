@@ -183,7 +183,9 @@ func (w *Worker) admitSandboxLocked(want core.Platform, limits core.Resources, n
 		return nil, core.Platform{}, "this device holds a repo's cache for its trusted CI jobs until its next reset; try again later"
 	case w.lastTick.IsZero():
 		return nil, core.Platform{}, "the budget has not been decided yet; try again in a few seconds"
-	case !d.Admit:
+	case !d.Admit && !d.Full:
+		// Full: slots only, counted live below, so a sandbox removed
+		// since the last tick frees its slot at once.
 		why := "the budget admits no new work"
 		if len(d.Reasons) > 0 {
 			why += ": " + strings.Join(d.Reasons, "; ")

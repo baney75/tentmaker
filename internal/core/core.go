@@ -549,8 +549,12 @@ type Decision struct {
 	Limit   Resources `json:"limit"`   // what CI may use in total right now
 	Slots   int       `json:"slots"`   // how many jobs may run at once
 	Admit   bool      `json:"admit"`   // may start new jobs
-	Evict   bool      `json:"evict"`   // must stop running jobs (hard guard tripped)
-	Reasons []string  `json:"reasons"` // plain-language why, for status and logs
+	// Full says Admit is false only because every slot was in use when
+	// the budget was decided; a caller that counts its slots live (a
+	// sandbox) may start one freed since.
+	Full    bool     `json:"full,omitempty"`
+	Evict   bool     `json:"evict"`   // must stop running jobs (hard guard tripped)
+	Reasons []string `json:"reasons"` // plain-language why, for status and logs
 	// Guards names the guards that hold CI back now, each a fixed word
 	// (guards.Guard* and the budget's power and battery guards), so
 	// metrics can count them; Reasons says why in words. A guard holds CI
