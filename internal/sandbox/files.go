@@ -62,6 +62,20 @@ func PackPath(w io.Writer, src string) error {
 // `git -C dir ls-files -z --cached --others --exclude-standard`.
 type GitLister func(ctx context.Context, dir string) ([]byte, error)
 
+// inWorkTree reports whether dir or a folder above it holds .git: a
+// subfolder of a work tree has none of its own, and walking it would send
+// files Git ignores, such as .env (review first-F1).
+func inWorkTree(dir string) bool {
+	for d := dir; ; d = filepath.Dir(d) {
+		if _, err := os.Lstat(filepath.Join(d, ".git")); err == nil {
+			return true
+		}
+		if filepath.Dir(d) == d {
+			return false
+		}
+	}
+}
+
 // PackWorkTree writes dir's working tree as a tar stream with no top
 // folder: in a Git work tree, every tracked file as it is on disk now
 // (uncommitted changes included) and every untracked file Git doesn't
@@ -73,7 +87,7 @@ func PackWorkTree(ctx context.Context, w io.Writer, dir string, git GitLister) (
 	n := 0
 	out, gitErr := []byte(nil), errors.New("no git")
 	if git != nil {
-		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
+		if inWorkTree(dir) {
 			out, gitErr = git(ctx, dir)
 			if gitErr != nil {
 				return 0, fmt.Errorf("list the files of the Git work tree %s: %v", dir, gitErr)
@@ -234,8 +248,9 @@ func Extract(r io.Reader, dst string) (ExtractResult, error) {
 			}
 			// os.Root refuses a path through a symlink that leaves dst;
 			// removing an existing entry first means a symlink at the
-			// name itself is replaced, never written through.
-			if st, err := root.Lstat(rel); err == nil && !st.Mode().IsRegular() {
+			// name itself is replaced, never written through, and a file
+			// hardlinked to one outside dst keeps its contents (sol-F1).
+			if _, err := root.Lstat(rel); err == nil {
 				if err := root.Remove(rel); err != nil {
 					return res, fmt.Errorf("%s is in the way: %v", filepath.Join(dst, rel), err)
 				}
@@ -244,7 +259,7 @@ func Extract(r io.Reader, dst string) (ExtractResult, error) {
 			if h.FileInfo().Mode()&0o111 != 0 {
 				mode = 0o755
 			}
-			f, err := root.OpenFile(rel, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
+			f, err := root.OpenFile(rel, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
 			if err != nil {
 				return res, err
 			}

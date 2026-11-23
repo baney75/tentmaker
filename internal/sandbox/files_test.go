@@ -3,6 +3,7 @@ package sandbox
 import (
 	"archive/tar"
 	"bytes"
+	"context"
 	"io"
 	"os"
 	"path/filepath"
@@ -111,5 +112,58 @@ func TestPackPath(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(filepath.Join(out, "proj", "sub", "a.txt")); string(b) != "A" {
 		t.Fatalf("got %q", b)
+	}
+}
+
+// A file hardlinked to one outside the destination is replaced, not
+// written through (review sol-F1).
+func TestExtractDoesNotWriteThroughAHardlink(t *testing.T) {
+	parent := t.TempDir()
+	victim := filepath.Join(parent, "victim")
+	os.WriteFile(victim, []byte("keep"), 0o644)
+	dst := filepath.Join(parent, "dst")
+	os.MkdirAll(dst, 0o755)
+	if err := os.Link(victim, filepath.Join(dst, "file")); err != nil {
+		t.Skip("no hardlinks here:", err)
+	}
+	if _, err := Extract(tarOf(t, tarEntry{name: "file", body: "overwritten", typ: tar.TypeReg}), dst); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(victim); string(b) != "keep" {
+		t.Fatalf("wrote through a hardlink: the outside file is %q", b)
+	}
+	if b, _ := os.ReadFile(filepath.Join(dst, "file")); string(b) != "overwritten" {
+		t.Fatalf("the file was not replaced: %q", b)
+	}
+}
+
+// A subfolder of a Git work tree has no .git of its own; it is still
+// packed from Git's list, so files Git ignores stay out (review first-F1).
+func TestPackWorkTreeSubfolderUsesGit(t *testing.T) {
+	repo := t.TempDir()
+	os.Mkdir(filepath.Join(repo, ".git"), 0o755)
+	sub := filepath.Join(repo, "services", "api")
+	os.MkdirAll(sub, 0o755)
+	os.WriteFile(filepath.Join(sub, "main.go"), []byte("package main"), 0o644)
+	os.WriteFile(filepath.Join(sub, ".env"), []byte("SECRET=1"), 0o644)
+	var asked string
+	git := func(_ context.Context, dir string) ([]byte, error) {
+		asked = dir
+		return []byte("main.go\x00"), nil
+	}
+	var buf bytes.Buffer
+	n, err := PackWorkTree(context.Background(), &buf, sub, git)
+	if err != nil || n != 1 || asked != sub {
+		t.Fatalf("packed %d, err %v, git asked about %q", n, err, asked)
+	}
+	tr := tar.NewReader(&buf)
+	for {
+		h, err := tr.Next()
+		if err != nil {
+			break
+		}
+		if h.Name == ".env" {
+			t.Fatal("a file Git ignores was packed")
+		}
 	}
 }
