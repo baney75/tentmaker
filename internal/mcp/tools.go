@@ -577,7 +577,7 @@ var tools = []tool{
 		Props: []prop{
 			{Name: "id", Type: "string", Required: true, Description: "The sandbox id from sandbox_create.", Check: sandboxID},
 			{Name: "command", Type: "array", Required: true, Description: "The program and its arguments.", Check: command},
-			{Name: "dir", Type: "string", Description: "The folder to run in, relative to the work folder or absolute."},
+			{Name: "dir", Type: "string", Description: "The folder to run in, relative to the work folder and inside it (default: the work folder)."},
 			{Name: "timeout_s", Type: "number", Description: "Stop the command after this many seconds; omit to run until the sandbox expires.",
 				Check: func(v any) error {
 					if f := v.(float64); f < 0 || math.IsInf(f, 0) || math.IsNaN(f) {
