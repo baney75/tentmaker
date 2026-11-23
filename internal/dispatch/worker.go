@@ -646,12 +646,22 @@ func (w *Worker) cpuCeilingLocked(exec string) float64 {
 	return core.CPUCeiling(w.limits, w.decision.Limit.CPUs)
 }
 
+// testWorkerMemory is the least memory TENTMAKER_JOBS leaves each worker
+// when it raises the count past job.cpus. The CPUs burst but the job's
+// memory limit does not, and an OOM kill ends the whole job.
+const testWorkerMemory = 512 << 20
+
 // testWorkers is the job's TENTMAKER_JOBS: the whole CPUs it starts with,
 // so a job alone under the pool's cap sizes its parallelism to the pool and
-// one held at job.cpus (no pool cap, or the cap failed) to job.cpus. At
-// least 1.
+// one held at job.cpus (no pool cap, or the cap failed) to job.cpus. Past
+// floor(job.cpus) it gives each worker at least testWorkerMemory of the
+// job's memory. At least 1.
 func testWorkers(limits core.Resources, ceiling float64) int {
-	return max(1, int(math.Floor(core.CPUCeiling(limits, ceiling))))
+	n := int(math.Floor(core.CPUCeiling(limits, ceiling)))
+	if limits.MemoryBytes > 0 {
+		n = min(n, max(int(math.Floor(limits.CPUs)), int(limits.MemoryBytes/testWorkerMemory)))
+	}
+	return max(1, n)
 }
 
 func (w *Worker) applyPoolLimits(ctx context.Context, d core.Decision) {

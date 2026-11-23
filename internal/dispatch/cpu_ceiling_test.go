@@ -144,6 +144,21 @@ func TestNoCPUCeilingWithoutAPoolWideCap(t *testing.T) {
 	}
 }
 
+// Past job.cpus, TENTMAKER_JOBS leaves each worker 512 MiB of the job's
+// memory, which does not burst with the CPUs; it never drops below job.cpus.
+func TestTestWorkersFitTheJobsMemory(t *testing.T) {
+	const gib = 1 << 30
+	for _, tt := range []struct {
+		mem           int64
+		cpus, ceiling float64
+		want          int
+	}{{2 * gib, 2, 8, 4}, {8 * gib, 2, 8, 8}, {512 << 20, 2, 8, 2}, {3 * gib, 2, 0, 2}, {gib, 0.5, 4, 2}} {
+		if got := testWorkers(core.Resources{MemoryBytes: tt.mem, CPUs: tt.cpus}, tt.ceiling); got != tt.want {
+			t.Errorf("testWorkers(mem %d MiB, cpus %g, ceiling %g) = %d, want %d", tt.mem>>20, tt.cpus, tt.ceiling, got, tt.want)
+		}
+	}
+}
+
 func TestTestWorkersAreTheWholeCPUsOfTheCeiling(t *testing.T) {
 	for _, tt := range []struct {
 		cpus, ceiling float64

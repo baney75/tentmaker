@@ -128,8 +128,10 @@ pool, so the worker leaves their ceiling at 0. It fails closed: the worker recor
 executor, the `Limit.CPUs` its last `SetPoolLimit` applied, and when that call failed or applied
 another limit the ceiling is 0 (`job.cpus`), since nothing then caps the jobs together.
 `ExecSpec.TestWorkers`, exported to the job as `TENTMAKER_JOBS`, follows the CPUs the job starts
-with: `floor(core.CPUCeiling(Limits, CPUCeiling))`, at least 1. A job alone under the pool's cap
-is told the pool's whole CPUs; with a ceiling of 0 it is told `floor(job.cpus)`. Jobs that start
+with: `floor(core.CPUCeiling(Limits, CPUCeiling))`, at least 1. Memory does not burst, so past
+`floor(job.cpus)` the number is capped at one worker per 512 MiB of `job.memory`, since an OOM
+kill ends the whole job. A job alone under the pool's cap is told the pool's whole CPUs, within
+that cap; with a ceiling of 0 it is told `floor(job.cpus)`. Jobs that start
 while others run are told the same pool-wide number and split the pool by `CPUWeight`.
 Safety guards (free memory, free disk) set `Admit=false` (and `Evict=true` for
 `stop_below_disk`). Busy guards (`pause_when_running`, `max_load_per_cpu`) set `Busy`, which
