@@ -499,7 +499,8 @@ disk speed with no workflow change. Any step of it that fails leaves the job on 
 
 **Build cache (Linux, `internal/buildcache`, `internal/executor/linux/buildcache.go`).** A job
 that has an Actions cache grant also gets a remote build cache for its repo on the device, so
-Bazel, Gradle and Turborepo hit a warm cache at local disk speed with no workflow change.
+Gradle and Turborepo hit a warm cache at local disk speed with no workflow change, and Bazel
+does with one flag.
 
 - Protocols, on the Actions cache listener (`Options.Build`; `buildcache.Owns` routes the paths):
   the Bazel HTTP remote cache (`GET`, `HEAD` and `PUT` on `/ac/<sha256>` and `/cas/<sha256>`; a
@@ -559,12 +560,12 @@ Bazel, Gradle and Turborepo hit a warm cache at local disk speed with no workflo
     when the build turns caching on (`org.gradle.caching=true` or `--build-cache`), and an
     opt-out stays out (review first-F3). Every step is in a try block, so it never fails a
     build. A workflow that sets `GRADLE_USER_HOME` elsewhere does without it.
-  - Bazel: a system rc, `bazel.bazelrc` in the job dir, with the host's `/etc/bazel.bazelrc`
-    lines and then `build --remote_cache=<url>`; the job unit binds it read only over
-    `/etc/bazel.bazelrc` (`BindReadOnlyPaths=-`, so no file, no bind). Bazel reads the system
-    rc before the workspace and home ones, so a remote cache or remote executor the repo sets
-    wins over it (review first-F2), and so does `--remote_cache` on the command line;
-    `--nosystem_rc` drops it.
+  - Bazel: opt in. `.env` sets `TENTMAKER_BAZEL_CACHE` to the service URL, and a build passes
+    `--remote_cache=${TENTMAKER_BAZEL_CACHE}`; on a runner that is not a Tentmaker device it is
+    empty, which means no remote cache. No rc file is written: any rc that sets
+    `--remote_cache` splits a repo's remote execution from the cache it defaults to, whichever
+    order Bazel reads it in (review first-F2, then round 2 first-F3), and binding a file over
+    `/etc/bazel.bazelrc` would touch the host where none exists (round 2 first-F4).
   - No secret in any of them, and none in argv.
 - Metrics: `tentmaker_build_cache_requests_total{tool,result}` (`hit`, `miss`, `stored`,
   `not_stored`) and `tentmaker_build_cache_bytes_total{tool,direction}` (`served`, `stored`),

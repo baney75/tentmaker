@@ -13,40 +13,22 @@ import (
 const buildCacheToken = "tentmaker-no-secret"
 
 // buildCacheEnv is what .env adds so Turborepo uses the device's build
-// cache. base is the checked service URL (cacheURL). A workflow that sets
-// its own TURBO_API keeps it: its env wins over .env.
+// cache, and so a Bazel build can opt in. base is the checked service URL
+// (cacheURL). A workflow that sets its own TURBO_API keeps it: its env wins
+// over .env.
+//
+// Bazel gets no rc file: any rc that sets --remote_cache splits a repo's
+// remote execution from the cache it defaults to, whichever order Bazel
+// reads it in (review first-F2, then r2 first-F3). A build opts in with
+// --remote_cache=${TENTMAKER_BAZEL_CACHE}, which is empty, so no remote
+// cache, on a runner that is not a Tentmaker device.
 func buildCacheEnv(base string) []string {
 	return []string{
+		"TENTMAKER_BAZEL_CACHE=" + strings.TrimSuffix(base, "/"),
 		"TURBO_API=" + strings.TrimSuffix(base, "/"),
 		"TURBO_TEAM=tentmaker",
 		"TURBO_TOKEN=" + buildCacheToken,
 	}
-}
-
-// hostBazelRC is the host's system bazelrc. The job unit binds the job's
-// own copy over it (jobBazelRC), so that copy keeps the host's lines.
-var hostBazelRC = "/etc/bazel.bazelrc"
-
-// jobBazelRC is the file in the job dir that the job unit binds over
-// /etc/bazel.bazelrc.
-const jobBazelRC = "bazel.bazelrc"
-
-// bazelRC is the job's system bazelrc: the host's own lines, then the
-// device's cache. Bazel reads the system rc before the workspace and home
-// ones, so a remote cache or executor the repo sets still wins (review
-// first-F2), and a --remote_cache on the command line wins over both.
-func bazelRC(host []byte, base string) string {
-	var b strings.Builder
-	if len(host) > 0 {
-		b.Write(host)
-		if host[len(host)-1] != '\n' {
-			b.WriteByte('\n')
-		}
-	}
-	b.WriteString("# Written by Tentmaker: this device's build cache for the job's repo.\n" +
-		"# It names the job by its connection, so there is no credential here.\n" +
-		"build --remote_cache=" + strings.TrimSuffix(base, "/") + "\n")
-	return b.String()
 }
 
 // gradleInit is an init script for the job's ~/.gradle/init.d: it points
@@ -79,18 +61,9 @@ try {
 `
 }
 
-// writeBuildCacheFiles writes the job's system bazelrc into dir and the
-// Gradle init script into its home. dir is root-owned until prepareJob
-// hands it over.
-func writeBuildCacheFiles(dir, base string) error {
-	host, err := os.ReadFile(hostBazelRC)
-	if err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	if err := os.WriteFile(filepath.Join(dir, jobBazelRC), []byte(bazelRC(host, base)), 0o644); err != nil {
-		return err
-	}
-	home := filepath.Join(dir, "home")
+// writeBuildCacheFiles writes the Gradle init script into the job home.
+// home is root-owned until prepareJob hands the job dir over.
+func writeBuildCacheFiles(home, base string) error {
 	initd := filepath.Join(home, ".gradle", "init.d")
 	if err := os.MkdirAll(initd, 0o700); err != nil {
 		return err

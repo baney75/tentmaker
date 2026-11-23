@@ -13,11 +13,6 @@ import (
 func TestStartRunnerUsesBuildCache(t *testing.T) {
 	v := newEnv(t)
 	v.installed(t)
-	host := filepath.Join(t.TempDir(), "bazel.bazelrc")
-	must(t, os.WriteFile(host, []byte("startup --host_jvm_args=-Xmx2g"), 0o644))
-	old := hostBazelRC
-	hostBazelRC = host
-	t.Cleanup(func() { hostBazelRC = old })
 	withDLL(t, v, true)
 	s := spec("job-bc", "")
 	s.ActionsCache = "http://127.0.0.1:7436/"
@@ -25,25 +20,22 @@ func TestStartRunnerUsesBuildCache(t *testing.T) {
 	jd := v.e.jobDir("job-bc")
 
 	env, _ := os.ReadFile(filepath.Join(jd, "runner", ".env"))
-	for _, l := range []string{"TURBO_API=http://127.0.0.1:7436\n", "TURBO_TEAM=tentmaker\n", "TURBO_TOKEN=" + buildCacheToken + "\n"} {
+	for _, l := range []string{"TURBO_API=http://127.0.0.1:7436\n", "TENTMAKER_BAZEL_CACHE=http://127.0.0.1:7436\n", "TURBO_TEAM=tentmaker\n", "TURBO_TOKEN=" + buildCacheToken + "\n"} {
 		if !strings.Contains(string(env), l) {
 			t.Errorf(".env lacks %q:\n%s", l, env)
 		}
 	}
-	// The cache goes in the system rc, which Bazel reads before the
-	// workspace's, so a repo's own remote cache or executor wins
-	// (review first-F2). The host's own lines stay.
-	if _, err := os.Stat(filepath.Join(jd, "home", ".bazelrc")); err == nil {
-		t.Error("~/.bazelrc is read after the workspace rc and would override it")
+	// No rc file and no bind: any rc that sets --remote_cache splits a
+	// repo's remote execution from its cache (review r2 first-F3), and a
+	// bind over a missing /etc file would touch the host (r2 first-F4).
+	// Bazel opts in through TENTMAKER_BAZEL_CACHE.
+	for _, p := range []string{filepath.Join(jd, "home", ".bazelrc"), filepath.Join(jd, "bazel.bazelrc")} {
+		if _, err := os.Stat(p); err == nil {
+			t.Errorf("%s written: an rc --remote_cache overrides the repo's remote execution", p)
+		}
 	}
-	rc, err := os.ReadFile(filepath.Join(jd, jobBazelRC))
-	if err != nil || !strings.HasPrefix(string(rc), "startup --host_jvm_args=-Xmx2g\n") ||
-		!strings.Contains(string(rc), "build --remote_cache=http://127.0.0.1:7436\n") {
-		t.Errorf("job bazelrc: %v\n%s", err, rc)
-	}
-	bind := "BindReadOnlyPaths=-" + filepath.Join(jd, jobBazelRC) + ":" + host
-	if args := strings.Join(findUnit(t, v.f, unitName("job-bc")).Args, " "); !strings.Contains(args, bind) {
-		t.Errorf("job unit lacks %q: %s", bind, args)
+	if args := strings.Join(findUnit(t, v.f, unitName("job-bc")).Args, " "); strings.Contains(args, "bazel") {
+		t.Errorf("job unit binds a bazelrc: %s", args)
 	}
 	init, err := os.ReadFile(filepath.Join(jd, "home", ".gradle", "init.d", "tentmaker-build-cache.gradle"))
 	if err != nil || !strings.Contains(string(init), "c.url = 'http://127.0.0.1:7436/cache/'") ||
@@ -52,7 +44,7 @@ func TestStartRunnerUsesBuildCache(t *testing.T) {
 		t.Errorf("gradle init script: %v\n%s", err, init)
 	}
 	// Handed to the runner user with the rest of the job dir.
-	for _, p := range []string{filepath.Join(jd, jobBazelRC), filepath.Join(jd, "home", ".gradle", "init.d", "tentmaker-build-cache.gradle")} {
+	for _, p := range []string{filepath.Join(jd, "home", ".gradle", "init.d", "tentmaker-build-cache.gradle")} {
 		if c, ok := v.f.chowns[p]; !ok || c == [2]int{0, 0} {
 			t.Errorf("%s not chowned to the runner: %v", p, c)
 		}
@@ -66,11 +58,5 @@ func TestStartRunnerUsesBuildCache(t *testing.T) {
 	pd := v.e.jobDir("job-nobc")
 	if env, _ := os.ReadFile(filepath.Join(pd, "runner", ".env")); strings.Contains(string(env), "TURBO_") {
 		t.Errorf("a job without the cache has build cache variables:\n%s", env)
-	}
-	if _, err := os.Stat(filepath.Join(pd, jobBazelRC)); err == nil {
-		t.Error("a job without the cache has a bazelrc")
-	}
-	if args := strings.Join(findUnit(t, v.f, unitName("job-nobc")).Args, " "); strings.Contains(args, host) {
-		t.Errorf("a job without the cache binds a bazelrc: %s", args)
 	}
 }
