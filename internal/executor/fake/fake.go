@@ -61,6 +61,7 @@ type Executor struct {
 	poolLimit core.Resources
 	poolInUse core.Resources
 	poolCalls int
+	poolErr   error
 
 	cachesRepos bool
 	actionsDir  string // "" means no Actions cache
@@ -518,9 +519,19 @@ func (e *Executor) SetPoolLimit(ctx context.Context, limit, inUse core.Resources
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.record("SetPoolLimit", "")
-	e.poolLimit, e.poolInUse = limit, inUse
 	e.poolCalls++
+	if e.poolErr != nil {
+		return e.poolErr
+	}
+	e.poolLimit, e.poolInUse = limit, inUse
 	return nil
+}
+
+// SetPoolLimitErr makes SetPoolLimit fail with err (nil clears it).
+func (e *Executor) SetPoolLimitErr(err error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.poolErr = err
 }
 
 // CheckResult implements core.Executor.

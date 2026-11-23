@@ -446,6 +446,10 @@ func (e *Executor) syncGuestBinary() error {
 	return err
 }
 
+// jobCPUWeight is every job unit's CPUWeight, the same for all so jobs that
+// share the pool get equal parts of it.
+const jobCPUWeight = "100"
+
 func cpuQuota(cpus float64) string {
 	return strconv.Itoa(int(math.Ceil(cpus*100))) + "%"
 }
@@ -529,7 +533,11 @@ func (e *Executor) unitArgs(spec core.ExecSpec, kind string, uid, gid int, stdin
 		"-p", "MemorySwapMax=0",
 		// The kernel's OOM kill ends the whole job, not one process of it.
 		"-p", "OOMPolicy=stop",
-		"-p", "CPUQuota=" + cpuQuota(spec.Limits.CPUs),
+		// Up to the pool's CPU limit, so a job alone gets all of it; the
+		// slice's CPUQuota (SetPoolLimit) caps every job together, and an
+		// equal CPUWeight splits it fairly between jobs.
+		"-p", "CPUQuota=" + cpuQuota(core.CPUCeiling(spec.Limits, spec.CPUCeiling)),
+		"-p", "CPUWeight=" + jobCPUWeight,
 		"-p", "TasksMax=4096",
 		"-p", "Nice=10",
 		"-p", "IOSchedulingClass=idle",

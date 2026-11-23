@@ -71,7 +71,7 @@ How big one job is. A device runs as many jobs at once as fit in the current pro
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `job.memory` | size | `2GiB` | Memory each job reserves, and its hard limit. Must be above zero. |
-| `job.cpus` | number | `2` | CPUs each job reserves, and its hard limit. Must be above zero. |
+| `job.cpus` | number | `2` | CPUs each job reserves; slots count it. Must be above zero. On Linux a job may use up to the current profile's CPUs, shared evenly with any other running jobs, so a job alone gets them all. On macOS and Windows it is also the job's hard limit. |
 | `job.max_duration` | duration | `3h` | The sandbox kills a job that runs longer. |
 | `job.idle_ttl` | duration | `90s` | A runner that hasn't picked up a job by then is deleted. |
 | `job.max_slots` | int | `0` (no cap) | The most jobs at once, on top of what the budget allows. |

@@ -197,11 +197,17 @@ const (
 // --out <dir>` inside the sandbox with the secret on stdin; check-run writes
 // <dir>/result.json (a CheckResult) and <dir>/log.txt.
 type ExecSpec struct {
-	Kind        string        // KindRunner (default when empty) or KindCheck
-	Name        string        // runner name, matches NamePattern
-	Grant       Grant         // the single-use registration
-	Platform    Platform      // what the job runs on
-	Limits      Resources     // hard per-job limit
+	Kind     string    // KindRunner (default when empty) or KindCheck
+	Name     string    // runner name, matches NamePattern
+	Grant    Grant     // the single-use registration
+	Platform Platform  // what the job runs on
+	Limits   Resources // the job's reservation: its memory limit and the CPUs a slot counts
+	// CPUCeiling is the most CPU the job may use: the pool's CPU limit when
+	// it starts, so a job alone on the device gets all of it. Zero means
+	// Limits.CPUs. Only an executor whose SetPoolLimit caps every job
+	// together (linux-podman's slice) may honor it; the others cap a job at
+	// Limits.CPUs, or two jobs could use twice the pool.
+	CPUCeiling  float64
 	MaxDuration time.Duration // the executor kills the job after this
 	TestWorkers int           // exported to the job as TENTMAKER_JOBS
 	// Cache names the repo whose persistent build cache the job may use,
@@ -672,9 +678,12 @@ type FirstJobReporter interface {
 // DebugSpec bounds one debug session in a kept sandbox: the job's own
 // limits, how long a command may run, and how much output it keeps.
 type DebugSpec struct {
-	Limits    Resources
-	Timeout   time.Duration
-	MaxOutput int64
+	Limits Resources
+	// CPUCeiling is as in ExecSpec: the pool's CPU limit now, zero for
+	// Limits.CPUs.
+	CPUCeiling float64
+	Timeout    time.Duration
+	MaxOutput  int64
 }
 
 // DebugResult is how one debug command ended. Output is raw (the caller
@@ -702,4 +711,11 @@ type Debugger interface {
 	Keep(ctx context.Context, name string) error
 	DebugExec(ctx context.Context, name, command string, spec DebugSpec) (DebugResult, error)
 	DebugShell(ctx context.Context, name string, spec DebugSpec, stdin io.Reader, stdout io.Writer) error
+}
+
+// CPUCeiling returns the CPU limit for a job reserving limits.CPUs with
+// ceiling as its ExecSpec or DebugSpec CPUCeiling: never below the
+// reservation.
+func CPUCeiling(limits Resources, ceiling float64) float64 {
+	return max(limits.CPUs, ceiling)
 }

@@ -29,7 +29,7 @@ func (f *fakeHost) Stream(ctx context.Context, c Cmd, stdin io.Reader, stdout io
 }
 
 func debugSpec() core.DebugSpec {
-	return core.DebugSpec{Limits: core.Resources{MemoryBytes: 2 << 30, CPUs: 1.5}, Timeout: time.Minute, MaxOutput: 32}
+	return core.DebugSpec{Limits: core.Resources{MemoryBytes: 2 << 30, CPUs: 1.5}, CPUCeiling: 4, Timeout: time.Minute, MaxOutput: 32}
 }
 
 // lastSystemdRun is the newest systemd-run the fake host saw.
@@ -103,7 +103,7 @@ func TestKeepAndDebugExec(t *testing.T) {
 	for _, want := range []string{
 		"--wait", "--pipe", "--slice=" + Slice,
 		"--uid=" + strconv.Itoa(testUID), "--gid=" + strconv.Itoa(testGID),
-		"MemoryMax=" + strconv.Itoa(2<<30), "CPUQuota=150%", "RuntimeMaxSec=60", "NoNewPrivileges=yes",
+		"MemoryMax=" + strconv.Itoa(2<<30), "CPUQuota=400%", "CPUWeight=100", "RuntimeMaxSec=60", "NoNewPrivileges=yes",
 		"NetworkNamespacePath=" + filepath.Join(v.o.Paths.Proc, strconv.Itoa(testNetnsPID), "ns", "net"),
 		"--working-directory=" + filepath.Join(dir, "runner", "_work"),
 		"--unit=" + DebugPrefix + "job-one-",

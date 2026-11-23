@@ -184,10 +184,6 @@ func (w *Worker) keptJob(name string) (*jobRec, core.Debugger, error) {
 			j = x
 		}
 	}
-	var spec core.DebugSpec
-	if j != nil {
-		spec.Limits = j.Limits
-	}
 	w.mu.Unlock()
 	if j == nil {
 		return nil, nil, fmt.Errorf("%w for job %s on this device", ErrNotKept, name)
@@ -222,7 +218,9 @@ func (w *Worker) DebugExec(ctx context.Context, name, command string, timeout ti
 	if err != nil {
 		return core.DebugResult{}, err
 	}
-	spec := core.DebugSpec{Limits: j.Limits, Timeout: timeout, MaxOutput: maxOut}
+	w.mu.Lock()
+	spec := core.DebugSpec{Limits: j.Limits, CPUCeiling: w.cpuCeilingLocked(j.Executor), Timeout: timeout, MaxOutput: maxOut}
+	w.mu.Unlock()
 	ctx, cancel := context.WithTimeout(ctx, timeout+execTimeout)
 	defer cancel()
 	res, err := dbg.DebugExec(ctx, name, command, spec)
@@ -247,6 +245,7 @@ func (w *Worker) DebugShell(ctx context.Context, name string, stdin io.Reader, s
 	}
 	w.mu.Lock()
 	left := j.KeptUntil.Sub(w.now())
+	ceiling := w.cpuCeilingLocked(j.Executor)
 	w.mu.Unlock()
 	if left <= 0 {
 		return fmt.Errorf("%w: job %s's grace is over", ErrNotKept, name)
@@ -254,7 +253,7 @@ func (w *Worker) DebugShell(ctx context.Context, name string, stdin io.Reader, s
 	ctx, cancel := context.WithTimeout(ctx, min(left, ShellTimeout))
 	defer cancel()
 	w.log.Info("debug shell opened", "runner", name)
-	err = dbg.DebugShell(ctx, name, core.DebugSpec{Limits: j.Limits, Timeout: min(left, ShellTimeout)}, stdin, stdout)
+	err = dbg.DebugShell(ctx, name, core.DebugSpec{Limits: j.Limits, CPUCeiling: ceiling, Timeout: min(left, ShellTimeout)}, stdin, stdout)
 	w.log.Info("debug shell closed", "runner", name)
 	return err
 }

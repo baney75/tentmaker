@@ -555,9 +555,9 @@ func Markdown(rep Report) string {
 	}
 
 	p("## Known limits of this bench\n\n")
-	p("- CPUs: a Tentmaker job is capped at 2 CPUs (the default `job.cpus`); the hosted job has the\n")
-	p("  VM's 4. That is most of why Tentmaker's cold runs are slower: they compile from nothing on\n")
-	p("  half the CPUs.\n")
+	p("- CPUs: a Tentmaker job reserves 2 CPUs (the default `job.cpus`) but may use the pool's 4\n")
+	p("  when it runs alone, as the hosted job has the VM's 4. Two jobs on one device share the 4\n")
+	p("  evenly, so a run that lands beside another job gets about half.\n")
 	p("- Toolchains: the Go workloads pin the exact Go in `go.mod`. GitHub-hosted jobs download it\n")
 	p("  inside their setup time; the Tentmaker device has it installed in its tools folder, as a\n")
 	p("  device you use every day would. Each run records its Go, and the gate fails when the sides\n")
