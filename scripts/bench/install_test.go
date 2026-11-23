@@ -64,21 +64,32 @@ func TestInstallReport(t *testing.T) {
 	if code != 1 || !strings.Contains(out.String(), "over the 6.0 s budget") {
 		t.Errorf("over budget: exit %d\n%s", code, out.String())
 	}
+
+	// The same install without its 4 s runner phase fits a 3 s budget.
+	out.Reset()
+	code = run([]string{"install", "-os", "linux", "-marks", marks, "-setup", setup, "-budget-ms", "3000",
+		"-budget-excludes", "setup.sandbox.runner", "-json", js, "-md", md}, &out, &errb)
+	if code != 0 || !strings.Contains(out.String(), "install without setup.sandbox.runner (2.2 s) is within the budget of 3.0 s") {
+		t.Errorf("excluded phase: exit %d\n%s", code, out.String())
+	}
+	if _, err := BuildInstall("linux", map[string]*span{"command": {begin: 1, end: 7}}, []byte(setupOut), nil, "", 1, []string{"setup.nope"}); err == nil {
+		t.Error("excluding a phase that is not there was accepted")
+	}
 }
 
 func TestInstallNeedsSetupTimings(t *testing.T) {
 	m := map[string]*span{"command": {begin: 1, end: 7}}
-	if _, err := BuildInstall("linux", m, []byte(`{"ok":true}`), nil, "", 0); err == nil {
+	if _, err := BuildInstall("linux", m, []byte(`{"ok":true}`), nil, "", 0, nil); err == nil {
 		t.Error("setup output with no timings was accepted")
 	}
-	if _, err := BuildInstall("linux", map[string]*span{}, []byte(setupOut), nil, "", 0); err == nil {
+	if _, err := BuildInstall("linux", map[string]*span{}, []byte(setupOut), nil, "", 0, nil); err == nil {
 		t.Error("no command marks was accepted")
 	}
 	short := map[string]*span{"command": {begin: 1, end: 2}}
-	if _, err := BuildInstall("linux", short, []byte(setupOut), nil, "", 0); err == nil {
+	if _, err := BuildInstall("linux", short, []byte(setupOut), nil, "", 0, nil); err == nil {
 		t.Error("setup longer than the command was accepted")
 	}
-	if _, err := BuildInstall("linux", m, []byte(setupOut), []commitStatus{}, "c", 0); err == nil {
+	if _, err := BuildInstall("linux", m, []byte(setupOut), []commitStatus{}, "c", 0, nil); err == nil {
 		t.Error("statuses with no connect marks was accepted")
 	}
 }

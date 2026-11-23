@@ -76,7 +76,7 @@ func TestInstall(t *testing.T) {
 	v.o.Phase = func(name string) { phases = append(phases, name) }
 	must(t, Install(ctx, v.o))
 	v.o.Phase = nil
-	if want := "user dirs runner files net user-manager podman baseline"; strings.Join(phases, " ") != want {
+	if want := "user dirs runner files net user-manager podman podman.info runner.wait baseline"; strings.Join(phases, " ") != want {
 		t.Errorf("phases %v, want %s", phases, want)
 	}
 	cmds := strings.Join(v.f.commands(), "\n")

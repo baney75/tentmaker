@@ -319,10 +319,19 @@ func Install(ctx context.Context, o Options) error {
 		}
 	}
 
+	// The runner download is network-bound and nothing until the baseline
+	// reads it, so it overlaps files, net, the user manager and podman.
 	e.phase("runner")
-	if err := e.installRunner(ctx, pin); err != nil {
-		return err
-	}
+	runnerCtx, cancelRunner := context.WithCancel(ctx)
+	runnerErr := make(chan error, 1)
+	go func() { runnerErr <- e.installRunner(runnerCtx, pin) }()
+	runnerDone := false
+	defer func() {
+		cancelRunner()
+		if !runnerDone {
+			<-runnerErr
+		}
+	}()
 	e.phase("files")
 	if err := writeRoot(h, e.jobScript(), []byte(jobRunnerScript), 0o755); err != nil {
 		return err
@@ -425,9 +434,17 @@ func Install(ctx context.Context, o Options) error {
 		{"systemctl", "--user", "restart", "podman.socket"},
 		{"podman", "info"},
 	} {
+		if args[0] == "podman" {
+			e.phase("podman.info")
+		}
 		if err := run(e.asRunner(uid, 2*time.Minute, args...)); err != nil {
 			return fmt.Errorf("rootless podman for %s: %v", User, err)
 		}
+	}
+	e.phase("runner.wait")
+	runnerDone = true
+	if err := <-runnerErr; err != nil {
+		return err
 	}
 	e.phase("baseline")
 	units, err := e.userUnits(ctx, uid)

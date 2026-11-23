@@ -398,7 +398,7 @@ func Install(ctx context.Context, o Options) error {
 		if img == "" {
 			continue
 		}
-		if _, err := t.Run(ctx, e.tart(6*time.Hour, "pull", img)); err != nil {
+		if _, err := t.Run(ctx, e.tart(6*time.Hour, "pull", "--concurrency", pullConcurrency, img)); err != nil {
 			return fmt.Errorf("pull %s: %v", img, err)
 		}
 	}
@@ -417,6 +417,11 @@ func Install(ctx context.Context, o Options) error {
 	e.log.Info("installed", "executor", Name, "tart", TartVersion, "softnet", SoftnetVersion, "guests", strings.Join(sortedKeys(want), ","))
 	return nil
 }
+
+// pullConcurrency is how many image layers tart fetches at once. Tart's
+// default is 4; the Linux guest image is tens of GiB in many layers, and
+// the pull is most of a fresh macOS setup.
+const pullConcurrency = "8"
 
 // phase reports the start of an install phase to Options.Phase.
 func (e *Executor) phase(name string) {

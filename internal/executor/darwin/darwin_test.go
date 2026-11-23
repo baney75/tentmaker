@@ -719,8 +719,8 @@ func TestInstallAndUninstall(t *testing.T) {
 	for _, s := range []string{
 		"codesign --verify --deep --strict " + filepath.Join(v.dir, "lib", "tart-"+TartVersion+".part", "tart.app"),
 		"tart delete tentmaker-job-left",
-		"tart pull " + ImageLinux,
-		"tart pull " + ImageMacOS,
+		"tart pull --concurrency 8 " + ImageLinux,
+		"tart pull --concurrency 8 " + ImageMacOS,
 		"tart delete ghcr.io/cirruslabs/macos-tahoe-xcode:26.4",
 		"tart delete ghcr.io/cirruslabs/macos-tahoe-xcode@sha256:" + strings.Repeat("a", 64),
 	} {
@@ -821,7 +821,7 @@ func (v *tenv) installable(t *testing.T) {
 			return Result{}, true, nil
 		}
 		if len(c.Args) > 1 && c.Args[0] == "pull" {
-			v.f.images = append(v.f.images, c.Args[1])
+			v.f.images = append(v.f.images, c.Args[len(c.Args)-1])
 		}
 		return inner(c)
 	}
@@ -833,7 +833,7 @@ func (v *tenv) pulls() []string {
 	var out []string
 	for _, c := range v.f.cmds {
 		if len(c.Args) > 1 && c.Args[0] == "pull" {
-			out = append(out, c.Args[1])
+			out = append(out, c.Args[len(c.Args)-1])
 		}
 	}
 	return out

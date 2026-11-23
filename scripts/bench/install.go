@@ -19,7 +19,9 @@ package main
 // which is after the service answers and doctor ran.
 // to_green_ms adds connect, pickup and green: what a person waits from the
 // command to the first green job. With -budget-ms, install_ms over the
-// budget exits 1.
+// budget exits 1. -budget-excludes names phases the budget leaves out
+// (budgeted_ms is install_ms without them): on macOS the guest image pull,
+// whose time is the registry's and swings 32 to 144 s on hosted runners.
 
 import (
 	"bufio"
@@ -49,6 +51,8 @@ type InstallReport struct {
 	InstallMS    int64          `json:"install_ms"`
 	ToGreenMS    int64          `json:"to_green_ms,omitempty"` // 0 when no job ran
 	BudgetMS     int64          `json:"budget_ms,omitempty"`
+	BudgetedMS   int64          `json:"budgeted_ms"` // install_ms minus the excluded phases
+	Excluded     []string       `json:"budget_excludes,omitempty"`
 	WithinBudget bool           `json:"within_budget"`
 }
 
@@ -131,8 +135,8 @@ func nonNeg(d time.Duration) int64 {
 }
 
 // BuildInstall assembles the report from the parsed inputs.
-func BuildInstall(osName string, marks map[string]*span, setup []byte, statuses []commitStatus, ctx string, budget int64) (InstallReport, error) {
-	rep := InstallReport{OS: osName, BudgetMS: budget}
+func BuildInstall(osName string, marks map[string]*span, setup []byte, statuses []commitStatus, ctx string, budget int64, excludes []string) (InstallReport, error) {
+	rep := InstallReport{OS: osName, BudgetMS: budget, Excluded: excludes}
 	cmd, ok := marks["command"].ms()
 	if !ok {
 		return rep, errors.New("no command marks")
@@ -155,7 +159,20 @@ func BuildInstall(osName string, marks map[string]*span, setup []byte, statuses 
 		rep.Phases = append(rep.Phases, InstallPhase{"setup." + p.Phase, p.MS})
 	}
 	rep.InstallMS = cmd
-	rep.WithinBudget = budget <= 0 || rep.InstallMS <= budget
+	rep.BudgetedMS = cmd
+	for _, x := range excludes {
+		found := false
+		for _, p := range rep.Phases {
+			if p.Phase == x {
+				rep.BudgetedMS -= p.MS
+				found = true
+			}
+		}
+		if !found {
+			return rep, fmt.Errorf("budget excludes %s, which the report has no phase for", x)
+		}
+	}
+	rep.WithinBudget = budget <= 0 || rep.BudgetedMS <= budget
 	if statuses == nil {
 		return rep, nil
 	}
@@ -200,13 +217,17 @@ func InstallMarkdown(rep InstallReport) string {
 	if rep.ToGreenMS > 0 {
 		fmt.Fprintf(&b, "| **command to first green job** | **%.1f** |\n", float64(rep.ToGreenMS)/1000)
 	}
+	what := "install"
+	if len(rep.Excluded) > 0 {
+		what = fmt.Sprintf("install without %s (%.1f s)", strings.Join(rep.Excluded, ", "), float64(rep.BudgetedMS)/1000)
+	}
 	switch {
 	case rep.BudgetMS <= 0:
 		b.WriteString("\nNo install budget set.\n")
 	case rep.WithinBudget:
-		fmt.Fprintf(&b, "\nWithin the install budget of %.1f s.\n", float64(rep.BudgetMS)/1000)
+		fmt.Fprintf(&b, "\nThe %s is within the budget of %.1f s.\n", what, float64(rep.BudgetMS)/1000)
 	default:
-		fmt.Fprintf(&b, "\n**Over the install budget of %.1f s.**\n", float64(rep.BudgetMS)/1000)
+		fmt.Fprintf(&b, "\n**The %s is over the budget of %.1f s.**\n", what, float64(rep.BudgetMS)/1000)
 	}
 	return b.String()
 }
@@ -220,6 +241,7 @@ func runInstall(args []string, stdout, stderr io.Writer) int {
 	statusPath := fs.String("statuses", "", "GitHub statuses JSON (optional)")
 	ctx := fs.String("ctx", "", "status context of the first job")
 	budget := fs.Int64("budget-ms", 0, "install budget in ms; 0 reports only")
+	excludes := fs.String("budget-excludes", "", "comma-separated phases the budget leaves out")
 	js := fs.String("json", "", "JSON output")
 	md := fs.String("md", "", "Markdown output (appended)")
 	if err := fs.Parse(args); err != nil {
@@ -252,7 +274,13 @@ func runInstall(args []string, stdout, stderr io.Writer) int {
 			statuses = []commitStatus{}
 		}
 	}
-	rep, err := BuildInstall(*osName, marks, setup, statuses, *ctx, *budget)
+	var ex []string
+	for _, x := range strings.Split(*excludes, ",") {
+		if x = strings.TrimSpace(x); x != "" {
+			ex = append(ex, x)
+		}
+	}
+	rep, err := BuildInstall(*osName, marks, setup, statuses, *ctx, *budget, ex)
 	if err != nil {
 		return fail(err)
 	}
@@ -280,7 +308,7 @@ func runInstall(args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprint(stdout, text)
 	if !rep.WithinBudget {
-		fmt.Fprintf(stdout, "bench install: FAIL: install took %.1f s, over the %.1f s budget\n", float64(rep.InstallMS)/1000, float64(rep.BudgetMS)/1000)
+		fmt.Fprintf(stdout, "bench install: FAIL: install took %.1f s (%.1f s budgeted), over the %.1f s budget\n", float64(rep.InstallMS)/1000, float64(rep.BudgetedMS)/1000, float64(rep.BudgetMS)/1000)
 		return 1
 	}
 	return 0

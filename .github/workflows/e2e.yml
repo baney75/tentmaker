@@ -32,10 +32,14 @@ env:
   TM_SMOKE: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
   # Install budgets: the one-liner's wall time, from its start until setup
   # returns (service answering, doctor run), on GitHub's hosted runners.
-  # 0 reports without gating. See docs/BENCHMARKS.md, "Install".
-  TM_INSTALL_BUDGET_MS_LINUX: "0"
-  TM_INSTALL_BUDGET_MS_MACOS: "0"
-  TM_INSTALL_BUDGET_MS_WINDOWS: "0"
+  # Each is the median before the speedups plus 25%, rounded up to a second:
+  # Linux 15.5 s, Windows 14.1 s. macOS leaves out the guest image pull
+  # (setup.sandbox.images), whose time is ghcr.io's and swung 32 to 144 s
+  # over 20 runs; the rest took 3.0 s. See docs/BENCHMARKS.md, "Install".
+  TM_INSTALL_BUDGET_MS_LINUX: "20000"
+  TM_INSTALL_BUDGET_MS_MACOS: "4000"
+  TM_INSTALL_BUDGET_EXCLUDES_MACOS: setup.sandbox.images
+  TM_INSTALL_BUDGET_MS_WINDOWS: "18000"
 
 jobs:
   unix:
@@ -245,12 +249,14 @@ jobs:
         env:
           JOB_OK: ${{ steps.job.outcome == 'success' }}
           TM_INSTALL_BUDGET_MS: ${{ runner.os == 'macOS' && env.TM_INSTALL_BUDGET_MS_MACOS || env.TM_INSTALL_BUDGET_MS_LINUX }}
+          TM_INSTALL_BUDGET_EXCLUDES: ${{ runner.os == 'macOS' && env.TM_INSTALL_BUDGET_EXCLUDES_MACOS || '' }}
         run: |
           os=$(printf %s "$RUNNER_OS" | tr '[:upper:]' '[:lower:]')
           set --
           if [ "$JOB_OK" = true ]; then set -- -statuses "$RUNNER_TEMP/statuses.json" -ctx tentmaker/smoke; fi
           go run ./scripts/bench install -os "$os" -marks "$RUNNER_TEMP/install-marks" -setup "$RUNNER_TEMP/setup.json" "$@" \
-            -budget-ms "$TM_INSTALL_BUDGET_MS" -json "$RUNNER_TEMP/install-timings/install-$os.json" -md "$GITHUB_STEP_SUMMARY"
+            -budget-ms "$TM_INSTALL_BUDGET_MS" -budget-excludes "$TM_INSTALL_BUDGET_EXCLUDES" \
+            -json "$RUNNER_TEMP/install-timings/install-$os.json" -md "$GITHUB_STEP_SUMMARY"
 
       - name: upload install timings
         if: ${{ !cancelled() && steps.setup.outcome == 'success' }}

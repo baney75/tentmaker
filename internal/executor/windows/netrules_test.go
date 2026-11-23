@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -461,5 +463,24 @@ func TestStartRewritesStaleNetRules(t *testing.T) {
 		breakIt()
 		must(t, v.e.Start(ctx, spec(fmt.Sprintf("job-back%d", i), core.KindCheck)))
 		must(t, v.e.checkNet(ctx, testSID))
+	}
+}
+
+// TestInstallPhases: the runner download starts after the directories and
+// is waited for last, so it overlaps the user, network rules and files.
+func TestInstallPhases(t *testing.T) {
+	v := newEnv(t)
+	var phases []string
+	v.o.Phase = func(name string) { phases = append(phases, name) }
+	if err := Install(context.Background(), v.o); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(phases, " "), "dirs runner user net files runner.wait"; got != want {
+		t.Errorf("phases %q, want %q", got, want)
+	}
+	e := New(v.o)
+	pin, _ := e.pin()
+	if _, err := os.Stat(filepath.Join(e.runnerRoot(), pin.Dir(), "run.cmd")); err != nil {
+		t.Errorf("runner not in place after Install: %v", err)
 	}
 }
