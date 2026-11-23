@@ -30,6 +30,20 @@ const (
 	// GitHub's secondary limit (900 requests a minute).
 	pollFast        = 2 * time.Second
 	pollFastPerRepo = 500 * time.Millisecond
+	// pollHot replaces pollFast (and pollHotPerRepo pollFastPerRepo) for a
+	// repo that was active in the last hotWindow: a new or changed head or
+	// queued job, work waiting, or a job of it running. The next push
+	// usually comes soon after the last one.
+	pollHot        = time.Second
+	pollHotPerRepo = 250 * time.Millisecond
+	hotWindow      = 5 * time.Minute
+	// statusRecheck: a checks-mode head whose planned jobs all have a
+	// status has them read again at most this often; this broker's own
+	// posts update its copy at once. Heads with no planned job are never
+	// read, and heads with work waiting are read every poll.
+	statusRecheck = 15 * time.Second
+	// headWorkers bounds how many heads a checks poll plans at once.
+	headWorkers     = 4
 	tickSlack       = 100 * time.Millisecond
 	identifyTimeout = 30 * time.Second
 	workerSilence   = 2 * time.Minute

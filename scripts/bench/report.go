@@ -51,6 +51,8 @@ type Cell struct {
 	Median float64 `json:"median"`
 	Min    float64 `json:"min"`
 	Max    float64 `json:"max"`
+	// P95 is the nearest-rank 95th percentile.
+	P95 float64 `json:"p95"`
 }
 
 func cellOf(v []float64) Cell {
@@ -64,7 +66,7 @@ func cellOf(v []float64) Cell {
 	if n%2 == 0 {
 		med = (s[n/2-1] + s[n/2]) / 2
 	}
-	return Cell{N: n, Median: round1(med), Min: s[0], Max: s[n-1]}
+	return Cell{N: n, Median: round1(med), Min: s[0], Max: s[n-1], P95: s[(95*n+99)/100-1]}
 }
 
 // Side is one workload on one platform in one round.
@@ -455,10 +457,35 @@ func Markdown(rep Report) string {
 	p("Seconds from queued to running. GitHub-hosted: the job's `created_at` to `started_at`.\n")
 	p("Tentmaker: the push to the `pending` status it posts when a device takes the job, so it also\n")
 	p("counts noticing the commit.\n\n")
-	p("| Platform | Median | Min | Max | Jobs |\n|---|---|---|---|---|\n")
+	p("| Platform | Median | p95 | Min | Max | Jobs |\n|---|---|---|---|---|---|\n")
 	for _, pl := range []string{"github", "tentmaker"} {
 		c := rep.StartLatency[pl]
-		p("| %s | %s | %.1f s | %.1f s | %d |\n", platformName(pl), secs(c), c.Min, c.Max, c.N)
+		p("| %s | %s | %.1f s | %.1f s | %.1f s | %d |\n", platformName(pl), secs(c), c.P95, c.Min, c.Max, c.N)
+	}
+	p("\n")
+
+	p("## API calls\n\n")
+	p("What each Tentmaker device's daemon asked of the GitHub API since its last restart (the bench\n")
+	p("restarts it between reps), from `tentmaker status --json` (`broker.api`). All five devices share the workflow's\n")
+	p("`GITHUB_TOKEN`, which gets 1000 billed requests an hour per repo. Billed is every request but\n")
+	p("a 304: a conditional GET that found nothing new costs no rate limit.\n\n")
+	p("| Workload | Hours | Requests/h | Billed/h | 304s | Rate limited |\n|---|---|---|---|---|---|\n")
+	found := false
+	for _, d := range rep.Devices {
+		a := d.API
+		if a == nil || a.Hours() <= 0 {
+			continue
+		}
+		found = true
+		share := 0.0
+		if a.Requests > 0 {
+			share = 100 * float64(a.NotModified) / float64(a.Requests)
+		}
+		p("| %s | %.2f | %.0f | %.0f | %.0f%% | %d |\n", d.Workload, a.Hours(), float64(a.Requests)/a.Hours(),
+			float64(a.Billed)/a.Hours(), share, a.RateLimited)
+	}
+	if !found {
+		p("| none recorded | | | | | |\n")
 	}
 	p("\n")
 

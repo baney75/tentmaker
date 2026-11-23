@@ -137,6 +137,39 @@ type CheapPoller interface {
 	CheapPolls() bool
 }
 
+// PollPacer is a forge that says how long the broker should wait, at least,
+// before it polls again, so a low rate limit lasts until its reset instead
+// of running out and stalling every pickup. 0 means no limit applies now. It
+// is at most the time to the reset, so polling never stops for good.
+type PollPacer interface {
+	PollDelay() time.Duration
+}
+
+// APICounter is a forge that counts its API calls since it started, for
+// `tentmaker status --json` and the benchmark.
+type APICounter interface {
+	APIStats() APIStats
+}
+
+// APIStats counts one forge client's API calls.
+type APIStats struct {
+	Since time.Time `json:"since"`
+	// Requests is every HTTP request sent.
+	Requests int64 `json:"requests"`
+	// NotModified is the 304 answers to conditional GETs, which GitHub's
+	// primary rate limit doesn't count.
+	NotModified int64 `json:"not_modified"`
+	// Billed is Requests minus NotModified: what the primary limit counts.
+	Billed int64 `json:"billed"`
+	// RateLimited is rate limit answers plus calls refused locally because
+	// the limit was used up.
+	RateLimited int64 `json:"rate_limited"`
+	// RateLeft and RateLimit are the last reading (-1 and 0 when unknown).
+	RateLeft  int       `json:"rate_left"`
+	RateLimit int       `json:"rate_limit"`
+	RateReset time.Time `json:"rate_reset,omitzero"`
+}
+
 // ExecState is an executor's view of one runner it started.
 type ExecState string
 
@@ -530,6 +563,10 @@ type WorkSource interface {
 
 // ErrNotFound is returned when a forge object does not exist.
 var ErrNotFound = errors.New("not found")
+
+// ErrRateLimited is returned, wrapped, when a forge refuses a call, or the
+// client doesn't send it, because the rate limit is used up.
+var ErrRateLimited = errors.New("rate limited")
 
 // ErrOtherNode is a broker's answer to a work request for a device whose
 // grants another tailnet node holds. The mesh answers it with 403.

@@ -10,7 +10,8 @@
 # keeps, under bench-raw/tm/<workload>/<rep>-<round>/, the commit's statuses
 # (when the job was granted and when it ended), the check log Tentmaker kept
 # (the job's phase marks), and meta.json (the push time). scripts/bench turns
-# those into the tables; this script only records. A job that doesn't pass
+# those into the tables, and api.json (the daemon's API call counts at the
+# end) into the API calls table; this script only records. A job that doesn't pass
 # is recorded and reported as a failure, except on the workloads the gate
 # leaves out (UNGATED, which scripts/bench tests against its own list): there
 # it is recorded with a warning, so only the gate decides the bench run.
@@ -117,3 +118,6 @@ for rep in $(seq 1 "$REPS"); do
 	if [ "$rep" -lt "$REPS" ]; then reset_caches; fi
 done
 measure "rate_left" "$(rate_left)"
+# The daemon's own API call counts over the run (scripts/bench: API calls).
+tm_status | jqr --arg at "$(date -u +%FT%TZ)" '(.broker.api.github // {}) + {at: $at}' >"$OUT/api.json" ||
+	echo '{}' >"$OUT/api.json"

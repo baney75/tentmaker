@@ -6,7 +6,10 @@
 // The client is careful with the rate limit: list calls are ETag-conditional
 // GETs (a 304 costs nothing and reuses the cached body), jobs of an
 // in-progress run are refetched at most every 15 s unless the run changed,
-// and below 200 remaining requests it waits for the reset.
+// the default branch is read at most every 10 minutes, and once the limit
+// runs low PollDelay paces the broker's polls so the rest lasts until the
+// reset. It never sleeps toward a reset: a call while the limit is used up
+// fails at once with core.ErrRateLimited.
 //
 // The token never leaves this process except in the Authorization header of
 // a request to BaseURL. It is never logged and never part of an error.
@@ -42,8 +45,24 @@ const (
 	// InProgressRecheck: jobs of an in-progress run are refetched at most
 	// this often unless the run's updated_at changed.
 	InProgressRecheck = 15 * time.Second
-	// RateFloor: below this many remaining requests, wait for the reset.
+	// RateFloor: PollDelay paces polls so they leave this many requests
+	// for status posts, grants and deletes; below it, polls go every
+	// PacedMax.
 	RateFloor = 200
+	// PacedMax is the longest PollDelay while any of the limit is left, so
+	// a low limit slows pickups but never stops them.
+	PacedMax = time.Minute
+	// PollCost is how many billed requests PollDelay budgets for one poll:
+	// the PR list, a branch head and a status read that all changed.
+	PollCost = 4
+	// InlineWait is the longest rate limit wait a call sleeps through
+	// itself; a longer one fails the call with core.ErrRateLimited and
+	// every call until then fails at once, without a request.
+	InlineWait = 5 * time.Second
+	// DefaultBranchTTL: PendingCommits reads the repo's default branch at
+	// most this often. The repo object's ETag changes on every push to any
+	// branch, so reading it each poll is a billed request each poll.
+	DefaultBranchTTL = 10 * time.Minute
 	// CheapPollMin: CheapPolls is false below this many remaining
 	// requests, or below a quarter of the limit when that is more (1250 of
 	// a token's 5000, 400 of a workflow GITHUB_TOKEN's 1000); the broker
@@ -89,6 +108,16 @@ type Client struct {
 	rateLeft int // -1 = unknown
 	rateSet  time.Time
 	rateMax  int // X-RateLimit-Limit; 0 = unknown
+	// limitedUntil: a rate limit answer said to wait this long; calls fail
+	// at once until then.
+	limitedUntil time.Time
+	defBranch    map[string]defBranchEntry // repo path -> default branch
+	stats        core.APIStats
+}
+
+type defBranchEntry struct {
+	name string
+	at   time.Time
 }
 
 type etagEntry struct {
@@ -107,19 +136,22 @@ var (
 	_ core.Forge       = (*Client)(nil)
 	_ core.StatusForge = (*Client)(nil)
 	_ core.CheapPoller = (*Client)(nil)
+	_ core.PollPacer   = (*Client)(nil)
+	_ core.APICounter  = (*Client)(nil)
 )
 
 // New returns a Client.
 func New(o Options) *Client {
 	c := &Client{
-		base:     strings.TrimRight(o.BaseURL, "/"),
-		tokenFn:  o.Token,
-		http:     o.HTTP,
-		now:      o.Now,
-		log:      o.Log,
-		etags:    map[string]etagEntry{},
-		runJobs:  map[int64]runJobsEntry{},
-		rateLeft: -1,
+		base:      strings.TrimRight(o.BaseURL, "/"),
+		tokenFn:   o.Token,
+		http:      o.HTTP,
+		now:       o.Now,
+		log:       o.Log,
+		etags:     map[string]etagEntry{},
+		runJobs:   map[int64]runJobsEntry{},
+		defBranch: map[string]defBranchEntry{},
+		rateLeft:  -1,
 	}
 	if c.base == "" {
 		c.base = DefaultBaseURL
@@ -136,6 +168,7 @@ func New(o Options) *Client {
 	if c.tokenFn == nil {
 		c.tokenFn = TokenFromGH
 	}
+	c.stats.Since = c.now()
 	c.sleep = sleepCtx
 	c.backoff = func(try int) time.Duration {
 		d := time.Second << try // 1 s, 2 s, 4 s
@@ -246,29 +279,73 @@ func cleanPath(p string) string {
 	return p
 }
 
-// waitForRate sleeps until the reset while fewer than RateFloor requests
-// remain.
-func (c *Client) waitForRate(ctx context.Context) error {
+// RateLimitError is a call refused because the rate limit is used up. It
+// matches core.ErrRateLimited.
+type RateLimitError struct {
+	Until time.Time
+}
+
+func (e *RateLimitError) Error() string {
+	return "github: the API rate limit is used up until " + e.Until.UTC().Format(time.RFC3339)
+}
+
+// Is lets errors.Is(err, core.ErrRateLimited) match.
+func (e *RateLimitError) Is(target error) bool { return target == core.ErrRateLimited }
+
+// checkRate refuses a call, without sending it, while a rate limit answer's
+// wait runs or the primary limit reads 0 before its reset.
+func (c *Client) checkRate() error {
 	c.mu.Lock()
-	left, reset := c.rateLeft, c.rateSet
-	c.mu.Unlock()
-	if left < 0 || left >= RateFloor {
-		return nil
+	defer c.mu.Unlock()
+	now := c.now()
+	until := c.limitedUntil
+	if c.rateLeft == 0 && now.Before(c.rateSet) && c.rateSet.After(until) {
+		until = c.rateSet
 	}
-	wait := reset.Sub(c.now())
-	if wait <= 0 {
-		return nil
+	if now.Before(until) {
+		c.stats.RateLimited++
+		return &RateLimitError{Until: until}
 	}
-	c.log.Info("github rate limit low; waiting for the reset", "remaining", left, "wait", wait.Round(time.Second).String())
-	if err := c.sleep(ctx, wait); err != nil {
-		return fmt.Errorf("github: waiting for the rate limit reset: %w", err)
-	}
-	c.mu.Lock()
-	if c.rateSet.Equal(reset) {
-		c.rateLeft = -1
-	}
-	c.mu.Unlock()
 	return nil
+}
+
+// PollDelay implements core.PollPacer. While a rate limit answer's wait
+// runs it is the rest of that wait. While the limit is unknown, past its
+// reset or at least cheapFloor, it is 0. Below that, it spreads what is left
+// above RateFloor over the time to the reset at PollCost a poll, at most
+// PacedMax and never past the reset.
+func (c *Client) PollDelay() time.Duration {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	now := c.now()
+	if now.Before(c.limitedUntil) {
+		return c.limitedUntil.Sub(now)
+	}
+	if c.rateLeft < 0 || !now.Before(c.rateSet) || c.rateLeft >= cheapFloor(c.rateMax) {
+		return 0
+	}
+	untilReset := c.rateSet.Sub(now)
+	if c.rateLeft == 0 {
+		return untilReset
+	}
+	d := PacedMax
+	if spare := c.rateLeft - RateFloor; spare > 0 {
+		d = untilReset / time.Duration(spare) * PollCost
+	}
+	return min(d, PacedMax, untilReset)
+}
+
+// APIStats implements core.APICounter.
+func (c *Client) APIStats() core.APIStats {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	s := c.stats
+	s.Billed = s.Requests - s.NotModified
+	s.RateLeft, s.RateLimit = c.rateLeft, c.rateMax
+	if c.rateLeft >= 0 {
+		s.RateReset = c.rateSet
+	}
+	return s
 }
 
 // CheapPolls implements core.CheapPoller. Every poll is an ETag-conditional
@@ -345,7 +422,7 @@ func (c *Client) do(ctx context.Context, r request) (response, error) {
 		if try > 0 {
 			c.log.Debug("github retry", "method", r.method, "path", cleanPath(r.path), "try", try+1)
 		}
-		if err := c.waitForRate(ctx); err != nil {
+		if err := c.checkRate(); err != nil {
 			return response{}, err
 		}
 		resp, wait, err := c.once(ctx, r, payload)
@@ -355,6 +432,18 @@ func (c *Client) do(ctx context.Context, r request) (response, error) {
 		lastErr = err
 		if ctx.Err() != nil {
 			return response{}, lastErr
+		}
+		if wait > InlineWait {
+			// A long rate limit wait isn't slept through here: that held the
+			// broker's whole tick for up to an hour (issue #23). The calls
+			// fail at once until then and the broker polls again after it.
+			until := c.now().Add(wait)
+			c.mu.Lock()
+			if until.After(c.limitedUntil) {
+				c.limitedUntil = until
+			}
+			c.mu.Unlock()
+			return response{}, fmt.Errorf("%w (%w)", lastErr, &RateLimitError{Until: until})
 		}
 		if wait < 0 || try == Tries-1 {
 			break
@@ -431,6 +520,12 @@ func (c *Client) once(ctx context.Context, r request, payload []byte) (response,
 		return response{}, 0, fmt.Errorf("github: %s %s: read body: %s", r.method, cleanPath(r.path), c.redact(err.Error()))
 	}
 	c.noteRate(res.Header)
+	c.mu.Lock()
+	c.stats.Requests++
+	if res.StatusCode == http.StatusNotModified {
+		c.stats.NotModified++
+	}
+	c.mu.Unlock()
 	c.log.Debug("github", "method", r.method, "path", cleanPath(r.path), "status", res.StatusCode)
 	out := response{status: res.StatusCode, header: res.Header, body: data}
 	switch {
@@ -455,6 +550,9 @@ func (c *Client) once(ctx context.Context, r request, payload []byte) (response,
 		return out, -1, apiErr
 	}
 	if wait, ok := c.rateLimited(res.StatusCode, res.Header, data); ok {
+		c.mu.Lock()
+		c.stats.RateLimited++
+		c.mu.Unlock()
 		c.log.Info("github rate limited", "method", r.method, "path", cleanPath(r.path), "wait", wait.Round(time.Second).String())
 		return out, wait, apiErr
 	}
