@@ -63,6 +63,7 @@ internal/executor/darwin/ Tart VM per job (macOS and Linux guests), Softnet isol
 internal/executor/windows/ dedicated local user, Job Object limits, fresh dir per job
 internal/executor/fake/   in-memory core.Executor for tests
 internal/dispatch/        Broker (forge side) and Worker (device side)
+internal/sandbox/         sandboxes for agents: access, placement, exec and copy wire format
 internal/mesh/            tailnet peer API: discovery, WhoIs auth, remote WorkSource, claims
 internal/runs/            run history: records, log tails, redaction, stats, wait
 internal/alerts/          webhooks on failure, recovery and slow jobs
@@ -771,7 +772,7 @@ written to `state.json` and holds its slot and memory from the moment it is acce
 reported in `Running` only once `Start` returns, so the broker's start grace still covers it.
 A stop asked for while it starts waits for `Start` to return (review r1 partA sol-F4).
 
-## Sandboxes (internal/dispatch, internal/executor/linux)
+## Sandboxes (internal/sandbox)
 
 A sandbox is a job with no forge: an agent asks for one, runs commands in it, copies files in and
 out, and removes it. It reuses everything a CI job gets, so it adds no new isolation to trust.
@@ -790,6 +791,9 @@ func (w *Worker) StartSandbox(ctx, SandboxSpec) (SandboxInfo, error) // *NoRoomE
 func (w *Worker) ExecSandbox(ctx, name string, SandboxExec, stdin, stdout, stderr) (int, error)
 func (w *Worker) StopSandbox(ctx, name, why string) error
 func (w *Worker) Sandbox(name string) (SandboxInfo, error); func (w *Worker) Sandboxes() []SandboxInfo
+
+// sandbox
+func New(Options) *Manager // Create, List, Get, Remove, Exec, CopyIn, CopyOut for a Caller
 ```
 
 **Placement.** `StartSandbox` admits a sandbox under the worker's lock with the same checks as a
@@ -812,8 +816,7 @@ the start's state and any cleanup are settled, so `Shutdown` never returns while
 is in flight (sol-F4). It takes `ceil(max(memory / job memory, CPUs / job CPUs))` slots, at
 least one, so a sandbox twice a job's size takes two; jobs count one each. Free slots are
 `budget slots - used slots`, so CI jobs see the room sandboxes hold. The default size is one
-job's. The control API, CLI and MCP tools that hand sandboxes to agents come in the changes
-stacked on this one.
+job's.
 
 **Lifetime.** Every sandbox has a TTL (default 30 min, at most `[sandbox] max_ttl`, default 4 h,
 at least 1 min). Each tick stops a sandbox whose `Expires` has passed. `Shutdown` stops every
@@ -855,7 +858,33 @@ until every `Exec` admitted before has returned (at most 2 minutes), so no comma
 last check that the slice is empty (review r2 sol-F1).
 
 **macOS and Windows** executors don't implement `core.Sandboxer` yet, so a request for those
-OSes is refused with "can't hold sandboxes yet".
+OSes is refused with "can't hold sandboxes yet". `--device` other than this device is refused:
+placement on mesh peers is a later change.
+
+**Access.** The control API serves sandboxes only when its `Handler` also implements
+`control.SandboxHandler`. Every sandbox route needs the `Tentmaker-Client` header (a web page
+can't send it without a CORS preflight, which the API never answers) and a caller the
+connection names, as every route does; CI jobs get 403. The caller's account id (`Caller.ID`: the
+uid on Unix, the SID on Windows) is the owner. Admins (root, SYSTEM, an elevated Administrator,
+or whoever sends the control token) may use and see every sandbox. Other accounts must be in
+`[sandbox] users` (names, uids or SIDs) and see only their own; another owner's sandbox answers
+404, the same as a missing one. Known limit: on Linux every job and sandbox on a device runs as
+`tentmaker-runner` with one podman service, so code in a sandbox can reach other jobs' and
+sandboxes' files on that device, as CI jobs already can each other's. Give sandboxes to agents
+you would trust with a CI job on that device.
+
+**Wire.** `POST /v1/sandboxes` (`CreateRequest`) answers `Info`. `GET /v1/sandboxes`,
+`GET|DELETE /v1/sandboxes/{id}`. `POST /v1/sandboxes/{id}/exec`: the body is one JSON line
+(`ExecRequest`: argv, dir, timeout_s) and then stdin; the server enables full duplex. The answer
+is a frame stream: one kind byte (`o` stdout, `e` stderr, `x` exit), a 4 byte big endian length,
+the payload (at most 1 MiB). The `x` frame is `{"exit_code", "error", "fix"}` and ends it; a
+stream with no `x` frame broke. The 200 goes out with the first frame, so a refusal before any
+output keeps its status. `POST /v1/sandboxes/{id}/files?path=DIR` takes a tar stream and unpacks
+it into DIR (made if missing) with `tar` run inside the sandbox as its user; `GET` with
+`path=PATH` answers a frame stream of `tar -c` of PATH. The client extracts it with `os.Root`:
+only regular files and folders, never links, nothing outside the destination, at most 2 GiB.
+Errors are `{"error", "fix"}` with a status: 400 bad request, 403 not allowed, 404 no such
+sandbox, 409 no room or not running, 501 not supported, 503 no worker.
 
 ## Checks mode (internal/checks, internal/forge/gitlab)
 

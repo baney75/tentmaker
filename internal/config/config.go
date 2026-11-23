@@ -235,6 +235,15 @@ type Update struct {
 	Auto    bool   `toml:"auto" json:"auto"`       // apply between jobs
 }
 
+// Sandbox is who may use sandboxes on this device, and for how long.
+type Sandbox struct {
+	// Users are local accounts (names, uids or SIDs) that may create and
+	// use their own sandboxes. Admins (root, SYSTEM, an elevated
+	// Administrator) always may and see every sandbox.
+	Users  []string `toml:"users" json:"users"`
+	MaxTTL Duration `toml:"max_ttl" json:"max_ttl"` // longest time to live
+}
+
 // Config is the whole file.
 type Config struct {
 	Device    string           `toml:"device" json:"device"` // empty = hostname
@@ -247,6 +256,7 @@ type Config struct {
 	DenyRepos []string         `toml:"deny_repo_patterns" json:"deny_repo_patterns"`
 	Mesh      Mesh             `toml:"mesh" json:"mesh"`
 	Update    Update           `toml:"update" json:"update"`
+	Sandbox   Sandbox          `toml:"sandbox" json:"sandbox"`
 	StateDir  string           `toml:"state_dir" json:"state_dir"`
 	CacheDir  string           `toml:"cache_dir" json:"cache_dir"`
 	CacheMax  Size             `toml:"cache_max" json:"cache_max"`
@@ -325,6 +335,7 @@ func Default(totalMemory int64, cpus int) Config {
 		DenyRepos: []string{},
 		Mesh:      Mesh{Enabled: true, Pool: "default", Port: 7433},
 		Update:    Update{Channel: "stable", Auto: true},
+		Sandbox:   Sandbox{Users: []string{}, MaxTTL: Duration(4 * time.Hour)},
 		CacheMax:  10 * GiB,
 	}
 }
@@ -417,6 +428,9 @@ func (c Config) Validate() []string {
 	}
 	if c.Mesh.Port < 0 || c.Mesh.Port > 65535 {
 		p = append(p, "mesh.port is out of range")
+	}
+	if t := time.Duration(c.Sandbox.MaxTTL); t != 0 && (t < time.Minute || t > 7*24*time.Hour) {
+		p = append(p, "sandbox.max_ttl must be between 1m and 168h")
 	}
 	if c.HistoryMax < 0 {
 		p = append(p, "history_max can't be negative")

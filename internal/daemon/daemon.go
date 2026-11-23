@@ -28,6 +28,7 @@ import (
 	"github.com/baney75/tentmaker/internal/mesh"
 	"github.com/baney75/tentmaker/internal/observe"
 	"github.com/baney75/tentmaker/internal/power"
+	"github.com/baney75/tentmaker/internal/sandbox"
 	"github.com/baney75/tentmaker/internal/secrets"
 	"github.com/baney75/tentmaker/internal/service"
 	"github.com/baney75/tentmaker/internal/update"
@@ -311,6 +312,8 @@ type Daemon struct {
 
 	wComp, bComp, nComp *comp
 
+	sandboxes *sandbox.Manager
+
 	guard   updateGuard
 	ctlAddr string
 	relAddr string
@@ -344,6 +347,28 @@ func New(o Options) *Daemon {
 	if o.CacheAddr != "-" && runtime.GOOS == "linux" {
 		d.actions = actionscache.New(actionscache.Options{Log: o.Log, JobOf: d.cacheJobOf()})
 	}
+	d.sandboxes = sandbox.New(sandbox.Options{
+		Worker: func() sandbox.Worker {
+			d.mu.RLock()
+			defer d.mu.RUnlock()
+			if d.worker == nil {
+				return nil
+			}
+			return d.worker
+		},
+		Device: d.device,
+		Users: func() []string {
+			d.mu.RLock()
+			defer d.mu.RUnlock()
+			return d.cfg.Sandbox.Users
+		},
+		MaxTTL: func() time.Duration {
+			d.mu.RLock()
+			defer d.mu.RUnlock()
+			return time.Duration(d.cfg.Sandbox.MaxTTL)
+		},
+		Log: o.Log,
+	})
 	return d
 }
 
@@ -1288,6 +1313,9 @@ func (d *Daemon) OpenPR(ctx context.Context, pr core.PullRequest) (core.PullRequ
 	return pq.OpenOrUpdatePR(ctx, pr)
 }
 
+// SandboxService serves sandboxes (control.SandboxHandler).
+func (h ctlHandler) SandboxService() control.SandboxService { return h.d.sandboxes }
+
 // Relay streams a running check job's source archive (control.Relayer). The
 // relay listener serves it; the control API does not.
 func (h ctlHandler) Relay(ctx context.Context, id string, w io.Writer) error {
@@ -1301,7 +1329,8 @@ func (h ctlHandler) Relay(ctx context.Context, id string, w io.Writer) error {
 }
 
 var (
-	_ control.Relayer    = ctlHandler{}
-	_ control.PROpener   = ctlHandler{}
-	_ core.ArchiveSource = brokerProxy{}
+	_ control.Relayer        = ctlHandler{}
+	_ control.PROpener       = ctlHandler{}
+	_ control.SandboxHandler = ctlHandler{}
+	_ core.ArchiveSource     = brokerProxy{}
 )

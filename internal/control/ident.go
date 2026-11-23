@@ -24,6 +24,7 @@ type Caller struct {
 	Runner bool   // a CI job: the runner user, or on Linux one of its subordinate uids
 	Admin  bool   // root, SYSTEM or an elevated Administrator
 	Who    string // for logs and errors: "uid 1000", "S-1-5-21-..."
+	ID     string // the account: a uid on Unix, a SID on Windows
 }
 
 // Identify names the caller on the other end of c. An error refuses every
@@ -67,7 +68,7 @@ func (r IDRange) has(id uint32) bool { return id >= r.First && id-r.First < r.Co
 // and subordinate uids (rootless containers run as those) are CI jobs.
 // When the runner's ids can't be read, only root is served.
 func classifyUID(uid uint32, runner []IDRange, runnerErr error) (Caller, error) {
-	c := Caller{Who: "uid " + strconv.FormatUint(uint64(uid), 10)}
+	c := Caller{Who: "uid " + strconv.FormatUint(uint64(uid), 10), ID: strconv.FormatUint(uint64(uid), 10)}
 	if uid == 0 {
 		c.Admin = true
 		return c, nil
@@ -134,7 +135,7 @@ func RunnerIDs(user string, passwd, subuid []byte) ([]IDRange, error) {
 // elevated token is an admin; the runner user's SID is a CI job. When the
 // runner's SID can't be looked up, only admins are served.
 func classifySID(sid string, elevated bool, runnerSID string, runnerErr error) (Caller, error) {
-	c := Caller{Who: sid}
+	c := Caller{Who: sid, ID: sid}
 	if sid == "S-1-5-18" || elevated {
 		c.Admin = true
 		return c, nil

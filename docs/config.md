@@ -199,6 +199,15 @@ min_duration = "20m"
 On Windows the secrets are DPAPI-encrypted and there is no command yet to add one by hand, so
 use `url` there.
 
+## `[sandbox]`
+
+Sandboxes are throwaway machines agents ask for with `tentmaker sandbox` or the MCP sandbox tools.
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `sandbox.users` | list of strings | `[]` | Accounts besides root and Administrators that may make sandboxes: user names, numeric uids, or Windows SIDs. Each sees only its own. |
+| `sandbox.max_ttl` | duration | `"4h"` | The longest time to live a sandbox may ask for. 1m to 168h. |
+
 ## `[update]`
 
 | Key | Type | Default | Meaning |
