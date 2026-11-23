@@ -152,6 +152,8 @@ func (e *Engine) Decide(ctx context.Context, now time.Time, running int) core.De
 	d.Guards = append(d.Guards, g.Guards...)
 	if g.Busy && d.Profile == Boost {
 		d.Profile = Everyday
+		// Only here does a busy guard hold CI back.
+		d.Guards = append(d.Guards, g.BusyGuards...)
 		why("you are using the machine, so the reserved everyday budget instead of boost")
 	}
 

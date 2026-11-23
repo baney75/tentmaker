@@ -38,7 +38,7 @@ func (e *Executor) JobUsage(ctx context.Context, name string) (core.Usage, error
 	var u core.Usage
 	if r, ok, err := e.slotOf(name); err == nil && ok {
 		u.CacheBytes = e.cache.Size(core.CacheRepo{Forge: r.Forge, Repo: r.Repo})
-		u.RepoCache, u.ContainerStore = e.cacheOutcomes(r)
+		u.RepoCache, u.ContainerStore = cacheOutcomes(r)
 	}
 	cg := filepath.Join(filepath.Dir(e.p.CgroupControllers), Slice, unitName(name))
 	peak, perr := readInt(filepath.Join(cg, "memory.peak"))

@@ -30,9 +30,14 @@ type Result struct {
 	// busy probe that can't be read counts as busy.
 	Busy    bool     `json:"busy"`
 	Reasons []string `json:"reasons"` // one plain sentence per tripped guard
-	// Guards names each tripped guard once, in a word that never changes
-	// (the Guard constants), for metrics; Reasons says it in a sentence.
+	// Guards names each tripped guard that stops new or running jobs,
+	// once, in a word that never changes (the Guard constants), for
+	// metrics; Reasons says it in a sentence.
 	Guards []string `json:"guards,omitempty"`
+	// BusyGuards names each tripped guard that only marks the machine
+	// busy (load, process). They hold CI back only where busy lowers
+	// boost to everyday, which the budget decides.
+	BusyGuards []string `json:"busy_guards,omitempty"`
 }
 
 // Guard names, as Result.Guards and core.Decision.Guards list them.
@@ -46,13 +51,18 @@ const (
 )
 
 // trip adds name to r.Guards once.
-func (r *Result) trip(name string) {
-	for _, g := range r.Guards {
+func (r *Result) trip(name string) { r.Guards = addOnce(r.Guards, name) }
+
+// tripBusy adds name to r.BusyGuards once.
+func (r *Result) tripBusy(name string) { r.BusyGuards = addOnce(r.BusyGuards, name) }
+
+func addOnce(list []string, name string) []string {
+	for _, g := range list {
 		if g == name {
-			return
+			return list
 		}
 	}
-	r.Guards = append(r.Guards, name)
+	return append(list, name)
 }
 
 // diskPerRunningJob is the extra free disk kept per running job, since each
@@ -113,22 +123,22 @@ func Check(ctx context.Context, g config.Guards, job config.Job, p Probe, stateD
 	}
 	if g.MaxLoadPerCPU > 0 {
 		if load, err := p.LoadPerCPU(ctx); err != nil {
-			r.trip(GuardLoad)
+			r.tripBusy(GuardLoad)
 			busy("can't read load (%v), so it counts as busy", err)
 		} else if load > g.MaxLoadPerCPU {
-			r.trip(GuardLoad)
+			r.tripBusy(GuardLoad)
 			busy("load %.2f per CPU is above %.2f", load, g.MaxLoadPerCPU)
 		}
 	}
 
 	if names := wanted(g.PauseWhenRunning); len(names) > 0 {
 		if procs, err := p.Processes(ctx); err != nil {
-			r.trip(GuardProcess)
+			r.tripBusy(GuardProcess)
 			busy("can't read the process list (%v), so it counts as busy", err)
 		} else {
 			for _, w := range names {
 				if matchAny(w.norm, procs) {
-					r.trip(GuardProcess)
+					r.tripBusy(GuardProcess)
 					busy("%s is running", w.label)
 				}
 			}

@@ -377,11 +377,12 @@ type Usage struct {
 	// RepoCache says whether the job started with a warm repo cache:
 	// CacheHit, CacheMiss, or "" for a job with no repo cache.
 	RepoCache string `json:"repo_cache,omitempty"`
-	// ContainerStore says whether the job's container work started warm:
-	// CacheHit when its repo's container store was bound for it and held
-	// images; CacheMiss when the store holds images but the job started
-	// without them (unbound, or bound while still empty); "" when the job
-	// had no repo cache or the store never held an image.
+	// ContainerStore says whether the job's container work started warm,
+	// decided when the job claimed its cache: CacheHit when its repo's
+	// container store held images and was bound for it; CacheMiss when the
+	// store held images but the job started without it (other jobs used
+	// podman, or the bind failed); "" when the job had no repo cache or the
+	// store held no image yet.
 	ContainerStore string `json:"container_store,omitempty"`
 }
 
@@ -505,7 +506,9 @@ type Decision struct {
 	Reasons []string  `json:"reasons"` // plain-language why, for status and logs
 	// Guards names the guards that hold CI back now, each a fixed word
 	// (guards.Guard* and the budget's power and battery guards), so
-	// metrics can count them; Reasons says why in words.
+	// metrics can count them; Reasons says why in words. A guard holds CI
+	// back when it stops new or running jobs, or (load, process) when it
+	// lowers boost to everyday; a busy guard under everyday is not listed.
 	Guards []string `json:"guards,omitempty"`
 }
 

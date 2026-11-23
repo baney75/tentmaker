@@ -48,6 +48,10 @@ type slotRec struct {
 	// StoreWarm: the repo's container store was bound for the job and
 	// held images when the job claimed it.
 	StoreWarm bool `json:"store_warm,omitempty"`
+	// StoreMiss: the repo's container store held images when the job
+	// claimed its cache, but the job started without it (other jobs used
+	// podman, or binding it failed).
+	StoreMiss bool `json:"store_miss,omitempty"`
 }
 
 // markSlot changes job name's slot record with f. A job with no record is
@@ -67,8 +71,10 @@ func (e *Executor) markSlot(name string, f func(*slotRec)) {
 }
 
 // cacheOutcomes says whether job r started with a warm repo cache and a
-// warm container store (core.Usage.RepoCache and ContainerStore).
-func (e *Executor) cacheOutcomes(r slotRec) (repo, store string) {
+// warm container store (core.Usage.RepoCache and ContainerStore). Both
+// come from the slot record alone, written when the job claimed its
+// cache, so a reading never depends on when it is taken.
+func cacheOutcomes(r slotRec) (repo, store string) {
 	repo = core.CacheMiss
 	if r.Warm {
 		repo = core.CacheHit
@@ -76,9 +82,7 @@ func (e *Executor) cacheOutcomes(r slotRec) (repo, store string) {
 	switch {
 	case r.StoreWarm:
 		store = core.CacheHit
-	case e.cache.ContainersWarm(core.CacheRepo{Forge: r.Forge, Repo: r.Repo}):
-		// The store holds images now but the job did not start with them:
-		// it ran unbound, or built them itself.
+	case r.StoreMiss:
 		store = core.CacheMiss
 	}
 	return repo, store

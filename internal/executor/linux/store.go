@@ -221,8 +221,12 @@ func (e *Executor) claimStore(ctx context.Context, spec core.ExecSpec, uid, gid 
 		return nil
 	}
 	c := core.CacheRepo{Forge: r.Forge, Repo: r.Repo}
+	// The job's container store outcome is a fact of this moment: set
+	// once the job's start with or without its store is decided.
+	withStore := false
+	defer func() { e.markStore(spec.Name, c, withStore) }()
 	if bound && b.Key == r.Key {
-		e.markStoreWarm(spec.Name, c)
+		withStore = true
 		return nil
 	}
 	if !e.idleLocked(ctx, spec.Name) {
@@ -253,7 +257,7 @@ func (e *Executor) claimStore(ctx context.Context, spec core.ExecSpec, uid, gid 
 	}
 	if why == "" {
 		e.log.Info("container store bound", "name", spec.Name, "repo", r.Repo, "took", time.Since(t0).Round(time.Millisecond).String())
-		e.markStoreWarm(spec.Name, c)
+		withStore = true
 		return nil
 	}
 	e.log.Warn("job runs without its container store", "name", spec.Name, "repo", r.Repo, "error", why)
@@ -363,10 +367,19 @@ func (e *Executor) storeBind(store string) []string {
 	return []string{"BindPaths=" + store + ":" + e.storeMount()}
 }
 
-// markStoreWarm records that job name starts with its repo's store bound,
-// warm when the store already holds images.
-func (e *Executor) markStoreWarm(name string, c core.CacheRepo) {
-	if e.cache.ContainersWarm(c) {
-		e.markSlot(name, func(r *slotRec) { r.StoreWarm = true })
+// markStore records job name's container store outcome as it claims its
+// cache, when its repo's store holds images: a hit when the job starts
+// with the store bound, a miss when it starts without it. A store with no
+// image yet is no outcome.
+func (e *Executor) markStore(name string, c core.CacheRepo, bound bool) {
+	if !e.cache.ContainersWarm(c) {
+		return
 	}
+	e.markSlot(name, func(r *slotRec) {
+		if bound {
+			r.StoreWarm = true
+		} else {
+			r.StoreMiss = true
+		}
+	})
 }

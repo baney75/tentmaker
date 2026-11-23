@@ -383,13 +383,20 @@ func TestFmtDur(t *testing.T) {
 }
 
 // The decision names the guards that hold CI back, its own and the host's.
+// A busy guard (a watched game, high load) holds CI back only when it
+// lowers boost to everyday; under everyday, jobs keep the full budget, so
+// it is not named (review second-F6).
 func TestDecideNamesGuards(t *testing.T) {
+	steam := func(f *guards.Fake) { f.Procs = []string{"steam"} }
 	for _, tt := range []struct {
-		name  string
-		power core.PowerSource
-		probe func(*guards.Fake)
-		want  []string
+		name    string
+		power   core.PowerSource
+		probe   func(*guards.Fake)
+		want    []string
+		profile string
 	}{
+		{name: "steam lowers boost", power: desktop, probe: steam, want: []string{guards.GuardProcess}, profile: Everyday},
+		{name: "steam under everyday", power: battery(60), probe: steam, profile: Everyday},
 		{name: "desktop", power: desktop},
 		{name: "battery low", power: battery(30), want: []string{GuardBattery}},
 		{name: "battery very low", power: battery(10), want: []string{GuardBatteryStop}},
@@ -402,9 +409,14 @@ func TestDecideNamesGuards(t *testing.T) {
 			if tt.probe != nil {
 				tt.probe(&probe)
 			}
-			d := New(baseConfig(), tt.power, nil, probe).WithLocation(zone).Decide(context.Background(), noon, 0)
+			cfg := baseConfig()
+			cfg.Guards.PauseWhenRunning = []string{"steam"}
+			d := New(cfg, tt.power, nil, probe).WithLocation(zone).Decide(context.Background(), noon, 0)
 			if strings.Join(d.Guards, ",") != strings.Join(tt.want, ",") {
 				t.Fatalf("guards %q, want %q (reasons %q)", d.Guards, tt.want, d.Reasons)
+			}
+			if tt.profile != "" && (d.Profile != tt.profile || !d.Admit) {
+				t.Fatalf("profile %q admit %v, want %q and admit", d.Profile, d.Admit, tt.profile)
 			}
 		})
 	}
