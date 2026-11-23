@@ -121,6 +121,7 @@ func Install(ctx context.Context, o Options) error {
 	if ok, err := e.api.IsAdmin(); err != nil || !ok {
 		return errors.New("install needs an administrator or SYSTEM")
 	}
+	e.phase("dirs")
 	if err := os.MkdirAll(e.o.StateDir, 0o755); err != nil {
 		return err
 	}
@@ -140,6 +141,7 @@ func Install(ctx context.Context, o Options) error {
 			return err
 		}
 	}
+	e.phase("user")
 	sid, err := e.installUser()
 	if err != nil {
 		return err
@@ -153,9 +155,11 @@ func Install(ctx context.Context, o Options) error {
 	if err := e.protectDir(e.toolsDir(), libACL(sid)); err != nil {
 		return err
 	}
+	e.phase("net")
 	if err := e.installNet(ctx, sid); err != nil {
 		return err
 	}
+	e.phase("files")
 	if err := config.WriteAtomic(e.script(), []byte(jobRunnerPS1), 0o644); err != nil {
 		return err
 	}
@@ -175,11 +179,19 @@ func Install(ctx context.Context, o Options) error {
 		os.Remove(tmp)
 		return err
 	}
+	e.phase("runner")
 	if err := e.installRunner(ctx, pin); err != nil {
 		return err
 	}
 	e.log.Info("installed", "executor", Name, "runner", pin.Version, "arch", e.arch)
 	return nil
+}
+
+// phase reports the start of an install phase to Options.Phase.
+func (e *Executor) phase(name string) {
+	if e.o.Phase != nil {
+		e.o.Phase(name)
+	}
 }
 
 // installUser creates or resets the runner user and returns its SID. The

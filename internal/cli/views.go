@@ -425,6 +425,21 @@ func daysString(days []string) string {
 type doctorView struct {
 	daemon.Report
 	Service string `json:"service"`
+	// FirstFix is the fix for the first failed check (or, with none
+	// failed, the first warning): what to run next. Empty when all is ok.
+	FirstFix string `json:"first_fix,omitempty"`
+}
+
+// firstFix is the fix of the first failed check, else of the first warning.
+func firstFix(r daemon.Report) string {
+	for _, want := range []string{daemon.Fail, daemon.Warn} {
+		for _, c := range r.Checks {
+			if c.Status == want && c.Fix != "" {
+				return c.Fix
+			}
+		}
+	}
+	return ""
 }
 
 func (d doctorView) exitCode() int {
@@ -435,6 +450,12 @@ func (d doctorView) exitCode() int {
 }
 
 func (a *app) doctorData(ctx context.Context) doctorView {
+	v := a.doctorReport(ctx)
+	v.FirstFix = firstFix(v.Report)
+	return v
+}
+
+func (a *app) doctorReport(ctx context.Context) doctorView {
 	cfg, exists, cerr := a.loadConfig()
 	if exists && cerr == nil {
 		var rep daemon.Report
@@ -490,6 +511,9 @@ func (a *app) cmdDoctor(args []string) (any, error) {
 			fmt.Fprintf(a.env.Stdout, "\n%d warning(s)\n", v.Warnings)
 		default:
 			fmt.Fprintf(a.env.Stdout, "\n%d problem(s), %d warning(s)\n", v.Problems, v.Warnings)
+		}
+		if !v.OK && v.FirstFix != "" {
+			fmt.Fprintf(a.env.Stdout, "first fix: %s\n", v.FirstFix)
 		}
 	}
 	return v, nil

@@ -72,7 +72,13 @@ func TestInstall(t *testing.T) {
 	// An older setup's environment.d file.
 	must(t, os.MkdirAll(filepath.Join(root, ".config", "environment.d"), 0o755))
 	must(t, os.WriteFile(filepath.Join(root, ".config", "environment.d", "10-tentmaker.conf"), []byte("XDG_CONFIG_HOME=x\n"), 0o644))
+	var phases []string
+	v.o.Phase = func(name string) { phases = append(phases, name) }
 	must(t, Install(ctx, v.o))
+	v.o.Phase = nil
+	if want := "user dirs runner files net user-manager podman baseline"; strings.Join(phases, " ") != want {
+		t.Errorf("phases %v, want %s", phases, want)
+	}
 	cmds := strings.Join(v.f.commands(), "\n")
 	for _, s := range []string{
 		"podman --version",

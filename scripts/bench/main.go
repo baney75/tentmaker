@@ -5,12 +5,15 @@
 //	go run ./scripts/bench report -raw DIR -md FILE -json FILE
 //	go run ./scripts/bench report -from FILE -md FILE -json FILE
 //	go run ./scripts/bench gate -json FILE
+//	go run ./scripts/bench install -os OS -marks FILE -setup FILE [-statuses FILE -ctx C] [-budget-ms N] -json FILE -md FILE
 //
 // report writes both files and prints the Markdown; with -from it reads the
 // samples of an earlier benchmarks.json instead of a raw folder, so a change
 // to this tool can re-render a published run. gate recomputes every
 // number from the samples in the JSON and exits 1 when the run fails the
-// gate (see Gate). It is a repo tool, not part of tentmaker.
+// gate (see Gate). install times one e2e job's path from the install
+// command to its first green job (see install.go). It is a repo tool, not
+// part of tentmaker.
 package main
 
 import (
@@ -27,6 +30,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprintln(stderr, "usage: bench report (-raw DIR | -from FILE) -md FILE -json FILE | bench gate -json FILE")
 		return 2
+	}
+	if args[0] == "install" {
+		return runInstall(args[1:], stdout, stderr)
 	}
 	fs := flag.NewFlagSet("bench "+args[0], flag.ContinueOnError)
 	fs.SetOutput(stderr)

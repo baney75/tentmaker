@@ -62,6 +62,9 @@ type Options struct {
 	// AllowLAN lets jobs reach RFC 1918 addresses ([guards] allow_lan).
 	AllowLAN bool
 	Sleep    func(time.Duration)
+	// Phase, when set, is called as Install starts each of its phases
+	// (setup times them). It must not block.
+	Phase func(name string)
 }
 
 // Executor is the windows-job executor.

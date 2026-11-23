@@ -100,6 +100,22 @@ run() {
 	out=$(SSH_AUTH_SOCK=${TM_AGENT:-} TENTMAKER_DOWNLOAD_BASE="$base" TENTMAKER_SUDO="$fakesudo" ${TM_WRAP:-} "$sh_" "$installer" --prefix "$prefix" "$@" </dev/null 2>&1) || rc=$?
 }
 
+# run_json SHELL BASE ARGS...: like run, but out is stdout alone (stderr is
+# dropped), for the --json agent mode.
+run_json() {
+	sh_=$1
+	base=$2
+	shift 2
+	n=$((n + 1))
+	prefix="$work/p$n/bin"
+	export TM_SETUP_LOG="$work/setup$n.log" TM_SUDO_LOG="$work/sudo$n.log"
+	rc=0
+	out=$(TENTMAKER_DOWNLOAD_BASE="$base" TENTMAKER_SUDO="$fakesudo" "$sh_" "$installer" --prefix "$prefix" "$@" </dev/null 2>/dev/null) || rc=$?
+}
+
+# one_line TEXT: TEXT is exactly one line.
+one_line() { [ -n "$1" ] && [ "$(printf '%s\n' "$1" | wc -l | tr -d ' ')" = 1 ]; }
+
 have_setsid() { command -v setsid >/dev/null 2>&1 && setsid -w true </dev/null >/dev/null 2>&1; }
 
 installed() { "$prefix/tentmaker" version 2>/dev/null || echo "(not installed)"; }
@@ -166,6 +182,38 @@ check_shell() {
 
 	run "$s" "$good" --frobnicate
 	if [ $rc != 0 ]; then ok "$s: rejects unknown flag"; else bad "$s: accepted unknown flag"; fi
+
+	# --json: one JSON line on stdout, whatever happens.
+	run_json "$s" "$good" --json --no-setup
+	case "$rc:$out" in
+		0:'{"ok":true,"installed":"'*'","next":"'*'setup --yes --json"}') if one_line "$out"; then ok "$s: --json prints the next step"; else bad "$s: --json lines: $out"; fi ;;
+		*) bad "$s: --json --no-setup rc=$rc: $out" ;;
+	esac
+	run_json "$s" "$tampered" --json --no-setup
+	case "$rc:$out" in
+		0:*) bad "$s: --json tampered exited 0" ;;
+		*'{"ok":false,"error":"checksum mismatch'*'"fix":"retry;'*) if one_line "$out"; then ok "$s: --json failure is one JSON line"; else bad "$s: --json failure lines: $out"; fi ;;
+		*) bad "$s: --json tampered: $out" ;;
+	esac
+	if command -v python3 >/dev/null 2>&1; then
+		if printf '%s' "$out" | python3 -c 'import json,sys; v=json.load(sys.stdin); sys.exit(0 if v["ok"] is False and v["fix"] else 1)'; then
+			ok "$s: --json failure parses"
+		else
+			bad "$s: --json failure does not parse: $out"
+		fi
+	fi
+	run_json "$s" "$good" --yes --json -- --repo owner/name
+	if [ $rc = 0 ] && [ "$(cat "$TM_SETUP_LOG" 2>/dev/null)" = "$(printf '%s\n' --yes --json --repo owner/name)" ]; then
+		ok "$s: --json passes --json to setup"
+	else
+		bad "$s: --json setup=[$(cat "$TM_SETUP_LOG" 2>/dev/null)] rc=$rc: $out"
+	fi
+	run_json "$s" "$good" --yes -- --json --repo owner/name
+	if [ $rc = 0 ] && [ "$(cat "$TM_SETUP_LOG" 2>/dev/null)" = "$(printf '%s\n' --yes --json --repo owner/name)" ] && [ -z "$out" ]; then
+		ok "$s: setup's own --json is not doubled"
+	else
+		bad "$s: setup --json setup=[$(cat "$TM_SETUP_LOG" 2>/dev/null)] rc=$rc: $out"
+	fi
 
 	# Piped, like curl | sh.
 	n=$((n + 1))

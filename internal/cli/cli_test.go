@@ -976,7 +976,7 @@ func TestDoctorAsUserSkipsSandboxChecks(t *testing.T) {
 
 	f.isRoot = true
 	f.run("", "doctor", "--json")
-	if built != 1 || !strings.Contains(f.stdout.String(), `"check": "podman socket"`) {
+	if built != 1 || !strings.Contains(f.stdout.String(), `"check":"podman socket"`) {
 		t.Errorf("root doctor built the executors %d times and did not report their problem:\n%s", built, f.stdout)
 	}
 }

@@ -14,6 +14,10 @@
 #   --no-setup             only install the binary
 #   --yes                  run `sudo tentmaker setup --yes` after installing,
 #                          with every argument after `--` passed through
+#   --json                 for agents: print exactly one JSON line on stdout,
+#                          setup's result with --yes, else what was installed
+#                          and the next step; a failure is {"ok":false,...}
+#                          (also on when the setup arguments hold --json)
 #   -h, --help             show this help
 #
 # The installer never prompts. It downloads the release archive and
@@ -36,11 +40,25 @@ TM_REPO_URL="https://github.com/baney75/tentmaker"
 
 say() { printf 'tentmaker-install: %s\n' "$*" >&2; }
 
+# tm_json: print one JSON line on stdout. tm_setup_ran: setup printed it.
+tm_json=0
+tm_setup_ran=0
+
+# json_str TEXT: TEXT as a JSON string.
+json_str() {
+	printf '"%s"' "$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g' | tr '\n\t\r' '   ')"
+}
+
 # die MESSAGE [FIX]
 die() {
 	printf 'tentmaker-install: error: %s\n' "$1" >&2
+	tm_fix=
 	if [ $# -gt 1 ] && [ -n "$2" ]; then
 		printf 'tentmaker-install: fix: %s\n' "$2" >&2
+		tm_fix=$2
+	fi
+	if [ "$tm_json" = 1 ] && [ "$tm_setup_ran" = 0 ]; then
+		printf '{"ok":false,"error":%s,"fix":%s}\n' "$(json_str "$1")" "$(json_str "$tm_fix")"
 	fi
 	exit 1
 }
@@ -58,6 +76,7 @@ usage: install.sh [--channel stable|dev] [--version X.Y.Z] [--prefix DIR]
                          ~/.local/bin without root)
   --no-setup             only install the binary
   --yes                  run 'sudo tentmaker setup --yes' with SETUP ARGS
+  --json                 print exactly one JSON line on stdout (for agents)
   -h, --help             show this help
 
 From a checkout of your repo, set up this machine and open a pull request
@@ -65,9 +84,9 @@ that moves CI onto it:
   curl -fsSL https://raw.githubusercontent.com/baney75/tentmaker/main/scripts/install.sh |
     sh -s -- --yes -- --repo-here --pr
 
-Example for agents:
+Example for agents (one JSON line on stdout, with "ok" and "next"):
   curl -fsSL https://raw.githubusercontent.com/baney75/tentmaker/main/scripts/install.sh |
-    sh -s -- --yes -- --json --memory 4GiB --boost-memory 12GiB --repo owner/name
+    sh -s -- --yes --json -- --repo-here --pr
 
 Docs: $TM_REPO_URL
 USAGE
@@ -178,12 +197,22 @@ main() {
 			--prefix=*) prefix=${1#*=}; shift ;;
 			--no-setup) no_setup=1; shift ;;
 			--yes | -y) run_setup=1; shift ;;
+			--json) tm_json=1; shift ;;
 			-h | --help) usage; exit 0 ;;
 			--) shift; break ;;
 			*) die "unknown option $1" "run with --help; arguments for setup go after --, like: sh -s -- --yes -- --memory 4GiB" ;;
 		esac
 	done
 	# "$@" now holds the arguments for `tentmaker setup`.
+	tm_has_json=0
+	for tm_a in "$@"; do
+		case $tm_a in --json) tm_has_json=1 ;; esac
+	done
+	if [ "$tm_has_json" = 1 ]; then
+		tm_json=1
+	elif [ "$tm_json" = 1 ]; then
+		set -- --json "$@"
+	fi
 
 	case $channel in
 		stable | dev) ;;
@@ -280,6 +309,7 @@ main() {
 	if [ "$run_setup" = 1 ] && [ "$no_setup" = 0 ]; then
 		say "running: $setup_cmd --yes$(quote_args "$@")"
 		if [ "$is_root" = 1 ]; then
+			tm_setup_ran=1
 			"$bin" setup --yes "$@"
 		else
 			sudo_cmd=${TENTMAKER_SUDO:-sudo}
@@ -289,6 +319,7 @@ main() {
 			agent=
 			if [ -n "${SSH_AUTH_SOCK:-}" ]; then agent="SSH_AUTH_SOCK=$SSH_AUTH_SOCK"; fi
 			if [ -t 0 ]; then
+				tm_setup_ran=1
 				"$sudo_cmd" ${agent:+env "$agent"} "$bin" setup --yes "$@" || die "setup failed (exit $?)" "fix the error above, then run: $setup_cmd --yes$(quote_args "$@")"
 			else
 				# No terminal on stdin (curl | sh). A person at a terminal
@@ -300,8 +331,13 @@ main() {
 					"$sudo_cmd" -v </dev/tty ||
 						die "sudo did not accept the password" "run it yourself: $setup_cmd --yes$(quote_args "$@")"
 				fi
-				"$sudo_cmd" -n ${agent:+env "$agent"} "$bin" setup --yes "$@" ||
-					die "setup did not run: sudo needs a password or setup failed (exit $?)" \
+				# sudo -n fails with no output when it needs a password;
+				# only a setup that ran printed a JSON line.
+				tm_rc=0
+				"$sudo_cmd" -n true 2>/dev/null && tm_setup_ran=1
+				"$sudo_cmd" -n ${agent:+env "$agent"} "$bin" setup --yes "$@" || tm_rc=$?
+				[ "$tm_rc" = 0 ] ||
+					die "setup did not run: sudo needs a password or setup failed (exit $tm_rc)" \
 						"run it yourself: $setup_cmd --yes$(quote_args "$@")"
 			fi
 		fi
@@ -309,6 +345,10 @@ main() {
 	else
 		say "next step: $setup_cmd$(quote_args "$@")"
 		say "  (an agent can run: $setup_cmd --yes --json --memory 4GiB --boost-memory 12GiB --repo owner/name)"
+		if [ "$tm_json" = 1 ]; then
+			printf '{"ok":true,"installed":%s,"version":%s,"next":%s}\n' "$(json_str "$bin")" "$(json_str "$installed_version")" \
+				"$(json_str "$setup_cmd --yes$(quote_args "$@")")"
+		fi
 	fi
 }
 

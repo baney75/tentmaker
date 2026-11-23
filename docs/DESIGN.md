@@ -211,7 +211,9 @@ Every executor implements `core.Executor`. Constructors take an `Options` with `
 `func ForHost(cfg config.Config, log *slog.Logger) ([]core.Executor, []core.Problem)` choosing by
 `runtime.GOOS`. Each package also has `func Install(ctx, Options) error` and `Uninstall(ctx,
 Options, purge bool) error` that set up the host (run as root/Administrator by `tentmaker
-setup`), idempotent and safe to rerun.
+setup`), idempotent and safe to rerun. `Options.Phase func(name string)`, when set, is called as
+`Install` starts each of its phases; setup uses it for the `sandbox.<phase>` rows of its
+`timings`.
 
 - **linux-podman** (port of `fleet-ci-job`, `install.sh`): user `tentmaker-runner` with no sudo
   and no docker group; a root-owned runner template (actions/runner pinned version and sha256);
@@ -902,6 +904,14 @@ irm https://raw.githubusercontent.com/baney75/tentmaker/main/scripts/install.ps1
 
 Then `sudo tentmaker setup` (wizard), or for agents:
 `sudo tentmaker setup --yes --json --memory 4GiB --boost-memory 12GiB --repo owner/name`.
+
+For agents the whole quick start is one command with one JSON line on stdout:
+`install.sh --yes --json -- SETUP ARGS` (`$env:TENTMAKER_JSON = '1'` or `-Json` for install.ps1).
+The installer's own messages go to stderr (PowerShell: the host). With `--yes` the line is
+setup's result (`ok`, `next`, `timings`); without it, `{"ok":true,"installed","version","next"}`;
+an installer failure before setup is `{"ok":false,"error","fix"}`. `--json` among the setup
+arguments turns the mode on too. The e2e workflow runs exactly this command on Linux, macOS and
+Windows and times it (`go run ./scripts/bench install`, docs/BENCHMARKS.md "Install").
 
 ## Run history and alerts (internal/runs, internal/alerts)
 

@@ -351,7 +351,10 @@ func Run(env *Env, args []string) int {
 	}
 	if _, quiet := res.(silentExit); a.json && res != nil && !quiet {
 		enc := json.NewEncoder(env.Stdout)
-		enc.SetIndent("", "  ")
+		// One line for a pipe or an agent; indented for a person.
+		if env.StdoutTTY {
+			enc.SetIndent("", "  ")
+		}
 		if err := enc.Encode(res); err != nil {
 			fmt.Fprintln(env.Stderr, "tentmaker:", err)
 			return ExitFailed
