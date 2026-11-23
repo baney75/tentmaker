@@ -503,8 +503,8 @@ func resolveRoot(dir string) (string, error) {
 // the symlinks of the part that exists, and refuses it unless it is root
 // or a folder under it. What doesn't exist yet can't hold a symlink, so
 // the answer is where the copy lands; the copy itself then writes only
-// below it, through os.Root, and replaces an existing file there instead
-// of writing through it.
+// below it, through os.Root, and never writes through or replaces an
+// existing file there.
 func underRoot(root, dst string) (string, error) {
 	if root == "" {
 		return "", errors.New("this MCP server has no folder to copy into; start it with tentmaker mcp --root DIR")
@@ -514,6 +514,12 @@ func underRoot(root, dst string) (string, error) {
 	}
 	p := dst
 	if !filepath.IsAbs(p) {
+		// On Windows "/x" and "C:x" are not absolute, yet they name a
+		// drive, not a folder under the root: refuse them rather than
+		// guess.
+		if filepath.VolumeName(p) != "" || strings.HasPrefix(p, "/") || strings.HasPrefix(p, `\`) {
+			return "", refuse()
+		}
 		p = filepath.Join(root, p)
 	}
 	p = filepath.Clean(p)
