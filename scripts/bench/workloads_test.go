@@ -143,21 +143,25 @@ func TestUngatedDontFailTheRun(t *testing.T) {
 }
 
 // fakeEngine is podman or docker for TestDockerBuildRecordsStore: it logs
-// each call, answers `image exists` from FAKE_MARK, and fails `build` when
-// FAKE_FAIL is set.
+// each call, answers `image exists` from FAKE_MARK, fails `build` when
+// FAKE_FAIL is set, and fails a `pull` from any registry in FAKE_REFUSE.
 const fakeEngine = `#!/usr/bin/env bash
 echo "$(basename "$0") $*" >>"$FAKE_LOG"
 case "$1 ${2:-}" in
 "image exists") [ -n "${FAKE_MARK:-}" ] ;;
 "build "*) [ -z "${FAKE_FAIL:-}" ] ;;
+"pull "*) for r in ${FAKE_REFUSE:-}; do case "$*" in *" $r/"*) exit 1 ;; esac; done ;;
 esac
 `
 
 // TestDockerBuildRecordsStore: issue 33. Under Tentmaker the Docker workload
 // records whether its job got the repo's container store and whether that
 // store held a passing earlier run's build, and only a passing run leaves
-// the mark. The hosted side records neither.
+// the mark. The hosted side records neither. Issue 39: both sides pull the
+// pinned base images from the first mirror that serves them and build from
+// it, so ECR Public's data limit alone no longer fails the build.
 func TestDockerBuildRecordsStore(t *testing.T) {
+	const gcr, ecr = "mirror.gcr.io/library", "public.ecr.aws/docker/library"
 	bash, err := exec.LookPath("bash")
 	if err != nil {
 		t.Skip("no bash")
@@ -179,13 +183,18 @@ func TestDockerBuildRecordsStore(t *testing.T) {
 		mark               bool   // the store holds the mark
 		meta               string // the bench-meta file after the run
 		tagged             bool   // the run left the mark
+		refuse             string // registries whose pulls fail
+		base               string // the BASE the build gets; "" for no build
 	}{
-		{"unbound", true, false, "", true, "store_bound 0\ncache_hit 0\n", true},
-		{"conf named but missing", true, false, conf + ".gone", true, "store_bound 0\ncache_hit 0\n", true},
-		{"bound and empty", true, false, conf, false, "store_bound 1\ncache_hit 0\n", true},
-		{"bound and warm", true, false, conf, true, "store_bound 1\ncache_hit 1\n", true},
-		{"failed build leaves no mark", true, true, conf, true, "store_bound 1\ncache_hit 1\n", false},
-		{"hosted", false, false, "", false, "", false},
+		{"unbound", true, false, "", true, "store_bound 0\ncache_hit 0\nregistry mirror.gcr.io\n", true, "", gcr},
+		{"conf named but missing", true, false, conf + ".gone", true, "store_bound 0\ncache_hit 0\nregistry mirror.gcr.io\n", true, "", gcr},
+		{"bound and empty", true, false, conf, false, "store_bound 1\ncache_hit 0\nregistry mirror.gcr.io\n", true, "", gcr},
+		{"bound and warm", true, false, conf, true, "store_bound 1\ncache_hit 1\nregistry mirror.gcr.io\n", true, "", gcr},
+		{"failed build leaves no mark", true, true, conf, true, "store_bound 1\ncache_hit 1\nregistry mirror.gcr.io\n", false, "", gcr},
+		{"hosted", false, false, "", false, "registry mirror.gcr.io\n", false, "", gcr},
+		{"hosted, first mirror refuses", false, false, "", false, "registry public.ecr.aws\n", false, "mirror.gcr.io", ecr},
+		{"tentmaker, first mirror refuses", true, false, conf, false, "store_bound 1\ncache_hit 0\nregistry public.ecr.aws\n", true, "mirror.gcr.io", ecr},
+		{"no mirror answers", false, true, "", false, "", false, "mirror.gcr.io public.ecr.aws", ""},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			tmp := t.TempDir()
@@ -203,8 +212,11 @@ func TestDockerBuildRecordsStore(t *testing.T) {
 			if c.mark {
 				cmd.Env = append(cmd.Env, "FAKE_MARK=1")
 			}
-			if c.failing {
+			if c.failing && c.base != "" {
 				cmd.Env = append(cmd.Env, "FAKE_FAIL=1")
+			}
+			if c.refuse != "" {
+				cmd.Env = append(cmd.Env, "FAKE_REFUSE="+c.refuse)
 			}
 			out, err := cmd.CombinedOutput()
 			if (err != nil) != c.failing {
@@ -222,6 +234,39 @@ func TestDockerBuildRecordsStore(t *testing.T) {
 			if !c.tentmaker && strings.Contains(string(calls), "podman") {
 				t.Errorf("the hosted side ran podman:\n%s", calls)
 			}
+			built := regexp.MustCompile(`(?m) build --build-arg BASE=(\S+) `).FindStringSubmatch(string(calls))
+			switch {
+			case c.base == "" && built != nil:
+				t.Errorf("built from %s with no mirror answering; calls:\n%s", built[1], calls)
+			case c.base != "" && (built == nil || built[1] != c.base):
+				t.Errorf("build BASE = %v, want %s; calls:\n%s", built, c.base, calls)
+			}
+			if c.base != "" && !strings.Contains(string(calls), " pull -q "+c.base+"/golang:1.27-alpine@sha256:") {
+				t.Errorf("no pinned pull from %s; calls:\n%s", c.base, calls)
+			}
 		})
+	}
+}
+
+// Issue 39: bench.sh's cache reset stops podman's namespace unit before it
+// deletes the repo cache. Deleting the bound container store under that
+// unit's podman made it spin about 24 s when the daemon's reset stopped it,
+// and every cold rep after a reset started that much later.
+func TestBenchResetStopsPodnsFirst(t *testing.T) {
+	src := readRepo(t, filepath.Join("test", "scenarios", "bench.sh"))
+	i := strings.Index(src, "\nreset_caches() {")
+	if i < 0 {
+		t.Fatal("bench.sh has no reset_caches")
+	}
+	body := src[i:]
+	body = body[:strings.Index(body, "\n}")]
+	stop := strings.Index(body, "systemctl stop tentmaker-podns.service")
+	del := strings.Index(body, "find /var/cache/tentmaker/repos")
+	if stop < 0 || del < 0 || stop > del {
+		t.Fatalf("reset_caches must stop tentmaker-podns.service before it deletes the repo cache:\n%s", body)
+	}
+	// A failed stop must not fall through to the delete.
+	if line := body[stop:]; strings.Contains(line[:strings.Index(line, "\n")], "|| true") || !strings.Contains(body[stop:del], "die ") {
+		t.Fatalf("reset_caches must stop, not delete, when tentmaker-podns won't stop:\n%s", body)
 	}
 }

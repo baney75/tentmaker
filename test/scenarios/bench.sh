@@ -34,6 +34,9 @@ mkdir -p "$OUT"
 
 # The dogfood scenario's device: 8 GiB and 4 CPUs, the default job size.
 scn_up --memory 8GiB --boost-memory 8GiB --cpus 4 --boost-cpus 4
+# The repo's shared API limit left as the reps start; under a quarter of the
+# limit the daemon paces its polls (issue #39). rate_left at the end is below.
+measure "rate_left_start" "$(rate_left)"
 
 # stage_tool TOOL DIR VERSION: DIR as <state>/tools/TOOL-VERSION.
 stage_tool() {
@@ -100,9 +103,21 @@ sample() {
 
 # reset_caches: the next cold run starts with no repo cache, and no job
 # slots or podman images (the daemon's reset at start drops both).
+#
+# podman's namespace unit outlives the daemon and keeps the repo's container
+# store bound, so it stops before the store goes, as in the daemon's own
+# reset. Deleting the store under it made its podman spin about 24 s in
+# storage's lock code and die of a stack overflow when the daemon's reset
+# stopped it, and that wait was the next cold run's start latency (issue #39).
 reset_caches() {
 	sleep 5 # the ended job's cleanup
 	timeout 120 sudo systemctl stop tentmaker
+	# A unit that isn't loaded has nothing bound; one that won't stop still
+	# holds the store, so the reset stops rather than delete it under podman.
+	if sudo systemctl list-units --all --quiet tentmaker-podns.service | grep -q .; then
+		timeout 60 sudo systemctl stop tentmaker-podns.service ||
+			die "could not stop tentmaker-podns before the cache reset"
+	fi
 	sudo find /var/cache/tentmaker/repos -mindepth 1 -delete 2>/dev/null || true
 	timeout 120 sudo systemctl start tentmaker
 	wait_service_up 60 || die "the service did not come back after the cache reset"

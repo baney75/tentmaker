@@ -15,6 +15,12 @@
 # failed jobs", a rerun warm rep must still find the cache its cold rep saved
 # in the first attempt. Each warm run records whether it hit the cache, and
 # the report leaves out the ones that missed.
+#
+# Every job waits for the quota job first. The devices share the repo's
+# GITHUB_TOKEN limit with every other run in the repo, and a device low on it
+# paces its polls, up to a minute apart, which shows up as job start latency
+# (issue #39). quota waits for the hourly reset when too little is left;
+# both sides wait alike, and the hosted side doesn't use the limit.
 name: bench
 
 on:
@@ -38,8 +44,48 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  quota:
+    runs-on: ubuntu-latest
+    # A failed check (checkout, Go setup) must not skip the bench's jobs.
+    continue-on-error: true
+    timeout-minutes: 130
+    permissions:
+      contents: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+      # GET /rate_limit costs none of the limit. At most two waits: a reset
+      # always restores the whole hour, so a second one is only for a run
+      # that drained it again meanwhile. A failed read doesn't hold the
+      # bench up.
+      - name: wait for enough of the repo's API limit
+        run: |
+          set -uo pipefail
+          go build -o "$RUNNER_TEMP/bench" ./scripts/bench || exit 0
+          for i in 1 2 3; do
+            # The token goes in on stdin, never in argv.
+            printf 'header = "Authorization: Bearer %s"\n' "$GH_TOKEN" |
+              timeout 30 curl -fsS --retry 3 -K - -H "Accept: application/vnd.github+json" \
+                https://api.github.com/rate_limit >"$RUNNER_TEMP/rl.json" || { echo "::warning::could not read /rate_limit"; exit 0; }
+            s=$("$RUNNER_TEMP/bench" quota <"$RUNNER_TEMP/rl.json") || exit 0
+            if [ "$s" -le 0 ]; then exit 0; fi
+            if [ "$i" = 3 ]; then
+              echo "::warning title=bench quota::still low after two resets; starting anyway"
+              exit 0
+            fi
+            echo "::notice title=bench quota::waiting $s s for the API limit to reset"
+            sleep "$s"
+          done
+
   tentmaker:
     name: tentmaker ${{ matrix.workload }}
+    needs: quota
     strategy:
       fail-fast: false
       matrix:
@@ -86,6 +132,7 @@ jobs:
 
   gh-go-test-cold:
     name: gh go-test cold ${{ matrix.rep }}
+    needs: quota
     strategy:
       fail-fast: false
       max-parallel: 1
@@ -109,6 +156,7 @@ jobs:
 
   gh-cross-build-cold:
     name: gh cross-build cold ${{ matrix.rep }}
+    needs: quota
     strategy:
       fail-fast: false
       max-parallel: 1
@@ -132,6 +180,7 @@ jobs:
 
   gh-node-cold:
     name: gh node cold ${{ matrix.rep }}
+    needs: quota
     strategy:
       fail-fast: false
       max-parallel: 1
@@ -155,6 +204,7 @@ jobs:
 
   gh-docker-cold:
     name: gh docker cold ${{ matrix.rep }}
+    needs: quota
     strategy:
       fail-fast: false
       max-parallel: 1
@@ -178,6 +228,7 @@ jobs:
 
   gh-cache-cold:
     name: gh cache cold ${{ matrix.rep }}
+    needs: quota
     strategy:
       fail-fast: false
       max-parallel: 1

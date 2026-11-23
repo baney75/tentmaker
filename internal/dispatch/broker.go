@@ -1089,11 +1089,14 @@ func (b *Broker) pollDelayLocked(r *repoState) (time.Duration, bool) {
 }
 
 // backoffLocked schedules the next poll: 5 s while there is work, else the
-// current interval, which then grows x1.5 up to 30 s. A forge whose
-// PollDelay is longer (its rate limit is used up) is polled after that
-// instead, so a refused poll isn't retried before the forge would answer.
+// current interval, which then grows x1.5 up to 30 s. An interval past 30 s
+// is a pace PollDelay set (polledLocked), not a backoff, so it starts over
+// at 5 s: a poll refused just before a reset must not wait out the whole
+// pace again (issue #39). A forge whose PollDelay is longer (its rate limit
+// is used up) is polled after that instead, so a refused poll isn't retried
+// before the forge would answer.
 func (b *Broker) backoffLocked(r *repoState, now time.Time, busy bool) {
-	if busy || r.interval < pollMin {
+	if busy || r.interval < pollMin || r.interval > pollMax {
 		r.interval = pollMin
 	}
 	r.lastPoll = now

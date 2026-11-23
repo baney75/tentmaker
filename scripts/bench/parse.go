@@ -59,6 +59,8 @@ type DeviceAPI struct {
 	NotModified int64     `json:"not_modified"`
 	Billed      int64     `json:"billed"`
 	RateLimited int64     `json:"rate_limited"`
+	RateLeft    int64     `json:"rate_left"`  // the shared limit left at the end
+	RateLimit   int64     `json:"rate_limit"` // the hourly limit
 }
 
 // Hours is how long the counts ran.

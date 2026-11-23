@@ -669,6 +669,8 @@ repo when that is more, to stay under GitHub's secondary limit of 900 requests a
 aren't cheap, the gap is `PollDelay`, at least 2 s, so a low limit slows pickups to at most a
 minute and lasts until the reset instead of running out. Any other forge, a failed poll and a
 refused repo back off (5 s up to 30 s, x1.5 when idle), and never poll before `PollDelay` ends.
+A failed poll after a paced one starts its backoff over at 5 s: the pace (up to the hour to the
+reset) is not a backoff, so a poll refused just before the reset doesn't wait out the pace again.
 The broker ticks every second and a repo is due 100 ms early, so a 1 s poll doesn't slip to 2 s.
 `BrokerStatus.API` holds each `core.APICounter` forge's `APIStats` by forge name.
 on `Work`, matches queued jobs (oldest first) to the request: a job matches when it asks for

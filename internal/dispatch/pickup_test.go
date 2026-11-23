@@ -193,3 +193,39 @@ func TestPacedPollingNeverStarves(t *testing.T) {
 		t.Fatalf("%d polls in the 3 minutes a refused poll should wait", n)
 	}
 }
+
+// A poll refused just before the limit resets is retried after the usual
+// backoff, not after the whole wait the paced poll before it used. Before,
+// the refusal reused that wait as its backoff: in bench run 45184009840
+// (issue #39) a repo paced 25 minutes to GitHub's reset polled 0.6 s early,
+// was refused, and slept 25 minutes more with a commit waiting.
+func TestRefusedPollAfterLongPaceRetriesSoon(t *testing.T) {
+	r := newRig(t, checksRepo(repoSite))
+	pf := r.pacedBroker()
+	r.tick()
+	pf.cheap.Store(false)
+	pf.delay.Store(int64(25 * time.Minute))
+	waitPoll := func(limit time.Duration) time.Duration {
+		t.Helper()
+		polls := r.forge.CallsFor(fakeforge.MPendingCommits, repoSite)
+		start := r.clk.Now()
+		for r.forge.CallsFor(fakeforge.MPendingCommits, repoSite) == polls {
+			if r.clk.Now().Sub(start) > limit {
+				t.Fatalf("no poll within %v", limit)
+			}
+			r.run(time.Second, time.Second)
+		}
+		return r.clk.Now().Sub(start)
+	}
+	waitPoll(time.Minute) // this poll is paced 25 minutes, to the reset
+	// At the reset the poll is refused: the forge still reads the limit
+	// used up for a moment more.
+	r.forge.FailTimes(fakeforge.MPendingCommits, repoSite, 1, core.ErrRateLimited)
+	pf.delay.Store(int64(time.Second))
+	waitPoll(26 * time.Minute)
+	pf.delay.Store(0)
+	pf.cheap.Store(true)
+	if d := waitPoll(time.Hour); d > pollMin+time.Second {
+		t.Fatalf("next poll %v after the refused one, want at most %v", d, pollMin+time.Second)
+	}
+}

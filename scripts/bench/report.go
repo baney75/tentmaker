@@ -491,9 +491,11 @@ func Markdown(rep Report) string {
 	p("## API calls\n\n")
 	p("What each Tentmaker device's daemon asked of the GitHub API since its last restart (the bench\n")
 	p("restarts it between reps), from `tentmaker status --json` (`broker.api`). All five devices share the workflow's\n")
-	p("`GITHUB_TOKEN`, which gets 1000 billed requests an hour per repo. Billed is every request but\n")
-	p("a 304: a conditional GET that found nothing new costs no rate limit.\n\n")
-	p("| Workload | Hours | Requests/h | Billed/h | 304s | Rate limited |\n|---|---|---|---|---|---|\n")
+	p("`GITHUB_TOKEN`, whose hourly limit every workflow run in the repo shares. Billed is every request\n")
+	p("but a 304: a conditional GET that found nothing new costs no rate limit. Left is the shared limit\n")
+	p("left at the end. A device with less than a quarter of it left paces its polls, so the bench\n")
+	p("waits for the reset before it starts when too little is left.\n\n")
+	p("| Workload | Hours | Requests/h | Billed/h | 304s | Rate limited | Left |\n|---|---|---|---|---|---|---|\n")
 	found := false
 	for _, d := range rep.Devices {
 		a := d.API
@@ -505,11 +507,15 @@ func Markdown(rep Report) string {
 		if a.Requests > 0 {
 			share = 100 * float64(a.NotModified) / float64(a.Requests)
 		}
-		p("| %s | %.2f | %.0f | %.0f | %.0f%% | %d |\n", d.Workload, a.Hours(), float64(a.Requests)/a.Hours(),
-			float64(a.Billed)/a.Hours(), share, a.RateLimited)
+		left := ""
+		if a.RateLimit > 0 {
+			left = fmt.Sprintf("%d of %d", a.RateLeft, a.RateLimit)
+		}
+		p("| %s | %.2f | %.0f | %.0f | %.0f%% | %d | %s |\n", d.Workload, a.Hours(), float64(a.Requests)/a.Hours(),
+			float64(a.Billed)/a.Hours(), share, a.RateLimited, left)
 	}
 	if !found {
-		p("| none recorded | | | | | |\n")
+		p("| none recorded | | | | | | |\n")
 	}
 	p("\n")
 
@@ -586,13 +592,15 @@ func Markdown(rep Report) string {
 	p("  inside their setup time; the Tentmaker device has it installed in its tools folder, as a\n")
 	p("  device you use every day would. Each run records its Go, and the gate fails when the sides\n")
 	p("  differ. Node is 22 on both.\n")
-	p("- Pickup outliers: the five bench devices share one workflow `GITHUB_TOKEN`. When its hourly\n")
-	p("  budget runs low, Tentmaker stops polling until the reset, as designed, so a few runs wait\n")
-	p("  minutes (the Max column above). A device with its own token doesn't share that budget. The\n")
-	p("  gate uses the median.\n")
-	p("- Pulls: base images come from the ECR Public mirror, which can answer 429 to a busy shared IP;\n")
-	p("  a run that fails that way counts as failed, not slow. The gate leaves Docker out, so a failed\n")
-	p("  Docker run doesn't fail the bench run.\n\n")
+	p("- Pickup outliers: the five bench devices share one workflow `GITHUB_TOKEN` with every other\n")
+	p("  run in the repo. Below a quarter of its hourly limit Tentmaker paces its polls, up to a\n")
+	p("  minute apart, and with none left it waits for the reset, as designed. So the bench waits for\n")
+	p("  the reset before it starts when too little is left. A device with its own token doesn't\n")
+	p("  share that budget. The gate uses the median.\n")
+	p("- Pulls: both sides pull the digest-pinned base images from the first mirror that serves them\n")
+	p("  (mirror.gcr.io, then ECR Public, which can refuse a busy shared IP), inside the timed build.\n")
+	p("  A run that still fails that way counts as failed, not slow. The gate leaves Docker out, so a\n")
+	p("  failed Docker run doesn't fail the bench run.\n\n")
 
 	p("## Blacksmith's published claims\n\n")
 	p("We can't run Blacksmith, so these are **their claims, not our measurements**, quoted from their\n")
