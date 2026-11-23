@@ -15,10 +15,12 @@ import (
 // SIGHUP to this test process reloads the config, like systemctl reload.
 func TestSIGHUPReloads(t *testing.T) {
 	// Catch SIGHUP here too, so one sent before the daemon listens can't
-	// end the test process.
+	// end the test process. The guard stays registered after the test: a
+	// SIGHUP sent by the last resend can still be in flight when the test
+	// returns, and with no channel left Go falls back to the default
+	// action, which kills the whole test binary ("signal: hangup").
 	guard := make(chan os.Signal, 16)
 	signal.Notify(guard, syscall.SIGHUP)
-	defer signal.Stop(guard)
 	r := newRig(t, func(c *config.Config) { c.Mesh.Enabled = false })
 	r.hup = true
 	r.start()
