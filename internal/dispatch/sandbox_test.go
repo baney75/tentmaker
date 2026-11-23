@@ -458,3 +458,20 @@ func TestShutdownWaitsForASandboxStart(t *testing.T) {
 		t.Fatalf("shutdown left %v", wr.w.Sandboxes())
 	}
 }
+
+func TestSandboxExecRefusesADirOutsideTheWorkFolder(t *testing.T) {
+	r := newRig(t)
+	wr := r.addWorker("w1", 2)
+	r.tick()
+	if _, err := wr.w.StartSandbox(bg, sbxSpec("sbx-000000000001")); err != nil {
+		t.Fatal(err)
+	}
+	for _, dir := range []string{"/etc", "../.."} {
+		if _, err := wr.w.ExecSandbox(bg, "sbx-000000000001", core.SandboxExec{Argv: []string{"true"}, Dir: dir}, nil, io.Discard, io.Discard); err == nil {
+			t.Errorf("exec in %q", dir)
+		}
+	}
+	if n := len(wr.ex.Execs("sbx-000000000001")); n != 0 {
+		t.Fatalf("%d commands ran", n)
+	}
+}

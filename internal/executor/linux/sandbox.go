@@ -145,6 +145,9 @@ func (e *Executor) Exec(ctx context.Context, name string, req core.SandboxExec, 
 			return -1, errors.New("a command argument holds a NUL byte")
 		}
 	}
+	if _, err := req.WorkDir(); err != nil {
+		return -1, err
+	}
 	st, err := e.State(ctx, name)
 	if err != nil {
 		return -1, err
@@ -194,14 +197,9 @@ func (e *Executor) Exec(ctx context.Context, name string, req core.SandboxExec, 
 
 // execArgs is the systemd-run argv for one command in a sandbox.
 func (e *Executor) execArgs(name, unit string, req core.SandboxExec, limits core.Resources, uid, gid int, netns string, timeout time.Duration) []string {
-	dir := filepath.Join(e.jobDir(name), "work")
-	if req.Dir != "" {
-		if filepath.IsAbs(req.Dir) {
-			dir = filepath.Clean(req.Dir)
-		} else {
-			dir = filepath.Join(dir, req.Dir)
-		}
-	}
+	// Exec checked Dir: relative and inside the work folder.
+	rel, _ := req.WorkDir()
+	dir := filepath.Join(e.jobDir(name), "work", filepath.FromSlash(rel))
 	spec := core.ExecSpec{Kind: core.KindSandbox, Name: name, Limits: limits}
 	args := []string{"--quiet", "--no-ask-password", "--pipe", "--wait", "--collect",
 		"--unit=" + unit, "--slice=" + sandboxSlice(name),

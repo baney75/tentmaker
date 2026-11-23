@@ -11,7 +11,9 @@ import (
 	"errors"
 	"io"
 	"os"
+	"path"
 	"regexp"
+	"strings"
 	"time"
 )
 
@@ -196,12 +198,31 @@ const (
 
 // SandboxExec is one command to run in a sandbox. Argv is never a shell
 // line: the first element is the program. Dir is relative to the
-// sandbox's work folder ("" is the work folder itself). The command ends at
+// sandbox's work folder and stays inside it ("" is the work folder
+// itself; WorkDir checks it). The command ends at
 // Timeout (0 means the sandbox's remaining life).
 type SandboxExec struct {
 	Argv    []string      `json:"argv"`
 	Dir     string        `json:"dir,omitempty"`
 	Timeout time.Duration `json:"timeout,omitempty"`
+}
+
+// WorkDir checks Dir and returns it cleaned, with forward slashes: "."
+// for the work folder itself. An absolute Dir, or one that climbs out of
+// the work folder, is an error.
+func (r SandboxExec) WorkDir() (string, error) {
+	d := strings.ReplaceAll(r.Dir, `\`, "/")
+	if d == "" {
+		return ".", nil
+	}
+	if path.IsAbs(d) || (len(d) >= 2 && d[1] == ':') {
+		return "", errors.New("the folder to run in is absolute; give it relative to the sandbox's work folder")
+	}
+	c := path.Clean(d)
+	if c == ".." || strings.HasPrefix(c, "../") {
+		return "", errors.New("the folder to run in is outside the sandbox's work folder")
+	}
+	return c, nil
 }
 
 // Sandboxer is an executor that can run commands in a sandbox it started

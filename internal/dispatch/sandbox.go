@@ -300,6 +300,9 @@ func (w *Worker) ExecSandbox(ctx context.Context, name string, req core.SandboxE
 	if len(req.Argv) == 0 || req.Argv[0] == "" {
 		return -1, errors.New("no command to run")
 	}
+	if _, err := req.WorkDir(); err != nil {
+		return -1, err
+	}
 	w.mu.Lock()
 	j := w.sandboxLocked(name)
 	if j == nil {

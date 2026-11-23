@@ -400,3 +400,27 @@ func TestSandboxNameIsExact(t *testing.T) {
 		}
 	}
 }
+
+// Dir is relative to the sandbox's work folder and stays inside it.
+func TestSandboxExecDirStaysInTheWorkFolder(t *testing.T) {
+	v := newEnv(t)
+	v.installed(t)
+	if err := v.e.Start(context.Background(), sandboxSpec()); err != nil {
+		t.Fatal(err)
+	}
+	v.f.respond = running
+	streams := 0
+	streamFn = func(c Cmd, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
+		streams++
+		return 0, nil
+	}
+	defer func() { streamFn = nil }()
+	for _, dir := range []string{"/etc", "../../..", "src/../../.."} {
+		if _, err := v.e.Exec(context.Background(), sbx, core.SandboxExec{Argv: []string{"true"}, Dir: dir}, nil, io.Discard, io.Discard); err == nil {
+			t.Errorf("exec in %q", dir)
+		}
+	}
+	if streams != 0 {
+		t.Fatalf("%d commands ran", streams)
+	}
+}
