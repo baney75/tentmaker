@@ -302,7 +302,16 @@ func (e *Executor) checkStore(ctx context.Context, uid int) string {
 }
 
 // unbindLocked starts podman with no store bound and drops the record.
+// It marks a verified record unverified first: once the unbind begins,
+// podman's state no longer matches it, and an unbind that fails partway
+// must leave every later Start refusing until one succeeds.
 func (e *Executor) unbindLocked(ctx context.Context, uid, gid int) error {
+	if b, bound, err := e.boundStore(); err == nil && bound && b.Verified {
+		b.Verified, b.Boot = false, ""
+		if err := e.writeStoreRec(b); err != nil {
+			return fmt.Errorf("container store record: %v", err)
+		}
+	}
 	if err := e.startPodman(ctx, uid, gid, ""); err != nil {
 		return fmt.Errorf("podman could not start again without the container store: %v", err)
 	}

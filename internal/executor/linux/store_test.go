@@ -513,4 +513,12 @@ func TestResetErrorSaysWhetherTheStoreIsFree(t *testing.T) {
 	if err == nil || errors.As(err, &cf) {
 		t.Fatalf("reset whose unbind failed: %v, want a plain error", err)
 	}
+	// The unbind failed partway, so the bind is no longer verified: while
+	// podman still can't come back unbound, neither a job of the same repo
+	// nor a cold one starts.
+	for _, s := range []core.ExecSpec{cachedSpec("chk-app2", core.KindCheck, "acme/app"), spec("chk-cold", core.KindCheck)} {
+		if err := v2.e.Start(ctx, s); err == nil {
+			t.Fatalf("%s started after a reset whose unbind failed", s.Name)
+		}
+	}
 }
