@@ -49,6 +49,7 @@ type Executor struct {
 	results    map[string]core.CheckResult
 	resultErrs map[string]error
 	resetErr   error
+	resetHook  func() // runs at the start of each Reset, outside the lock
 	listErr    error
 	stopErr    error
 	cleanErr   error
@@ -254,6 +255,14 @@ func (e *Executor) SetResetErr(err error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.resetErr = err
+}
+
+// SetResetHook makes every Reset call f first, as if f ran while the
+// reset was under way (nil clears it).
+func (e *Executor) SetResetHook(f func()) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.resetHook = f
 }
 
 // SetListErr makes List fail with err (nil clears it).
@@ -503,6 +512,12 @@ func (e *Executor) List(ctx context.Context) ([]string, error) {
 // Reset implements core.Executor. It fails (and records a violation) when a
 // runner is still running.
 func (e *Executor) Reset(ctx context.Context) error {
+	e.mu.Lock()
+	hook := e.resetHook
+	e.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.record("Reset", "")

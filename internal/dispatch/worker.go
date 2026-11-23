@@ -75,6 +75,10 @@ type Worker struct {
 	relays       map[string]*relayEntry // relay id -> archive; memory only
 	cleanErrs    map[string]string      // leftover runner -> why its Clean failed; memory only
 	holds        int                    // Hold calls not yet released; memory only
+	// resetting is set while maybeReset runs the executors' Reset; no
+	// sandbox is admitted then, since a reset stops and removes whatever
+	// it finds. Memory only.
+	resetting bool
 
 	starts sync.WaitGroup // executor Starts in flight
 	kick   chan struct{}  // Kick: tick now instead of at the next second
@@ -713,6 +717,7 @@ func (w *Worker) maybeReset(ctx context.Context, now time.Time) {
 	due := len(w.st.Jobs) == 0 && w.st.Dirty && (w.lastResetTry.IsZero() || now.Sub(w.lastResetTry) >= resetEvery)
 	if due {
 		w.lastResetTry = now
+		w.resetting = true
 	}
 	w.mu.Unlock()
 	if !due {
@@ -736,6 +741,7 @@ func (w *Worker) maybeReset(ctx context.Context, now time.Time) {
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	w.resetting = false
 	if !ok {
 		if freed && w.st.Held != nil {
 			w.log.Info("cache hold ended: the reset failed after it released every repo's data", "repo", w.st.Held.Repo)

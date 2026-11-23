@@ -330,3 +330,38 @@ func TestNoCacheAfterASandboxUntilAReset(t *testing.T) {
 		t.Fatal("no cache after the reset")
 	}
 }
+
+// A reset stops every job namespace and removes every job folder it finds,
+// so no sandbox is admitted while one runs: it would lose its own.
+func TestNoSandboxStartsDuringAReset(t *testing.T) {
+	r := newRig(t)
+	wr := r.addWorker("w1", 4)
+	r.tick()
+	wr.w.mu.Lock()
+	wr.w.markDirtyLocked()
+	wr.w.mu.Unlock()
+	resets := wr.ex.Resets()
+	var err error
+	ran := false
+	wr.ex.SetResetHook(func() {
+		ran = true
+		_, err = wr.w.StartSandbox(bg, sbxSpec("sbx-000000000001"))
+	})
+	r.clk.Add(2 * time.Minute)
+	r.tick()
+	wr.ex.SetResetHook(nil)
+	if !ran {
+		t.Fatal("no reset ran")
+	}
+	noRoom(t, err, "resetting")
+	if v := wr.ex.Violations(); len(v) > 0 {
+		t.Fatal(v)
+	}
+	if wr.ex.Resets() != resets+1 {
+		t.Fatalf("resets %d, want %d", wr.ex.Resets(), resets+1)
+	}
+	// Once the reset is done, sandboxes start again.
+	if _, err := wr.w.StartSandbox(bg, sbxSpec("sbx-000000000002")); err != nil {
+		t.Fatal(err)
+	}
+}

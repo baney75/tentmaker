@@ -169,6 +169,10 @@ func (w *Worker) admitSandboxLocked(want core.Platform, limits core.Resources, n
 		return nil, core.Platform{}, why
 	case w.holds > 0:
 		return nil, core.Platform{}, "an update is in progress"
+	case w.resetting:
+		// Reset stops every namespace and removes every job folder it
+		// finds; a sandbox reserved now would lose its own.
+		return nil, core.Platform{}, "this device is resetting; try again in a few seconds"
 	case w.cachedRepoLocked() != nil:
 		// A cache is only as private as the least trusted job beside it,
 		// and a sandbox is trusted for no repo (cacheDecisionLocked).
