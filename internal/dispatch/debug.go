@@ -219,7 +219,7 @@ func (w *Worker) DebugExec(ctx context.Context, name, command string, timeout ti
 		return core.DebugResult{}, err
 	}
 	w.mu.Lock()
-	spec := core.DebugSpec{Limits: j.Limits, CPUCeiling: w.cpuCeilingLocked(), Timeout: timeout, MaxOutput: maxOut}
+	spec := core.DebugSpec{Limits: j.Limits, CPUCeiling: w.cpuCeilingLocked(j.Executor), Timeout: timeout, MaxOutput: maxOut}
 	w.mu.Unlock()
 	ctx, cancel := context.WithTimeout(ctx, timeout+execTimeout)
 	defer cancel()
@@ -245,7 +245,7 @@ func (w *Worker) DebugShell(ctx context.Context, name string, stdin io.Reader, s
 	}
 	w.mu.Lock()
 	left := j.KeptUntil.Sub(w.now())
-	ceiling := w.cpuCeilingLocked()
+	ceiling := w.cpuCeilingLocked(j.Executor)
 	w.mu.Unlock()
 	if left <= 0 {
 		return fmt.Errorf("%w: job %s's grace is over", ErrNotKept, name)

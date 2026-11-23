@@ -44,12 +44,15 @@ type WorkerOptions struct {
 // Worker is the device side of dispatch: it asks brokers for work and runs
 // it with its executors.
 type Worker struct {
-	o         WorkerOptions
-	log       *slog.Logger
-	now       func() time.Time
-	device    string
-	labels    []string
-	limits    core.Resources
+	o      WorkerOptions
+	log    *slog.Logger
+	now    func() time.Time
+	device string
+	labels []string
+	limits core.Resources
+	// poolCPUs is, per executor, the CPU limit its last SetPoolLimit applied;
+	// an executor whose last call failed has no entry.
+	poolCPUs  map[string]float64
 	statePath string
 
 	tickMu sync.Mutex // one Tick (or Shutdown) at a time
@@ -624,8 +627,14 @@ func (w *Worker) inUse(exName string) (core.Resources, int) {
 // current CPU limit, so a job alone gets every CPU the pool allows. job.cpus
 // stays its reservation for slot counting, and the pool's own cap (SetPoolLimit)
 // holds all jobs together. It drops with the limit (battery, a profile
-// change) for jobs that start after.
-func (w *Worker) cpuCeilingLocked() float64 {
+// change) for jobs that start after. It fails closed: when executor exec's
+// last SetPoolLimit failed or applied another limit, nothing caps the jobs
+// together, so the ceiling is 0 (job.cpus) and slots x job.cpus stays within
+// the budget.
+func (w *Worker) cpuCeilingLocked(exec string) float64 {
+	if c, ok := w.poolCPUs[exec]; !ok || c != w.decision.Limit.CPUs {
+		return 0
+	}
 	return core.CPUCeiling(w.limits, w.decision.Limit.CPUs)
 }
 
@@ -637,6 +646,16 @@ func (w *Worker) applyPoolLimits(ctx context.Context, d core.Decision) {
 		pctx, cancel := context.WithTimeout(ctx, execTimeout)
 		err := e.ex.SetPoolLimit(pctx, d.Limit, use)
 		cancel()
+		w.mu.Lock()
+		if err != nil {
+			delete(w.poolCPUs, e.name)
+		} else {
+			if w.poolCPUs == nil {
+				w.poolCPUs = map[string]float64{}
+			}
+			w.poolCPUs[e.name] = d.Limit.CPUs
+		}
+		w.mu.Unlock()
 		if err != nil {
 			w.noteErr(e.name, "set pool limit", err)
 		}
@@ -1055,7 +1074,7 @@ func (w *Worker) start(ctx context.Context, src core.WorkSource, off core.WorkOf
 	// a Hold, Pause or Shutdown since exchange counted free slots must
 	// see either this job or no start (review r2 partA sol-F1).
 	w.mu.Lock()
-	spec.CPUCeiling = w.cpuCeilingLocked()
+	spec.CPUCeiling = w.cpuCeilingLocked(e.name)
 	if w.freeLocked(w.decision, w.now()) == 0 || w.capacityLocked(e) == 0 {
 		w.dropRelaysLocked(name)
 		w.mu.Unlock()

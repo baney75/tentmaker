@@ -123,7 +123,9 @@ the job starts (never below `job.cpus`, see `core.CPUCeiling`), so a job alone o
 every CPU the pool allows; jobs that start after `Limit` drops (battery, a profile change) get the
 lower ceiling. An executor honors it only where its `SetPoolLimit` caps all jobs together:
 linux-podman does; macos-tart and windows-job have no pool-wide cap and keep each job at
-`job.cpus`, or two jobs could use twice the pool.
+`job.cpus`, or two jobs could use twice the pool. It fails closed: the worker records, per
+executor, the `Limit.CPUs` its last `SetPoolLimit` applied, and when that call failed or applied
+another limit the ceiling is 0 (`job.cpus`), since nothing then caps the jobs together.
 Safety guards (free memory, free disk) set `Admit=false` (and `Evict=true` for
 `stop_below_disk`). Busy guards (`pause_when_running`, `max_load_per_cpu`) set `Busy`, which
 lowers `boost` to `everyday` and never blocks `everyday`; a busy probe that can't be read counts
