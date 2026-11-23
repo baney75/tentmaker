@@ -46,6 +46,8 @@ concurrency:
 jobs:
   quota:
     runs-on: ubuntu-latest
+    # A failed check (checkout, Go setup) must not skip the bench's jobs.
+    continue-on-error: true
     timeout-minutes: 130
     permissions:
       contents: read

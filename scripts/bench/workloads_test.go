@@ -265,4 +265,8 @@ func TestBenchResetStopsPodnsFirst(t *testing.T) {
 	if stop < 0 || del < 0 || stop > del {
 		t.Fatalf("reset_caches must stop tentmaker-podns.service before it deletes the repo cache:\n%s", body)
 	}
+	// A failed stop must not fall through to the delete.
+	if line := body[stop:]; strings.Contains(line[:strings.Index(line, "\n")], "|| true") || !strings.Contains(body[stop:del], "die ") {
+		t.Fatalf("reset_caches must stop, not delete, when tentmaker-podns won't stop:\n%s", body)
+	}
 }

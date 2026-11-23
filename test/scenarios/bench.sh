@@ -112,7 +112,12 @@ sample() {
 reset_caches() {
 	sleep 5 # the ended job's cleanup
 	timeout 120 sudo systemctl stop tentmaker
-	timeout 60 sudo systemctl stop tentmaker-podns.service 2>/dev/null || true
+	# A unit that isn't loaded has nothing bound; one that won't stop still
+	# holds the store, so the reset stops rather than delete it under podman.
+	if sudo systemctl list-units --all --quiet tentmaker-podns.service | grep -q .; then
+		timeout 60 sudo systemctl stop tentmaker-podns.service ||
+			die "could not stop tentmaker-podns before the cache reset"
+	fi
 	sudo find /var/cache/tentmaker/repos -mindepth 1 -delete 2>/dev/null || true
 	timeout 120 sudo systemctl start tentmaker
 	wait_service_up 60 || die "the service did not come back after the cache reset"
