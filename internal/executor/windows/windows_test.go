@@ -126,11 +126,32 @@ func newFakeAPI() *fakeAPI {
 		dns: []string{"168.63.129.16", "fe80::1%4", "192.168.1.1"}, wfp: map[GUID]WFPState{}}
 }
 
-// PowerShell plays the firewall scripts netrules.go runs.
+// PowerShell plays the firewall scripts netrules.go runs. A script can be
+// several of them one after another, each starting "# tentmaker: ", as
+// one session: their outputs in order, and the first error stops it.
 func (f *fakeAPI) PowerShell(ctx context.Context, script string) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.scripts = append(f.scripts, script)
+	var sections []string
+	for _, l := range strings.SplitAfter(script, "\n") {
+		if strings.HasPrefix(l, "# tentmaker: ") || len(sections) == 0 {
+			sections = append(sections, "")
+		}
+		sections[len(sections)-1] += l
+	}
+	var out strings.Builder
+	for _, sec := range sections {
+		s, err := f.psSection(sec)
+		out.WriteString(s)
+		if err != nil {
+			return out.String(), err
+		}
+	}
+	return out.String(), nil
+}
+
+func (f *fakeAPI) psSection(script string) (string, error) {
 	first, _, _ := strings.Cut(script, "\n")
 	f.calls = append(f.calls, "PowerShell "+first)
 	switch first {

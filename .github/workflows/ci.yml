@@ -112,12 +112,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # No module or build cache: restoring the test jobs' shared Windows
-      # cache took longer (26 s median) than building one binary cold.
       - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version-file: go.mod
-          cache: false
       - name: build tentmaker.exe
         shell: bash
         run: CGO_ENABLED=0 go build -ldflags "-X github.com/baney75/tentmaker/internal/cli.Version=0.0.0-ci" -o "$RUNNER_TEMP/tentmaker.exe" ./cmd/tentmaker

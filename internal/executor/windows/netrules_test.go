@@ -303,8 +303,13 @@ func TestInstallAddsFirewallRules(t *testing.T) {
 			installs = append(installs, s)
 		}
 	}
-	if len(installs) != 1 || installs[0] != FirewallScript(p) {
+	// The check runs in the same session as the writes, after them.
+	if len(installs) != 1 || installs[0] != FirewallScript(p)+checkFirewallScript {
 		t.Fatalf("install scripts %d:\n%s", len(installs), strings.Join(installs, "\n"))
+	}
+	// Two PowerShell starts in all: the DNS servers, then write and check.
+	if n := len(v.api.scripts); n != 2 {
+		t.Errorf("install started PowerShell %d times, want 2", n)
 	}
 	if len(v.api.fw) != len(FirewallRules(p)) {
 		t.Fatalf("rules after install: %v", v.api.fw)

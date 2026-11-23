@@ -374,27 +374,29 @@ func (e *Executor) policy(ctx context.Context, sid string) (NetPolicy, error) {
 	return NetPolicy{SID: sid, Resolvers: parseAddrs(out, ""), AllowLAN: e.o.AllowLAN}, nil
 }
 
-// writeNet writes the firewall rules and the WFP filters for this host.
+// writeNet writes the firewall rules and the WFP filters for this host,
+// then runs checkNet's whole check on them. The check script runs in the
+// same PowerShell session, after the writes (a failed write stops the
+// script before it): each PowerShell start loads the NetSecurity module,
+// which takes seconds, and the check reads the same rules either way.
 func (e *Executor) writeNet(ctx context.Context, sid string) error {
 	p, err := e.policy(ctx, sid)
 	if err != nil {
 		return err
 	}
-	if _, err := e.api.PowerShell(ctx, FirewallScript(p)); err != nil {
-		return fmt.Errorf("add the Windows Firewall rules for CI jobs: %w", err)
+	out, err := e.api.PowerShell(ctx, FirewallScript(p)+checkFirewallScript)
+	if err != nil {
+		return fmt.Errorf("add and read back the Windows Firewall rules for CI jobs: %w", err)
 	}
 	if err := e.api.SetWFP(WFPFilters(sid, p.Resolvers)); err != nil {
 		return fmt.Errorf("add the WFP filters that keep CI jobs off this host: %w", err)
 	}
-	return nil
+	return e.checkNetOutput(sid, out)
 }
 
 // installNet writes the rules for the runner user and checks them.
 func (e *Executor) installNet(ctx context.Context, sid string) error {
-	if err := e.writeNet(ctx, sid); err != nil {
-		return err
-	}
-	return e.checkNet(ctx, sid)
+	return e.writeNet(ctx, sid)
 }
 
 // ensureNet is Start's gate: the rules must be in force. When they are
@@ -407,10 +409,7 @@ func (e *Executor) ensureNet(ctx context.Context, sid string) error {
 		return err
 	}
 	e.log.Warn("updating the network rules for CI jobs", "executor", Name, "why", trunc(stale.what, 500))
-	if err := e.writeNet(ctx, sid); err != nil {
-		return err
-	}
-	return e.checkNet(ctx, sid)
+	return e.writeNet(ctx, sid)
 }
 
 // checkNet fails unless Windows Firewall is on for every profile, the
@@ -424,6 +423,11 @@ func (e *Executor) checkNet(ctx context.Context, sid string) error {
 	if err != nil {
 		return fmt.Errorf("read the Windows Firewall rules: %w", err)
 	}
+	return e.checkNetOutput(sid, out)
+}
+
+// checkNetOutput is checkNet on the output of checkFirewallScript.
+func (e *Executor) checkNetOutput(sid, out string) error {
 	profiles := map[string]bool{}
 	rules := map[string]string{}
 	var problems []string

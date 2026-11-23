@@ -110,7 +110,7 @@ run_json() {
 	prefix="$work/p$n/bin"
 	export TM_SETUP_LOG="$work/setup$n.log" TM_SUDO_LOG="$work/sudo$n.log"
 	rc=0
-	out=$(TENTMAKER_DOWNLOAD_BASE="$base" TENTMAKER_SUDO="$fakesudo" "$sh_" "$installer" --prefix "$prefix" "$@" </dev/null 2>/dev/null) || rc=$?
+	out=$(SSH_AUTH_SOCK=${TM_AGENT:-} TENTMAKER_DOWNLOAD_BASE="$base" TENTMAKER_SUDO="$fakesudo" "$sh_" "$installer" --prefix "$prefix" "$@" </dev/null 2>/dev/null) || rc=$?
 }
 
 # one_line TEXT: TEXT is exactly one line.
@@ -154,10 +154,12 @@ check_shell() {
 			TM_WRAP="setsid -w" run "$s" "$good" --yes -- --repo owner/name
 			if [ $rc = 0 ] && [ -s "$TM_SETUP_LOG" ]; then ok "$s: setup runs with no controlling terminal"; else bad "$s: no ctty rc=$rc setup=[$(cat "$TM_SETUP_LOG" 2>/dev/null)]: $out"; fi
 		fi
+		# The log joins sudo's arguments with spaces, so setup must also have
+		# run: zsh once passed "env SSH_AUTH_SOCK=..." to sudo as one word.
 		TM_AGENT=/tmp/agent.sock run "$s" "$good" --yes -- --repo owner/name
-		case $(cat "$TM_SUDO_LOG" 2>/dev/null) in
-			"-n env SSH_AUTH_SOCK=/tmp/agent.sock $prefix/tentmaker setup --yes"*) ok "$s: keeps the ssh-agent socket through sudo" ;;
-			*) bad "$s: agent socket not passed: sudo called as [$(cat "$TM_SUDO_LOG" 2>/dev/null)]" ;;
+		case $rc:$(cat "$TM_SUDO_LOG" 2>/dev/null) in
+			"0:-n env SSH_AUTH_SOCK=/tmp/agent.sock $prefix/tentmaker setup --yes"*) [ -s "$TM_SETUP_LOG" ] && ok "$s: keeps the ssh-agent socket through sudo" || bad "$s: agent socket: setup did not run: $out" ;;
+			*) bad "$s: agent socket not passed: rc=$rc, sudo called as [$(cat "$TM_SUDO_LOG" 2>/dev/null)]: $out" ;;
 		esac
 	fi
 

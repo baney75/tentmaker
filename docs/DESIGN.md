@@ -213,7 +213,9 @@ Every executor implements `core.Executor`. Constructors take an `Options` with `
 Options, purge bool) error` that set up the host (run as root/Administrator by `tentmaker
 setup`), idempotent and safe to rerun. `Options.Phase func(name string)`, when set, is called as
 `Install` starts each of its phases; setup uses it for the `sandbox.<phase>` rows of its
-`timings`.
+`timings`. On Linux and Windows the actions/runner download and extract run beside the phases
+after `runner`, and `Install` waits for them in `runner.wait`, before it returns; an error in
+either stops `Install` with the same error as before.
 
 - **linux-podman** (port of `fleet-ci-job`, `install.sh`): user `tentmaker-runner` with no sudo
   and no docker group; a root-owned runner template (actions/runner pinned version and sha256);
@@ -554,7 +556,9 @@ physical LAN only, never what the tailnet routes.
     is off, no rules, no filters, or a rule or filter for another SID, `allow_lan` or version
     refuses the job. The right ones with a rule or filter missing or extra (a new DNS server, or
     one deleted by hand) are stale: `Start` writes the rules and filters again and checks once
-    more. When WFP refuses the filters, setup fails and so does `Start`.
+    more. When WFP refuses the filters, setup fails and so does `Start`. Writing the rules runs
+    the same check script in the same PowerShell call, after the writes, so setup and a rewrite
+    start PowerShell (seconds, with the NetSecurity module) once less; the check is unchanged.
 - macOS: the Softnet rules already cover all of it (Softnet's default drops non-global IPv4 and all
   IPv6); `allow_lan` does nothing there.
 

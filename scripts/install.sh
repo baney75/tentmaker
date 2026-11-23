@@ -318,9 +318,20 @@ main() {
 			# setup --pr can push over an SSH origin.
 			agent=
 			if [ -n "${SSH_AUTH_SOCK:-}" ]; then agent="SSH_AUTH_SOCK=$SSH_AUTH_SOCK"; fi
+			# sudo_setup [-n] ARGS...: setup through sudo, with the agent
+			# socket. Not ${agent:+env "$agent"}: zsh keeps that one word.
+			sudo_setup() {
+				tm_n=
+				if [ "$1" = -n ]; then tm_n=-n; shift; fi
+				if [ -n "$agent" ]; then
+					"$sudo_cmd" ${tm_n:+"$tm_n"} env "$agent" "$bin" setup --yes "$@"
+				else
+					"$sudo_cmd" ${tm_n:+"$tm_n"} "$bin" setup --yes "$@"
+				fi
+			}
 			if [ -t 0 ]; then
 				tm_setup_ran=1
-				"$sudo_cmd" ${agent:+env "$agent"} "$bin" setup --yes "$@" || die "setup failed (exit $?)" "fix the error above, then run: $setup_cmd --yes$(quote_args "$@")"
+				sudo_setup "$@" || die "setup failed (exit $?)" "fix the error above, then run: $setup_cmd --yes$(quote_args "$@")"
 			else
 				# No terminal on stdin (curl | sh). A person at a terminal
 				# types the sudo password on /dev/tty; an agent with no
@@ -335,7 +346,7 @@ main() {
 				# only a setup that ran printed a JSON line.
 				tm_rc=0
 				"$sudo_cmd" -n true 2>/dev/null && tm_setup_ran=1
-				"$sudo_cmd" -n ${agent:+env "$agent"} "$bin" setup --yes "$@" || tm_rc=$?
+				sudo_setup -n "$@" || tm_rc=$?
 				[ "$tm_rc" = 0 ] ||
 					die "setup did not run: sudo needs a password or setup failed (exit $tm_rc)" \
 						"run it yourself: $setup_cmd --yes$(quote_args "$@")"
