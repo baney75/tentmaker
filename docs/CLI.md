@@ -375,3 +375,5 @@ MCP server process to run as root/Administrator; otherwise they return an error 
 The run history tools are `runs`, `logs`, `rerun` (mutating), `stats`, `wait_for_run`,
 `tests`, `flaky`, `why_failed` and `debug_exec` (mutating); docs/agents.md has their arguments
 and the agent loop.
+The sandbox tools are the exception: they go through the control API and follow its sandbox
+access rules, so they work as any account listed in `[sandbox] users`.

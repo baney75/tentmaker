@@ -887,12 +887,13 @@ only regular files and folders, never links, nothing outside the destination, at
 Errors are `{"error", "fix"}` with a status: 400 bad request, 403 not allowed, 404 no such
 sandbox, 409 no room or not running, 501 not supported, 503 no worker.
 
-**CLI.** `tentmaker sandbox create|exec|cp|ls|rm` calls the API. `create --copy DIR` sends
-DIR's working tree: in a Git work tree the files `git ls-files -z --cached --others
---exclude-standard` lists, read from disk (so uncommitted changes and untracked, non-ignored
-files, and no `.git`); elsewhere the whole folder. A failed copy removes the sandbox. `exec`
-streams and exits with the command's code; with `--json` it keeps up to 1 MiB of each stream and
-says when it cut one.
+**CLI and MCP.** `tentmaker sandbox create|exec|cp|ls|rm` and the MCP tools `sandbox_create`,
+`sandbox_exec`, `sandbox_cp`, `sandbox_ls`, `sandbox_rm` call the same functions. `create
+--copy DIR` sends DIR's working tree: in a Git work tree the files `git ls-files -z --cached
+--others --exclude-standard` lists, read from disk (so uncommitted changes and untracked,
+non-ignored files, and no `.git`); elsewhere the whole folder. A failed copy removes the
+sandbox. `exec` streams and exits with the command's code; with `--json` (and over MCP) it keeps
+up to 1 MiB of each stream and says when it cut one.
 
 ## Checks mode (internal/checks, internal/forge/gitlab)
 
