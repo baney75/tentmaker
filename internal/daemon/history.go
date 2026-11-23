@@ -15,6 +15,7 @@ import (
 	"github.com/baney75/tentmaker/internal/control"
 	"github.com/baney75/tentmaker/internal/core"
 	"github.com/baney75/tentmaker/internal/mesh"
+	"github.com/baney75/tentmaker/internal/observe"
 	"github.com/baney75/tentmaker/internal/runs"
 	"github.com/baney75/tentmaker/internal/testresults"
 )
@@ -27,6 +28,12 @@ type history struct {
 	log    *slog.Logger
 	stop   context.CancelFunc
 	device string
+	// tally counts this device's jobs for /metrics; nil counts nothing.
+	tally *observe.Tally
+	// readsResults says whether a broker on this device may still send a
+	// forge result for a job of (forge, repo); nil means none will.
+	readsResults func(forge, repo string) bool
+	now          func() time.Time
 
 	mu sync.Mutex // one record update at a time; early below
 	// early holds forge results for this device's jobs that came before
@@ -43,7 +50,8 @@ func (d *Daemon) newHistory(cfg config.Config, log *slog.Logger) *history {
 		max = config.DefaultHistoryMax
 	}
 	h := &history{store: runs.Open(filepath.Join(cfg.StateDir, "runs"), max), log: log, device: cfg.Device,
-		early: map[string]runs.ForgeReport{}}
+		early: map[string]runs.ForgeReport{}, tally: d.tally, now: d.o.Now,
+		readsResults: func(forge, repo string) bool { return d.currentBroker().ReadsResults(forge, repo) }}
 	if len(cfg.Alerts) > 0 {
 		var resolve func(string) (string, error)
 		if d.o.Secrets != nil {
@@ -72,9 +80,11 @@ func (h *history) close() {
 // JUnit reports the executor found.
 func (h *history) JobEnded(rec runs.Record, log []byte, tests *runs.TestResults) {
 	h.mu.Lock()
+	forged := false
 	if rep, ok := h.early[rec.ID]; ok {
 		delete(h.early, rec.ID)
 		rec.ApplyForge(rep)
+		forged = true
 		if rep.Log != nil {
 			log = rep.Log
 		}
@@ -84,8 +94,24 @@ func (h *history) JobEnded(rec runs.Record, log []byte, tests *runs.TestResults)
 	if r, ok := h.store.Get(rec.ID); ok {
 		rec = r
 	}
+	h.tally.Ended(rec, forged || !h.awaitsForge(rec), h.clock())
 	h.mu.Unlock()
 	h.alerts.JobEnded(rec)
+}
+
+// awaitsForge reports whether a forge result may still come for rec, a
+// job this device ran: a runner job of a repo a broker on this device
+// reads results for. A peer broker's result stays on the peer (the pool
+// view merges it), so it never changes this device's record.
+func (h *history) awaitsForge(rec runs.Record) bool {
+	return rec.Kind == core.KindRunner && h.readsResults != nil && h.readsResults(rec.Forge, rec.Repo)
+}
+
+func (h *history) clock() time.Time {
+	if h.now != nil {
+		return h.now()
+	}
+	return time.Now()
 }
 
 // putTests keeps rec's test results: the executor's, plus what go test
@@ -124,6 +150,9 @@ func (h *history) ForgeReport(rep runs.ForgeReport) {
 	if ok {
 		prev = rec.Conclusion
 		rec.ApplyForge(rep)
+		if rec.Device == h.device {
+			h.tally.Forge(rec)
+		}
 	} else {
 		rec = rep.Record()
 	}
@@ -176,16 +205,18 @@ func (p historyProxy) ForgeReport(rep runs.ForgeReport) {
 // localRuns answers q from this device alone.
 func (d *Daemon) localRuns(q runs.Query) runs.Answer {
 	var lists [][]runs.Record
+	var from time.Time
 	if h := d.currentHistory(); h != nil {
 		lists = append(lists, h.store.List(q))
+		from = h.store.HistoryFrom()
 		if err := h.store.Err(); err != nil {
 			// Say so, but don't fail the pool view over one file.
 			return runs.Answer{Records: runs.Apply(runs.Merge(append(lists, d.runningRecords())...), q),
-				Errors: []string{d.device() + ": run history: " + err.Error()}}
+				Errors: []string{d.device() + ": run history: " + err.Error()}, HistoryFrom: from}
 		}
 	}
 	lists = append(lists, d.runningRecords())
-	a := runs.Answer{Records: runs.Apply(runs.Merge(lists...), q)}
+	a := runs.Answer{Records: runs.Apply(runs.Merge(lists...), q), HistoryFrom: from}
 	if b := d.currentBroker(); b != nil && q.Repo != "" {
 		a.Queued = b.Queued(q.Repo, q.SHA, q.RunID)
 	}

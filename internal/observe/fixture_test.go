@@ -103,18 +103,46 @@ func fixtureRuns() []runs.Record {
 	return []runs.Record{ok, cold, fail, slow, old, pending, lap, run1, run2, run3}
 }
 
+// fixtureTally is studio's counters as its daemon fed them: tm-studio-1
+// to 4 ended with a final result, tm-studio-6 waits for the forge's. The
+// old job ended before the daemon started and the laptop's ran elsewhere,
+// so the daemon never fed them.
+func fixtureTally() *Tally {
+	t := NewTally(10 * time.Minute)
+	for _, r := range fixtureRuns() {
+		switch r.ID {
+		case "tm-studio-1", "tm-studio-2", "tm-studio-3", "tm-studio-4":
+			t.Ended(r, true, r.EndedAt)
+		case "tm-studio-6":
+			t.Ended(r, false, r.EndedAt)
+		}
+	}
+	return t
+}
+
 func fixtureMetrics() MetricsInput {
-	return MetricsInput{Now: fixtureNow, Self: studio(), Runs: fixtureRuns()}
+	return MetricsInput{Now: fixtureNow, Self: studio(), Jobs: fixtureTally().Counts(fixtureNow)}
+}
+
+func fixtureFailures() []runs.Record {
+	var out []runs.Record
+	for _, r := range fixtureRuns() {
+		if r.Failed() {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 func fixturePage() PageInput {
 	return PageInput{
-		Now: fixtureNow, Self: "studio", Pool: "home",
+		Now: fixtureNow, Pool: "home",
 		Devices: []mesh.DeviceStatus{
 			{Device: "laptop", Version: "0.4.0", Status: rawStatus(laptop())},
 			{Device: "studio", Self: true, Broker: true, Version: "0.4.0", Status: rawStatus(studio())},
 			{Device: "nas", Version: "0.3.9", Error: "no answer in 2s"},
 		},
-		Runs: fixtureRuns(),
+		Runs:     fixtureRuns(),
+		Failures: fixtureFailures(),
 	}
 }

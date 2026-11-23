@@ -45,10 +45,37 @@ type reportReq struct {
 
 const (
 	reportEvery = 10 * time.Second // between reads of one job
-	reportTries = 12               // about two minutes, runs.ForgeGrace
+	reportTries = 12               // about two minutes when each read is quick, runs.ForgeGrace
 	logTries    = 3                // reads of a completed job whose log isn't up yet
 	maxReports  = 256
 )
+
+// ReportBudget is the longest after a runner job ends that this broker may
+// still hand its forge result to Reports: the worker's report of the end
+// can take workerSilence, settling which job the runner took
+// identifyTimeout, and each of reportTries reads forgeTimeout plus
+// reportEvery, with a minute for the broker's own ticks. After it the
+// record keeps what the runner's diag logs said.
+const ReportBudget = workerSilence + identifyTimeout + reportTries*(forgeTimeout+reportEvery) + time.Minute
+
+// ReadsResults reports whether this broker reads forge results for jobs of
+// repo on forge, so a job of it that ended may still get one.
+func (b *Broker) ReadsResults(forge, repo string) bool {
+	if b == nil || b.o.Reports == nil {
+		return false
+	}
+	if _, ok := b.o.Forges[forge].(core.JobReporter); !ok {
+		return false
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for _, r := range b.repos {
+		if r.forge == forge && strings.EqualFold(r.cfg.Name, repo) {
+			return true
+		}
+	}
+	return false
+}
 
 // queueReportLocked queues the forge read for a runner job that ended
 // identified on a forge that can report it.

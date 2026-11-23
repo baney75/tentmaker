@@ -179,7 +179,7 @@ func (n *Node) PoolRuns(ctx context.Context, q runs.Query) (runs.Answer, error) 
 		return runs.Answer{}, err
 	}
 	lists := [][]runs.Record{self.Records}
-	out := runs.Answer{Queued: self.Queued, Errors: self.Errors}
+	out := runs.Answer{Queued: self.Queued, Errors: self.Errors, HistoryFrom: self.HistoryFrom}
 	seenQ := map[string]bool{}
 	for _, s := range self.Queued {
 		seenQ[s] = true
@@ -187,6 +187,7 @@ func (n *Node) PoolRuns(ctx context.Context, q runs.Query) (runs.Answer, error) 
 	for _, a := range answers {
 		lists = append(lists, a.Records)
 		out.Errors = append(out.Errors, a.Errors...)
+		out.HistoryFrom = runs.Later(out.HistoryFrom, a.HistoryFrom)
 		for _, s := range a.Queued {
 			if !seenQ[s] {
 				seenQ[s] = true

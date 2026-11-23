@@ -26,6 +26,7 @@ import (
 	"github.com/baney75/tentmaker/internal/executor"
 	"github.com/baney75/tentmaker/internal/guards"
 	"github.com/baney75/tentmaker/internal/mesh"
+	"github.com/baney75/tentmaker/internal/observe"
 	"github.com/baney75/tentmaker/internal/power"
 	"github.com/baney75/tentmaker/internal/secrets"
 	"github.com/baney75/tentmaker/internal/service"
@@ -97,8 +98,12 @@ type Options struct {
 	ControlAddr string // default control.DefaultAddr; "-" serves no control API
 	// Identify names each control API caller; default
 	// control.HostIdentify(RunnerUser). A CI job gets 403.
-	Identify  control.Identify
-	RelayAddr string // default control.DefaultRelayAddr; "-" serves no relay (check offers are declined)
+	Identify control.Identify
+	// MetricsIdentify names each caller of the loopback metrics listener
+	// (config metrics_listen); default control.TCPIdentify(RunnerUser). A
+	// CI job gets 403.
+	MetricsIdentify control.Identify
+	RelayAddr       string // default control.DefaultRelayAddr; "-" serves no relay (check offers are declined)
 	// CacheAddr is where the GitHub Actions cache service listens (Linux
 	// runner jobs only); default control.DefaultCacheAddr, "-" serves none
 	// and jobs use GitHub's cache.
@@ -160,6 +165,9 @@ func (o *Options) defaults() {
 	}
 	if o.Identify == nil {
 		o.Identify = control.HostIdentify(RunnerUser)
+	}
+	if o.MetricsIdentify == nil {
+		o.MetricsIdentify = control.TCPIdentify(RunnerUser)
 	}
 	if o.RelayAddr == "" {
 		o.RelayAddr = control.DefaultRelayAddr
@@ -303,10 +311,14 @@ type Daemon struct {
 
 	wComp, bComp, nComp *comp
 
-	guard    updateGuard
-	ctlAddr  string
-	relAddr  string
-	actions  *actionscache.Service // nil when CacheAddr is "-"
+	guard   updateGuard
+	ctlAddr string
+	relAddr string
+	metAddr string
+	actions *actionscache.Service // nil when CacheAddr is "-"
+	// tally keeps the job counters /metrics exports. It lives as long as
+	// the daemon, so a rebuilt history (apply) never resets them.
+	tally    *observe.Tally
 	restart  chan struct{}
 	exitErr  error
 	exitOnce sync.Once
@@ -326,6 +338,7 @@ func New(o Options) *Daemon {
 		keys:      map[string]string{},
 		restart:   make(chan struct{}),
 		guard:     updateGuard{fs: osStateFS{}, dir: o.Paths.State},
+		tally:     observe.NewTally(dispatch.ReportBudget),
 	}
 	// Only the Linux executor can name a job by its connection.
 	if o.CacheAddr != "-" && runtime.GOOS == "linux" {
@@ -448,6 +461,10 @@ func (d *Daemon) Run(ctx context.Context) error {
 	if d.actions != nil {
 		cache = d.startCache(runCtx)
 	}
+	var met *comp
+	if addr := d.Config().MetricsListen; addr != "" {
+		met = d.startMetrics(runCtx, addr)
+	}
 	loops := startComp(runCtx, d.log, "loops", func(ctx context.Context) error {
 		var wg sync.WaitGroup
 		wg.Add(3)
@@ -470,6 +487,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	}
 	loops.stop()
 	d.shutdown()
+	met.stop()
 	cache.stop()
 	rel.stop()
 	ctl.stop()
@@ -498,6 +516,33 @@ func (d *Daemon) startControl(ctx context.Context) *comp {
 	d.mu.Unlock()
 	srv := control.NewServer(d.Handler(), tok, d.o.Identify, d.log)
 	return startComp(ctx, d.log, "control", func(ctx context.Context) error { return srv.Serve(ctx, ln) })
+}
+
+// startMetrics serves GET /metrics alone on the loopback address addr, for
+// a Prometheus on this device (config metrics_listen). It names each caller
+// from the connection and refuses CI jobs; a job's sandbox reaches no host
+// loopback port but the relay's and the Actions cache's anyway.
+func (d *Daemon) startMetrics(ctx context.Context, addr string) *comp {
+	ln, err := control.Listen(addr)
+	if err != nil {
+		d.setProblems("metrics", []core.Problem{{Check: "metrics", What: "metrics not served on " + addr + ": " + err.Error(),
+			Fix: "stop whatever uses " + addr + " or change metrics_listen, then restart the service"}})
+		d.log.Error("metrics listener not served", "error", err)
+		return nil
+	}
+	d.mu.Lock()
+	d.metAddr = ln.Addr().String()
+	d.mu.Unlock()
+	srv := control.NewMetricsServer(d.LocalViews(), d.o.MetricsIdentify, d.log)
+	return startComp(ctx, d.log, "metrics", func(ctx context.Context) error { return srv.Serve(ctx, ln) })
+}
+
+// MetricsAddress is where the loopback metrics listener listens ("" when
+// it doesn't).
+func (d *Daemon) MetricsAddress() string {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.metAddr
 }
 
 // startRelay serves the source archive relay on its own loopback listener.
@@ -637,11 +682,11 @@ func (d *Daemon) apply(cfg config.Config) {
 				src = brokerProxy{d}
 			}
 			n := mesh.New(mesh.Options{
-				Device: cfg.Device, Pool: cfg.Mesh.Pool, Port: cfg.Mesh.Port, Members: cfg.Mesh.Members,
+				Device: cfg.Device, Pool: cfg.Mesh.Pool, Port: cfg.Mesh.Port, Members: cfg.Mesh.Members, Viewers: cfg.Mesh.Viewers,
 				Tailscale: d.o.Tailscale, Broker: src, Version: d.o.Version,
 				Status: func() any { return d.Status(context.Background()) },
 				Runs:   runsSource{d},
-				Views:  d.Views(),
+				Views:  d.LocalViews(),
 				Log:    log,
 			})
 			nc := startComp(d.runCtx, log, "mesh", n.Run)
@@ -1162,7 +1207,7 @@ func (d *Daemon) Doctor(ctx context.Context) Report {
 	d.mu.RLock()
 	cfg, cfgErr, execs, forges := d.cfg, d.cfgErr, d.execs, d.forges
 	var extra []core.Problem
-	for _, k := range []string{"state", "control"} {
+	for _, k := range []string{"state", "control", "metrics"} {
 		extra = append(extra, d.problems[k]...)
 	}
 	eps := d.problems["executor"]

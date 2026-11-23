@@ -27,6 +27,7 @@ Forge tokens never go in this file. They live in the OS secret store; set them w
 | `state_dir` | string | per OS: `/var/lib/tentmaker`, `/Library/Application Support/Tentmaker/state`, `%ProgramData%\Tentmaker\state` | Runner state, job directories and the control token. |
 | `cache_dir` | string | per OS: `/var/cache/tentmaker`, `/Library/Caches/Tentmaker`, `%ProgramData%\Tentmaker\cache` | Downloads such as runner archives, VM images and binaries for other platforms. |
 | `history_max` | int | `2000` | How many job records (and their log tails, up to 512 KiB each) this device keeps in `state_dir/runs`. The oldest go first. `0` means the default. |
+| `metrics_listen` | string | `""` (off) | A loopback IP and port, like `"127.0.0.1:9437"`, where this device serves `GET /metrics` alone, for a Prometheus server on this device. CI jobs and callers it can't name get 403. Linux and Windows; on macOS it refuses every caller, so scrape the peer API instead. |
 | `cache_max` | size | `10GiB` | The most the per-repo build caches under `cache_dir/repos` may hold (Linux). Past it, whole repos go, least recently used first, never one with a job on the device. `0` turns the caches off. |
 
 ## `[budget]`
@@ -149,6 +150,7 @@ How devices on one tailnet form a pool.
 | `mesh.pool` | string | `"default"` | Devices with the same pool name share work. |
 | `mesh.port` | int | `7433` | The peer API port, served on tailnet addresses only. 0 to 65535. |
 | `mesh.members` | list of strings | `[]` | Tailnet logins served besides your own. Devices owned by the same tailnet user are always served. Add `"tagged-devices"` to serve tagged devices. |
+| `mesh.viewers` | list of strings | `[]` | Tailnet nodes that may read this device's `/metrics` and status page (`/` and `/status`) on the peer API and nothing else: `"tag:monitoring"`, a MagicDNS name like `"grafana"`, or a stable node ID. They get no work, runs, logs or control. |
 
 ## `[[alerts]]`
 

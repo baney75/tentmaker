@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/baney75/tentmaker/internal/core"
 	"github.com/baney75/tentmaker/internal/dispatch"
@@ -268,9 +269,10 @@ func TestMetricsFormatAndValues(t *testing.T) {
 		{"tentmaker_forge_api_rate_remaining", []string{"forge", "github"}, 4180},
 		{"tentmaker_forge_api_rate_limit", []string{"forge", "github"}, 5000},
 		{"tentmaker_forge_api_rate_reset_timestamp_seconds", []string{"forge", "github"}, float64(fixtureNow.Unix() + 37*60)},
-		// Ended since the daemon started, on studio, with a forge result:
+		// Counted since the daemon started, on studio, with a final result:
 		// tm-studio-1 to 4. Not tm-studio-5 (before the start), 6 (waiting
 		// for the forge) or the laptop's jobs.
+		{"tentmaker_jobs_result_pending", nil, 1},
 		{"tentmaker_jobs_finished_total", []string{"result", "success"}, 2},
 		{"tentmaker_jobs_finished_total", []string{"result", "failure"}, 1},
 		{"tentmaker_jobs_finished_total", []string{"result", "cancelled"}, 1},
@@ -437,7 +439,7 @@ func TestPageContent(t *testing.T) {
 }
 
 func TestPageEmptyPool(t *testing.T) {
-	page := renderPage(t, PageInput{Now: fixtureNow, Self: "solo"})
+	page := renderPage(t, PageInput{Now: fixtureNow})
 	for _, want := range []string{"No devices answered.", "Nothing running."} {
 		if !strings.Contains(page, want) {
 			t.Errorf("page lacks %q", want)
@@ -503,10 +505,16 @@ func TestNoSecretsInEitherOutput(t *testing.T) {
 	rs[0].Device, rs[2].Device = "studio", "studio"
 	rs[0].Conclusion = leak
 
-	metrics := string(Metrics(MetricsInput{Now: fixtureNow, Self: s, Runs: rs}))
+	tally := NewTally(time.Minute)
+	for _, r := range rs {
+		if r.Device == "studio" {
+			tally.Ended(r, true, fixtureNow)
+		}
+	}
+	metrics := string(Metrics(MetricsInput{Now: fixtureNow, Self: s, Jobs: tally.Counts(fixtureNow)}))
 	parseText(t, metrics)
 	page := renderPage(t, PageInput{
-		Now: fixtureNow, Self: leak, Pool: leak, Runs: rs, Errors: []string{leak},
+		Now: fixtureNow, Pool: leak, Runs: rs, Failures: rs, Errors: []string{leak},
 		Devices: []mesh.DeviceStatus{
 			{Device: "studio", Self: true, Broker: true, Version: leak, Status: rawStatus(s)},
 			{Device: leak, Version: leak, Error: leak},

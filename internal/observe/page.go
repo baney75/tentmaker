@@ -56,7 +56,6 @@ type pageData struct {
 	Mark    template.HTML
 	Every   int
 	Pool    string
-	Self    string
 	Updated string
 	Stamp   string
 
@@ -66,8 +65,11 @@ type pageData struct {
 	Jobs     []jobView
 	Queue    []queueView
 	Failures []jobView
-	APIs     []apiView
-	Errors   []string
+	// Kept says how far back the history the failure count reads goes,
+	// when history_max cut it inside the last 24 hours.
+	Kept   string
+	APIs   []apiView
+	Errors []string
 }
 
 type deviceView struct {
@@ -96,7 +98,7 @@ func Page(in PageInput) ([]byte, error) {
 	now := in.Now
 	p := pageData{
 		CSS: template.CSS(pageStyle), JS: template.JS(pageScript), Icon: iconURL, Mark: template.HTML(markSVG),
-		Every: RefreshSeconds, Pool: clean(in.Pool, 80), Self: clean(in.Self, 80),
+		Every: RefreshSeconds, Pool: clean(in.Pool, 80),
 		Updated: now.UTC().Format("15:04:05 UTC"), Stamp: now.UTC().Format(time.RFC3339),
 	}
 	queued := map[string]queueView{}
@@ -183,22 +185,29 @@ func Page(in PageInput) ([]byte, error) {
 	recs := append([]runs.Record(nil), in.Runs...)
 	runs.SortNewest(recs)
 	for _, r := range recs {
-		switch {
-		case r.Conclusion == runs.Running:
+		if r.Conclusion == runs.Running {
 			j := job(r, now)
 			j.Age = "running " + ago(now, r.StartedAt)
 			p.Jobs = append(p.Jobs, j)
-		case r.Failed():
-			if now.Sub(r.EndedAt) < 24*time.Hour {
-				p.Failed++
-			}
-			if len(p.Failures) < MaxFailures {
-				j := job(r, now)
-				j.Age = ago(now, r.EndedAt) + " ago"
-				j.At = r.EndedAt.UTC().Format(time.RFC3339)
-				p.Failures = append(p.Failures, j)
-			}
 		}
+	}
+	fails := runs.Merge(in.Failures)
+	for _, r := range fails {
+		if !r.Failed() {
+			continue
+		}
+		if now.Sub(r.EndedAt) < 24*time.Hour {
+			p.Failed++
+		}
+		if len(p.Failures) < MaxFailures {
+			j := job(r, now)
+			j.Age = ago(now, r.EndedAt) + " ago"
+			j.At = r.EndedAt.UTC().Format(time.RFC3339)
+			p.Failures = append(p.Failures, j)
+		}
+	}
+	if h := in.HistoryFrom; !h.IsZero() && now.Sub(h) < 24*time.Hour {
+		p.Kept = ago(now, h)
 	}
 	for _, e := range in.Errors {
 		p.Errors = append(p.Errors, clean(e, 200))

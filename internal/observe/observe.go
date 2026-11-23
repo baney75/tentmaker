@@ -1,12 +1,15 @@
 // Package observe renders a device's Prometheus metrics and the pool's
-// read-only status page. It keeps no counters of its own: everything comes
-// from the status `tentmaker status --json` prints (the daemon's Status, a
-// peer's as the pool view carries it) and the device's run history.
+// read-only status page. The gauges come from the status `tentmaker status
+// --json` prints (the daemon's Status, a peer's as the pool view carries
+// it); the job counters from a Tally the daemon feeds as jobs end, so they
+// never follow the run history's eviction; the page's jobs from the run
+// history.
 //
-// The daemon serves both on the control API (GET /metrics and GET /) and on
-// the mesh peer API, behind each listener's own caller checks. Every free
-// text it shows passes through runs.Redact, so a token that reached an error
-// message or a job name still never leaves the device.
+// The daemon serves both on the control API (GET /metrics and GET /), on
+// the mesh peer API (this device's own data only) and, when configured, on
+// a loopback metrics listener, behind each listener's own caller checks.
+// Every free text it shows passes through runs.Redact, so a token that
+// reached an error message or a job name still never leaves the device.
 package observe
 
 import (
@@ -50,22 +53,28 @@ func ParseDevice(raw json.RawMessage) (Device, bool) {
 type MetricsInput struct {
 	Now  time.Time
 	Self Device
-	// Runs is this device's run history; only jobs that ran here and ended
-	// since Self.StartedAt count, so every counter starts at 0 with the
-	// daemon, as Prometheus expects of a counter.
-	Runs []runs.Record
+	// Jobs are this device's job counters since the daemon started.
+	Jobs JobCounts
 }
 
 // PageInput is what WritePage reads.
 type PageInput struct {
 	Now  time.Time
-	Self string // this device's name
 	Pool string
 	// Devices is the pool view, this device included.
 	Devices []mesh.DeviceStatus
 	// Runs is the pool's recent run history, newest first, running jobs
 	// included.
 	Runs []runs.Record
+	// Failures are the pool's failed jobs, newest first: every one that
+	// ended in the 24 hours before Now, and at least the last MaxFailures
+	// failures, read apart from Runs so newer successes can't push them
+	// out.
+	Failures []runs.Record
+	// HistoryFrom, when not zero, is where some device's run history
+	// starts because history_max dropped older jobs; failures before it
+	// are not counted.
+	HistoryFrom time.Time
 	// Errors are devices whose history could not be read.
 	Errors []string
 }

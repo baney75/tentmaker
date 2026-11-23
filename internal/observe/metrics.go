@@ -62,7 +62,7 @@ func Metrics(in MetricsInput) []byte {
 	m.family("tentmaker_budget_evict", "gauge", "1 when a hard guard stops running jobs.")
 	m.sample("tentmaker_budget_evict", b2f(d.Evict), "device", dev)
 
-	m.family("tentmaker_guard_active", "gauge", "1 for each guard that holds CI back now.")
+	m.family("tentmaker_guard_active", "gauge", "1 for each guard that holds CI back now: it stops new or running jobs, or lowers boost to the everyday budget.")
 	active := map[string]bool{}
 	for _, g := range d.Guards {
 		active[g] = true
@@ -159,69 +159,45 @@ func Metrics(in MetricsInput) []byte {
 	return m.buf.Bytes()
 }
 
-// writeJobMetrics counts the jobs this device ran and ended since the
-// daemon started: results, start latency and cache outcomes. A runner job
-// still waiting for the forge's result is left out until it has one, so a
-// result never moves from one series to another.
+// writeJobMetrics writes the job counters: results, start latency and
+// cache outcomes, from in.Jobs (a Tally's counts), so each is cumulative
+// since the daemon started whatever the run history keeps.
 func writeJobMetrics(m *metricWriter, in MetricsInput) {
 	dev := in.Self.Device
-	results := map[string]int{}
-	type cacheKey struct{ cache, result string }
-	caches := map[cacheKey]int{}
-	var waits []float64
-	for _, r := range in.Runs {
-		if r.Device != dev || !r.Ended() || r.AwaitingForge(in.Now) {
-			continue
-		}
-		if !in.Self.StartedAt.IsZero() && r.EndedAt.Before(in.Self.StartedAt) {
-			continue
-		}
-		results[r.Conclusion]++
-		if !r.QueuedAt.IsZero() && !r.StartedAt.IsZero() {
-			waits = append(waits, max(0, r.StartedAt.Sub(r.QueuedAt).Seconds()))
-		}
-		if r.RepoCache != "" {
-			caches[cacheKey{"repo", r.RepoCache}]++
-		}
-		if r.ContainerStore != "" {
-			caches[cacheKey{"container_store", r.ContainerStore}]++
-		}
-	}
+	j := in.Jobs
 
-	m.family("tentmaker_jobs_finished_total", "counter", "Jobs that ran on this device and ended since the daemon started, by result.")
+	m.family("tentmaker_jobs_finished_total", "counter", "Jobs that ran on this device and ended since the daemon started, by result, each counted once when its result was final.")
 	names := append([]string(nil), knownResults...)
-	for c := range results {
+	for c := range j.Results {
 		if !contains(names, c) {
 			names = append(names, c)
 		}
 	}
 	sort.Strings(names)
 	for _, c := range names {
-		m.sample("tentmaker_jobs_finished_total", float64(results[c]), "device", dev, "result", c)
+		m.sample("tentmaker_jobs_finished_total", float64(j.Results[c]), "device", dev, "result", c)
 	}
+
+	m.family("tentmaker_jobs_result_pending", "gauge", "Jobs that ended on this device and wait for their forge result before they are counted.")
+	m.sample("tentmaker_jobs_result_pending", float64(j.Pending), "device", dev)
 
 	const lat = "tentmaker_job_start_latency_seconds"
-	m.family(lat, "histogram", "Seconds from a job queued at the forge to it running on this device, for jobs ended since the daemon started.")
-	sort.Float64s(waits)
-	sum := 0.0
-	for _, v := range waits {
-		sum += v
-	}
-	i := 0
-	for _, le := range LatencyBuckets {
-		for i < len(waits) && waits[i] <= le {
-			i++
+	m.family(lat, "histogram", "Seconds from a job queued at the forge to it running on this device, for jobs counted since the daemon started.")
+	for i, le := range LatencyBuckets {
+		var n int64
+		if i < len(j.Buckets) {
+			n = j.Buckets[i]
 		}
-		m.sample(lat+"_bucket", float64(i), "device", dev, "le", formatFloat(le))
+		m.sample(lat+"_bucket", float64(n), "device", dev, "le", formatFloat(le))
 	}
-	m.sample(lat+"_bucket", float64(len(waits)), "device", dev, "le", "+Inf")
-	m.sample(lat+"_sum", sum, "device", dev)
-	m.sample(lat+"_count", float64(len(waits)), "device", dev)
+	m.sample(lat+"_bucket", float64(j.LatencyCount), "device", dev, "le", "+Inf")
+	m.sample(lat+"_sum", j.LatencySum, "device", dev)
+	m.sample(lat+"_count", float64(j.LatencyCount), "device", dev)
 
-	m.family("tentmaker_cache_jobs_total", "counter", "Jobs ended since the daemon started that had a repo cache (cache=repo) or used containers (cache=container_store), by whether they started warm.")
+	m.family("tentmaker_cache_jobs_total", "counter", "Jobs counted since the daemon started that had a repo cache (cache=repo), or whose repo's container store held images when they started (cache=container_store), by whether they started warm.")
 	for _, c := range []string{"repo", "container_store"} {
 		for _, res := range []string{core.CacheHit, core.CacheMiss} {
-			m.sample("tentmaker_cache_jobs_total", float64(caches[cacheKey{c, res}]), "device", dev, "cache", c, "result", res)
+			m.sample("tentmaker_cache_jobs_total", float64(j.Cache[[2]string{c, res}]), "device", dev, "cache", c, "result", res)
 		}
 	}
 }

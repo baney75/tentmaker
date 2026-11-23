@@ -100,11 +100,14 @@ type Probe interface {
     Processes(ctx context.Context) ([]string, error)        // lowercase executable names
 }
 func NewHostProbe(stateDir string) Probe
-type Result struct { Admit, Evict, Busy bool; Reasons, Guards []string }
-// Guards names each tripped guard once: GuardProbe "probe", GuardMemory "memory",
-// GuardDisk "disk", GuardDiskStop "disk_stop", GuardLoad "load", GuardProcess "process".
+type Result struct { Admit, Evict, Busy bool; Reasons, Guards, BusyGuards []string }
+// Guards names each tripped block or evict guard once: GuardProbe "probe", GuardMemory
+// "memory", GuardDisk "disk", GuardDiskStop "disk_stop". BusyGuards names the busy guards
+// (GuardLoad "load", GuardProcess "process"), which only lower boost to everyday.
 // budget adds GuardPower "power", GuardBattery "battery", GuardBatteryStop "battery_stop";
-// core.Decision.Guards carries both. The names never change, so metrics can label by them.
+// core.Decision.Guards carries those, Guards, and BusyGuards only when busy lowered the
+// profile from boost to everyday. So every guard it names holds CI back now. The names never
+// change, so metrics can label by them.
 func Check(ctx context.Context, g config.Guards, job config.Job, p Probe, stateDir string, running int) Result
 ```
 
@@ -858,10 +861,11 @@ type Tailscale interface {
 func NewTailscaleCLI() Tailscale                 // shells out to `tailscale status --json`, `tailscale whois --json`
 type Options struct {
     Device, Pool string; Port int; Members []string
+    Viewers   []string                           // mesh.viewers: tag:<name>, node names or ids that may read the views alone
     Tailscale Tailscale
     Broker    core.WorkSource                    // nil if this device has no credentials
     Status    func() any                         // this device's status for pool views
-    Views     http.Handler                       // GET /metrics, / and /status; nil serves 404
+    Views     http.Handler                       // GET /metrics, / and /status of this device alone; nil serves 404
     Log       *slog.Logger
 }
 func New(o Options) *Node
@@ -905,32 +909,54 @@ are rediscovered every 30 s; a peer failing 3 calls in a row is skipped for a mi
 as every route, but not the pool-name check, since a browser or a Prometheus server is not a pool
 device. They also need a `Host` header naming this device (one of its tailnet IPs, its MagicDNS
 name or that name's first label), so a page on another site can't read them through DNS
-rebinding (403 otherwise). Any other method is 405.
+rebinding (403 otherwise). Any other method is 405. Besides the callers the other routes admit,
+these three routes admit a node `mesh.viewers` names (`Options.Viewers`): a tag the node carries
+(`tag:monitoring`), its MagicDNS name or that name's first label, or its stable node ID. A viewer
+reaches nothing else: status, runs, logs, work, claim, release, rerun and archive stay 403, and
+the self checks still run first. The views the mesh serves (`daemon.LocalViews`) carry this
+device's own status, counters and history alone, never a peer's: a caller this device admits
+(a viewer, a member) may not be one its peers admit, so relaying their data would widen their
+access.
 
 ## Metrics and status page (internal/observe)
 
 ```go
 type Device struct { ... }                    // the fields of daemon.Status (status --json) the views read
 func ParseDevice(raw json.RawMessage) (Device, bool)
-type MetricsInput struct { Now time.Time; Self Device; Runs []runs.Record }
-type PageInput struct { Now time.Time; Self, Pool string; Devices []mesh.DeviceStatus; Runs []runs.Record; Errors []string }
+type MetricsInput struct { Now time.Time; Self Device; Jobs JobCounts }
+type PageInput struct { Now time.Time; Pool string; Devices []mesh.DeviceStatus
+    Runs, Failures []runs.Record; HistoryFrom time.Time; Errors []string }
+type JobCounts struct { Results map[string]int64; Buckets []int64; LatencyCount int64
+    LatencySum float64; Cache map[[2]string]int64; Pending int }
+func NewTally(wait time.Duration) *Tally      // Ended(rec, final, now), Forge(rec), Counts(now) JobCounts
 type Source interface { MetricsInput(ctx) (MetricsInput, error); PageInput(ctx) (PageInput, error) }
 func Handler(src Source) http.Handler         // GET /metrics, GET / and GET /status; checks no caller
 func Metrics(in MetricsInput) []byte          // Prometheus text format 0.0.4
 func Page(in PageInput) ([]byte, error)
 // control
 type ViewsHandler interface { Views() http.Handler }   // a Handler that serves the views
+func NewMetricsServer(views http.Handler, ident Identify, log *slog.Logger) *Server  // GET /metrics alone
+func TCPIdentify(runnerUser string) Identify  // Linux: /proc/net/tcp uid; Windows: HostIdentify; else refuses all
+// daemon
+func (d *Daemon) Views() http.Handler       // the pool: every device and its history (control API)
+func (d *Daemon) LocalViews() http.Handler  // this device alone (mesh, metrics listener)
 ```
 
-The daemon serves both on the control API (behind its caller checks: a CI job or a caller it
-can't name gets 403) and on the mesh peer API (behind `WhoIs` and the Host rule above). It binds
-no new listener: the control API is local only, so a Prometheus server or a browser on another
-tailnet device uses the peer API's tailnet address. Each view has 8 s, inside the mesh's 10 s
-write timeout; a source that fails answers 503 with no detail.
+The daemon serves the pool views on the control API (behind its caller checks: a CI job or a
+caller it can't name gets 403) and this device's views on the mesh peer API (behind `WhoIs`, the
+viewer list and the Host rule above). With `metrics_listen` set (a loopback IP and port, off by
+default) it also serves GET /metrics alone there, so a Prometheus server on this device can
+scrape it over TCP; the peer API refuses this device's own requests. That listener names each
+connection's caller like the control API does and answers a CI job or a caller it can't name 403:
+on Linux by the uid that owns the client socket in `/proc/net/tcp` or `tcp6` (the runner user and
+its subordinate ids are CI jobs), on Windows by the owning process (`HostIdentify`). Elsewhere it
+can't name a TCP caller and refuses everyone, so on macOS scrape over the tailnet. A job can't
+reach it in any case: Linux jobs run in a netns that maps only the relay and cache ports to the
+host, Windows blocks host loopback for the runner with WFP, and macOS jobs run in VMs. Each view
+has 8 s, inside the mesh's 10 s write timeout; a source that fails answers 503 with no detail.
 
-No counter of their own. Every number comes from the daemon's `Status` (marshaled to JSON and
-read back with `ParseDevice`, so the views follow the `status --json` contract) or the run
-history:
+Gauges come from the daemon's `Status` (marshaled to JSON and read back with `ParseDevice`, so
+the views follow the `status --json` contract). The job counters come from `observe.Tally`:
 
 - Per device gauges: `tentmaker_info{device,version,pool}`, `_paused`, `_budget_profile{profile}`,
   `_budget_cpus`, `_budget_memory_bytes`, `_budget_admit`, `_budget_evict`,
@@ -941,28 +967,40 @@ history:
   `_forge_api_requests_total`, `_billed_total`, `_not_modified_total`, `_rate_limited_total`,
   `_forge_api_rate_remaining` and `_rate_limit` (only when the forge said), and
   `_rate_reset_timestamp_seconds`.
-- From the run history: `tentmaker_jobs_finished_total{result}`,
+- Job counters: `tentmaker_jobs_finished_total{result}`,
   `tentmaker_job_start_latency_seconds` (histogram, queued at the forge to running; buckets 1, 2,
-  5, 10, 15, 30, 60, 120, 300 and 600 s) and `tentmaker_cache_jobs_total{cache,result}`
-  (`cache` is `repo` or `container_store`). They count the jobs that ran on this device and ended
-  since the daemon started (`Status.StartedAt`), so they start at 0 with the daemon as a counter
-  should. A runner job that is `AwaitingForge` counts once the forge's result is in, so a job
-  never moves between `result` series. The history keeps `history_max` jobs (default 2000): a
-  device that ends more than that without a restart sees the counters fall, which Prometheus reads
-  as a reset.
+  5, 10, 15, 30, 60, 120, 300 and 600 s), `tentmaker_cache_jobs_total{cache,result}` (`cache` is
+  `repo` or `container_store`) and the gauge `tentmaker_jobs_result_pending` (ended jobs whose
+  result may still change). The daemon feeds its `Tally` every job this device ran as it ends,
+  and every forge result for one. Each job counts exactly once, when its result is final: a check
+  job, or a runner job whose forge result came already, at once; a runner job whose repo a broker
+  on this device reads results for (`Broker.ReadsResults`) when that result comes or the broker's
+  whole retry budget has passed (`dispatch.ReportBudget`: worker silence, identify, every report
+  try with its timeout, plus a minute), with the conclusion it has then. A job a peer's broker
+  reads counts at once, since its result stays on that peer. A counted job never counts again, so
+  a late forge result moves nothing between series, and no series ever goes down. The `Tally`
+  lives as long as the daemon: history eviction (`history_max`) and a reload that rebuilds the
+  history change nothing, and only a restart resets the counters. At most 1024 jobs wait; past
+  that the oldest counts with what it has.
 
 Cache outcomes are facts recorded once, when the Linux executor claims a job's cache: the repo
 cache is a hit when the repo's folder already held files; the container store is a hit when the
 job was bound to a store that already held images (`repocache.ContainersWarm`, read through
 `os.Root` so a link a job left can't point it elsewhere), and a miss when the store held images
-but the job started without it. Both are kept in the slot record (`Warm`, `StoreWarm`) and reach
-the run record through `core.Usage`.
+at claim but the job wasn't bound to it. A store with no images at claim gives no outcome. Both
+are kept in the slot record (`Warm`, `StoreWarm`, `StoreMiss`) as the claim decides them, so a
+store that fills later never turns an earlier job into a miss, and reach the run record through
+`core.Usage`.
 
 The status page is one HTML document: the style, the script and the mark are inline, with a CSP
 of `default-src 'none'` and sha256 hashes for the style and script, `img-src data:`, `connect-src
 'self'`, no framing and no referrer. It follows `prefers-color-scheme`, stacks its rows under 640
 px, and shows each device's budget and why, its guards and next fix, running jobs, the forge
-queue, the last 10 failures and each broker's API quota, with links to the forge. Links are http
+queue, the last 10 failures and each broker's API quota, with links to the forge. Running jobs,
+the last failures and the failures of the last 24 h are three history reads (`Failures` is the
+last two merged), so newer successes never push a failure out of the count. When a device's
+history is full and its oldest kept record is younger than 24 h (`runs.Answer.HistoryFrom`), the
+page counts failures over the span kept and says that `history_max` limits it. Links are http
 or https with no userinfo; any other is shown as text. The script fetches the page again every
 15 s and swaps `<main>`: one fetch at a time with a 10 s timeout, none while the tab is hidden,
 and on failure the wait doubles up to 5 minutes with jitter. Every free text in either view
@@ -1117,7 +1155,10 @@ func (r Record) AwaitingForge(now time.Time) bool  // a runner job ended in the 
 type ForgeReport struct { ID, Device, Forge, Repo, Job string; JobID, RunID int64; RunURL string;
     EndedAt time.Time; Conclusion, FailedStep string; Log []byte }
 type Query struct { Repo, SHA, ID string; RunID int64; Failed bool; Since time.Time; Limit int }
-func Open(dir string, max int) *Store         // Add, List, Log, Err
+// Answer gains HistoryFrom (json history_from): the latest time from which a device that
+// answered keeps every record (its oldest kept record, once the store holds history_max);
+// zero when every device keeps all it ran. Later(a, b) is the later of two such times.
+func Open(dir string, max int) *Store         // Add, List, Log, Err, HistoryFrom
 func Redact(data []byte, extra ...[]byte) []byte
 func Stats(recs []Record, since, now time.Time) Report
 func Wait(ctx context.Context, look func(context.Context) (Snapshot, error), o WaitOptions) (WaitResult, error)
@@ -1407,12 +1448,20 @@ section is rewritten.
 - A device refuses peer API requests from itself (fence verification, item 19): loopback, its
   own tailnet IPs, or an address `WhoIs` ties to them. WhoIs called such a caller this device,
   the most trusted peer.
-- The metrics and the status page (issue #45) bind no listener of their own. The issue asked for
-  the tailnet-only control listener, but the control API is local (a Unix socket, or loopback on
-  Windows) and the tailnet listener is the peer API. So the control API serves them to local
-  readers behind its usual checks, and the peer API serves them to the same tailnet user behind
-  `WhoIs`, minus the pool-name check a scraper can't pass and plus a Host check. A new listener
-  would have been a second set of caller rules to keep in step.
+- The metrics and the status page (issue #45) ride the control API and the peer API. The issue
+  asked for the tailnet-only control listener, but the control API is local (a Unix socket, or
+  loopback on Windows) and the tailnet listener is the peer API. So the control API serves them
+  to local readers behind its usual checks, and the peer API serves them to the same tailnet user
+  behind `WhoIs`, minus the pool-name check a scraper can't pass and plus a Host check. Review of
+  PR #47 found a Prometheus server can't use either as deployed: a tagged monitoring node fails
+  `WhoIs`, and a scraper on the device itself is refused by the peer API and can't speak to a
+  Unix socket. So `mesh.viewers` admits named nodes to the views alone, and the opt-in
+  `metrics_listen` serves /metrics alone on loopback with the control API's caller rules (same
+  `Identify` contract, `NewMetricsServer`), never work, claim or release.
+- The job counters were first derived from the run history and fell when `history_max` evicted
+  records, and a runner job counted as cancelled moved to failure when a late forge result came
+  (review of PR #47). They now come from `observe.Tally`, which counts each job once when its
+  result is final and outlives history rebuilds.
 - `CheckBundle.ArchiveRef` replaces the forge URL and header the broker used to send (review finding: a check job could read the forge token from its bundle). `Header` stays in the struct only so a worker can recognize and refuse an older broker's bundle.
 - An empty `Platform.Arch` means any arch. Hosted `runs-on` labels (ubuntu-latest, macos-15,
   windows-2022) name an OS, not an arch, so Plan leaves Arch empty for them; only `-arm`/`-arm64`

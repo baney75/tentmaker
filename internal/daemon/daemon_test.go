@@ -128,6 +128,10 @@ type rig struct {
 	hup    bool
 	// executors replaces the factory that always returns ex.
 	executors ExecutorFactory
+	// now, when set, is the daemon's clock.
+	now func() time.Time
+	// metricsIdent, when set, names the metrics listener's callers.
+	metricsIdent control.Identify
 }
 
 func newRig(t *testing.T, edit func(*config.Config)) *rig {
@@ -187,18 +191,20 @@ func (r *rig) launch() {
 		NewForge: func(name string, f config.Forge, token func(context.Context) (string, error), log *slog.Logger) (core.Forge, core.StatusForge, error) {
 			return r.forge, r.forge, nil
 		},
-		Secrets:     r.store,
-		Tailscale:   r.ts,
-		ControlAddr: "127.0.0.1:0",
-		Identify:    func(net.Conn) (control.Caller, error) { return control.Caller{Who: "uid 1000"}, nil },
-		RelayAddr:   "127.0.0.1:0",
-		CacheAddr:   "127.0.0.1:0",
-		Updater:     r.up,
-		Hostname:    func() (string, error) { return "box", nil },
-		Executable:  func() (string, error) { return "/usr/local/bin/tentmaker", nil },
-		UpdateEvery: 50 * time.Millisecond,
-		ReloadOnHUP: r.hup,
-		ArchiveHTTP: &http.Client{Transport: forgeArchives{r.forge}},
+		Secrets:         r.store,
+		Tailscale:       r.ts,
+		ControlAddr:     "127.0.0.1:0",
+		Identify:        func(net.Conn) (control.Caller, error) { return control.Caller{Who: "uid 1000"}, nil },
+		RelayAddr:       "127.0.0.1:0",
+		CacheAddr:       "127.0.0.1:0",
+		Updater:         r.up,
+		Hostname:        func() (string, error) { return "box", nil },
+		Executable:      func() (string, error) { return "/usr/local/bin/tentmaker", nil },
+		UpdateEvery:     50 * time.Millisecond,
+		ReloadOnHUP:     r.hup,
+		ArchiveHTTP:     &http.Client{Transport: forgeArchives{r.forge}},
+		Now:             r.now,
+		MetricsIdentify: r.metricsIdent,
 	})
 	ctx, cancel := context.WithCancel(context.Background())
 	r.cancel = cancel
