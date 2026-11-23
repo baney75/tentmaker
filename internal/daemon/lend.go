@@ -5,6 +5,8 @@ import (
 	"time"
 
 	"github.com/baney75/tentmaker/internal/control"
+	"github.com/baney75/tentmaker/internal/core"
+	"github.com/baney75/tentmaker/internal/dispatch"
 )
 
 // lendTimeout bounds invite, leave, devices and remove: each is a state
@@ -78,3 +80,24 @@ func (h ctlHandler) RemoveDevice(ctx context.Context, name string) (any, error) 
 }
 
 var _ control.LendHandler = ctlHandler{}
+
+// lentStatus is what this device shows the pool it is lent to: its version,
+// whether it takes work, and its slots. Not its repos, its jobs (from any
+// source), its schedule names, problems or warnings: those are the
+// lender's own.
+func (d *Daemon) lentStatus(ctx context.Context) any {
+	s := d.Status(ctx)
+	prof := s.Decision.Profile
+	switch prof {
+	case "everyday", "boost", "off":
+	default:
+		prof = "schedule"
+	}
+	out := Status{Version: s.Version, Device: s.Device, Service: s.Service, Paused: s.Paused,
+		Decision: core.Decision{Profile: prof, Slots: s.Decision.Slots, Admit: s.Decision.Admit, Reasons: []string{}},
+		Warnings: []string{}, Problems: []core.Problem{}}
+	if s.Worker != nil {
+		out.Worker = &dispatch.WorkerStatus{Device: s.Worker.Device, Slots: s.Worker.Slots, Paused: s.Worker.Paused}
+	}
+	return out
+}

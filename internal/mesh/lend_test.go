@@ -395,6 +395,10 @@ func TestGuestTableSharedAmongOwnerDevices(t *testing.T) {
 	if _, err := guest.node.Join(ctx, ic.Code); err != nil {
 		t.Fatal(err)
 	}
+	// The join is pushed to the owner's other devices after the answer.
+	for end := time.Now().Add(5 * time.Second); len(laptop.node.guestList(false)) == 0 && time.Now().Before(end); {
+		time.Sleep(5 * time.Millisecond)
+	}
 	if g := laptop.node.guestList(false); len(g) != 1 || g[0].Trust != core.TrustPublic {
 		t.Fatalf("laptop's guests %+v", g)
 	}
@@ -412,5 +416,101 @@ func TestGuestTableSharedAmongOwnerDevices(t *testing.T) {
 	}
 	if g := desk.node.guestList(false); len(g) != 0 {
 		t.Fatalf("desk re-admitted %+v", g)
+	}
+}
+
+// A removal wins over a record another owner device stamped with a clock
+// that runs ahead (review F1).
+func TestRevokeBeatsAFastClock(t *testing.T) {
+	a, _, clk, _ := lendHost(t)
+	b, _, _, _ := lendHost(t)
+	b.now = func() time.Time { return clk.Now().Add(10 * time.Minute) }
+	_, sec := mkInvite(t, b, core.TrustTrusted, nil, time.Hour)
+	if rec := do(t, b.handler(), "POST", "/v1/join", bobAddr, joinBody(t, joinRequest{Code: sec, Device: "bob-pc"}), ""); rec.Code != 200 {
+		t.Fatalf("join on b: %d %s", rec.Code, rec.Body)
+	}
+	a.mergeGuests(b.guestList(true))
+	if _, err := a.RevokeGuest(context.Background(), "bob-pc"); err != nil {
+		t.Fatal(err)
+	}
+	b.mergeGuests(a.guestList(true))
+	a.mergeGuests(b.guestList(true))
+	for name, n := range map[string]*Node{"a": a, "b": b} {
+		if g := n.guestList(false); len(g) != 0 {
+			t.Fatalf("%s still has the removed guest active: %+v", name, g)
+		}
+	}
+}
+
+// A lent device that announces a sleeping owner device's name neither
+// shadows it for wakes nor takes it at the broker (review F2, F3).
+func TestGuestCantShadowASleepingOwnerDevice(t *testing.T) {
+	n, _, clk, _ := lendHost(t)
+	_, sec := mkInvite(t, n, core.TrustTrusted, nil, time.Hour)
+	if rec := do(t, n.handler(), "POST", "/v1/join", bobAddr, joinBody(t, joinRequest{Code: sec}), ""); rec.Code != 200 {
+		t.Fatalf("join: %d", rec.Code)
+	}
+	n.noteKnown("n-desk", helloResponse{Device: "desk", Pool: "home", Wake: wakeInfo("a4:5e:60:00:00:07", homeSubnet, homeBcast)},
+		kindOwner, "alice@example.com", clk.Now().Add(-time.Hour))
+	n.noteKnown(bob.ID, helloResponse{Device: "desk", Pool: "home"}, kindGuest, bob.LoginName, clk.Now())
+	n.noteKnown("n-nas", helloResponse{Device: "nas", Pool: "home", Wake: wakeInfo("a4:5e:60:00:00:08", homeSubnet, homeBcast)},
+		kindGuest, bob.LoginName, clk.Now())
+	if d, ok := n.knownByName("desk"); !ok || d.ID != "n-desk" {
+		t.Fatalf("desk resolves to %+v, want the owner's sleeping desk", d)
+	}
+	if d, ok := n.knownByName("nas"); ok {
+		t.Fatalf("a guest's record stands for a wake target: %+v", d)
+	}
+	if !n.lastSeen("desk").Equal(clk.Now().Add(-time.Hour)) {
+		t.Fatal("a guest's hello made the sleeping desk look awake")
+	}
+	// The guest's node announces "desk" while desk sleeps.
+	n.peersMu.Lock()
+	n.peers[bob.ID] = &peerState{id: bob.ID, kind: kindGuest, ips: []netip.Addr{netip.MustParseAddr("100.64.0.5")},
+		hello: helloResponse{Device: "desk", Pool: "home"}}
+	n.peersMu.Unlock()
+	n.discMu.Lock()
+	n.discAt = n.now()
+	n.discMu.Unlock()
+	b := joinBody(t, core.WorkRequest{Device: "desk", Free: 1, Platforms: []core.Platform{{OS: "linux", Arch: "x64"}}})
+	if rec := do(t, n.handler(), "POST", "/v1/work", bobAddr, b, "home"); rec.Code != http.StatusForbidden {
+		t.Fatalf("a guest acting as the sleeping desk: %d, want 403", rec.Code)
+	}
+}
+
+// The pool owner sees a lent device's reduced status only (review F4).
+func TestHostSeesLentStatusOnly(t *testing.T) {
+	log, _ := debugLog()
+	ts := newFakeTS()
+	n := New(Options{Device: "alice-mac", Pool: "mine", Tailscale: ts, StateDir: t.TempDir(), Log: log,
+		Status:     func() any { return map[string]string{"secret_repo": "alice/private"} },
+		LentStatus: func() any { return map[string]int{"slots": 2} }})
+	n.lent = &Lent{Pool: "bobs", Host: "bob-pc", HostNode: bob.ID, HostAddr: "100.64.0.5:7433", OwnerUserID: bob.UserID,
+		OwnerLogin: bob.LoginName, Trust: core.TrustTrusted, Joined: n.now()}
+	rec := do(t, n.handler(), "GET", "/v1/status", bobAddr, nil, "bobs")
+	if rec.Code != 200 || strings.Contains(rec.Body.String(), "private") || !strings.Contains(rec.Body.String(), `"slots":2`) {
+		t.Fatalf("host's status view: %d %s", rec.Code, rec.Body)
+	}
+}
+
+// Wake facts recorded for another user's node before this version are
+// dropped at the next discovery (#58).
+func TestDiscoveryDropsForeignWakeFacts(t *testing.T) {
+	n, _, clk, _ := lendHost(t)
+	n.known.mu.Lock()
+	n.known.devs[bob.ID] = &knownDevice{ID: bob.ID, Device: "bob-pc", LastSeen: clk.Now(),
+		Wake: wakeInfo("a4:5e:60:00:00:05", homeSubnet, homeBcast)}
+	n.known.devs[alice.ID] = &knownDevice{ID: alice.ID, Device: "alice-linux", LastSeen: clk.Now(),
+		Wake: wakeInfo("a4:5e:60:00:00:02", homeSubnet, homeBcast)}
+	n.known.mu.Unlock()
+	n.o.Tailscale.(*fakeTS).set(func(f *fakeTS) {
+		f.peers = []Peer{{ID: bob.ID, UserID: bob.UserID, LoginName: bob.LoginName}, {ID: alice.ID, UserID: alice.UserID, LoginName: alice.LoginName}}
+	})
+	n.discover(context.Background())
+	if d, _ := n.knownByID(bob.ID); d.Wake != nil {
+		t.Fatal("another user's wake facts survived discovery")
+	}
+	if d, _ := n.knownByID(alice.ID); d.Wake == nil {
+		t.Fatal("the same user's wake facts were dropped")
 	}
 }

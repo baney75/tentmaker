@@ -90,6 +90,7 @@ func (n *Node) discover(ctx context.Context) {
 		return
 	}
 	listed = true
+	n.scrubForeignWake(self, all)
 
 	type found struct {
 		p     Peer

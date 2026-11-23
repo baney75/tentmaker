@@ -486,9 +486,10 @@ type joinResponse struct {
 
 const badCodeAnswer = "that join code is not valid; ask the pool owner for a new one"
 
-// joinAllowed reports whether node may try a code now: at most
-// joinFailsNode failures per node and joinFailsAll in all per joinWindow.
-func (n *Node) joinAllowed(node string, now time.Time) bool {
+// joinTry reports whether node may try a code now (at most joinFailsNode
+// failures per node and joinFailsAll in all per joinWindow) and, when it
+// may, counts the try as a failure until joinOKLocked takes it back.
+func (n *Node) joinTry(node string, now time.Time) bool {
 	n.guests.mu.Lock()
 	defer n.guests.mu.Unlock()
 	cut := func(ts []time.Time) []time.Time {
@@ -508,16 +509,24 @@ func (n *Node) joinAllowed(node string, now time.Time) bool {
 			n.guests.fails[k] = ts
 		}
 	}
-	return len(n.guests.fails[node]) < joinFailsNode && len(n.guests.allFail) < joinFailsAll
-}
-
-func (n *Node) joinFailed(node string, now time.Time) {
-	n.guests.mu.Lock()
-	defer n.guests.mu.Unlock()
-	if len(n.guests.fails) < 4096 {
+	if len(n.guests.fails[node]) >= joinFailsNode || len(n.guests.allFail) >= joinFailsAll {
+		return false
+	}
+	if _, ok := n.guests.fails[node]; ok || len(n.guests.fails) < 4096 {
 		n.guests.fails[node] = append(n.guests.fails[node], now)
 	}
 	n.guests.allFail = append(n.guests.allFail, now)
+	return true
+}
+
+// joinOKLocked takes back the try joinTry counted for node: it succeeded.
+func (n *Node) joinOKLocked(node string) {
+	if ts := n.guests.fails[node]; len(ts) > 0 {
+		n.guests.fails[node] = ts[:len(ts)-1]
+	}
+	if len(n.guests.allFail) > 0 {
+		n.guests.allFail = n.guests.allFail[:len(n.guests.allFail)-1]
+	}
 }
 
 // handleJoin redeems an invite. The guest's identity is WhoIs's answer for
@@ -527,14 +536,15 @@ func (n *Node) joinFailed(node string, now time.Time) {
 func (n *Node) handleJoin(w http.ResponseWriter, r *http.Request) {
 	id, _ := r.Context().Value(callerKey{}).(Identity)
 	now := n.now()
-	if !n.joinAllowed(id.ID, now) {
+	// Every try counts as a failure until it succeeds, so parallel tries
+	// can't get past the limit.
+	if !n.joinTry(id.ID, now) {
 		n.refuse(r, id.LoginName+" on "+id.Node, "too many failed joins")
 		writeErr(w, http.StatusTooManyRequests, "too many join attempts; wait 10 minutes")
 		return
 	}
 	var req joinRequest
 	if !readJSON(w, r, &req) {
-		n.joinFailed(id.ID, now)
 		return
 	}
 	self, err := n.selfPeer(r.Context(), false)
@@ -566,7 +576,6 @@ func (n *Node) handleJoin(w http.ResponseWriter, r *http.Request) {
 	}
 	if at < 0 || len(sec) != 32 {
 		n.guests.mu.Unlock()
-		n.joinFailed(id.ID, now)
 		n.refuse(r, id.LoginName+" on "+id.Node, "a wrong, used or expired join code")
 		writeErr(w, http.StatusForbidden, badCodeAnswer)
 		return
@@ -579,9 +588,13 @@ func (n *Node) handleJoin(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusConflict, "this pool has too many guests; remove some first")
 		return
 	}
+	n.joinOKLocked(id.ID)
 	n.guests.invites = append(n.guests.invites[:at:at], n.guests.invites[at+1:]...)
 	g := &Guest{Node: id.ID, UserID: id.UserID, Login: id.LoginName, Device: clip(req.Device, 128), Trust: iv.Trust,
 		Repos: append([]string(nil), iv.Repos...), InvitedBy: n.o.Device, Joined: now, Updated: now}
+	if old != nil {
+		g.Updated = after(now, old.Updated)
+	}
 	n.guests.guests[id.ID] = g
 	if err := n.saveGuestsLocked(); err != nil {
 		// Not recorded: put the invite back, so the code still works.
@@ -599,9 +612,27 @@ func (n *Node) handleJoin(w http.ResponseWriter, r *http.Request) {
 	n.guests.mu.Unlock()
 	n.log.Info("mesh: a device joined the pool as a guest", "login", id.LoginName, "node", id.ID, "device", g.Device, "trust", g.Trust,
 		"repos", strings.Join(g.Repos, ","))
-	n.pushGuests(r.Context())
 	n.markStale()
 	writeJSON(w, http.StatusOK, joinResponse{Pool: n.pool(), Device: n.o.Device, Trust: g.Trust, Repos: nonNilStrings(g.Repos)})
+	// Tell the owner's other devices after answering, so a slow peer can't
+	// cost the guest its answer (and its one-time code).
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), pushTimeout)
+		defer cancel()
+		n.pushGuests(ctx, false)
+	}()
+}
+
+// pushTimeout bounds a background push of the guest table after a join.
+const pushTimeout = 60 * time.Second
+
+// after is now, or just after prev when another device's clock ran ahead,
+// so a change made here is always newer than the record it changes.
+func after(now, prev time.Time) time.Time {
+	if !now.After(prev) {
+		return prev.Add(time.Nanosecond)
+	}
+	return now
 }
 
 func clip(s string, max int) string {
@@ -619,7 +650,7 @@ func (n *Node) handleLeave(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "the leave could not be saved")
 		return
 	}
-	n.pushGuests(r.Context())
+	n.pushGuests(r.Context(), false)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
@@ -644,7 +675,7 @@ func (n *Node) RevokeGuest(ctx context.Context, name string) ([]Guest, error) {
 	if err != nil {
 		return nil, err
 	}
-	n.pushGuests(ctx)
+	n.pushGuests(ctx, true)
 	return gs, nil
 }
 
@@ -662,13 +693,15 @@ func (n *Node) revoke(match func(*Guest) bool, why string) ([]Guest, error) {
 		return nil, ErrNoGuest
 	}
 	var out []Guest
-	for _, g := range hit {
-		g.Revoked, g.Updated = now, now
+	prev := make([]time.Time, len(hit))
+	for i, g := range hit {
+		prev[i] = g.Updated
+		g.Revoked, g.Updated = now, after(now, g.Updated)
 		out = append(out, *g)
 	}
 	if err := n.saveGuestsLocked(); err != nil {
-		for _, g := range hit {
-			g.Revoked = time.Time{}
+		for i, g := range hit {
+			g.Revoked, g.Updated = time.Time{}, prev[i]
 		}
 		return nil, fmt.Errorf("can't save the guest table: %w", err)
 	}
@@ -773,10 +806,14 @@ func (n *Node) handleGuests(w http.ResponseWriter, r *http.Request) {
 // pushGuests sends the guest table to the owner's other devices, so a
 // join or a removal takes effect pool-wide at once. A device it can't reach
 // fetches the table on its next discovery.
-func (n *Node) pushGuests(ctx context.Context) {
-	// Know the owner's devices first: a device that has not run discovery
-	// yet would otherwise tell none of them.
-	n.ensureFresh(ctx)
+//
+// With discover set it runs discovery first, so a device that has not run
+// it yet still tells them. A join doesn't: discovery then could reach the
+// new guest before it saved its side and count it out of the pool.
+func (n *Node) pushGuests(ctx context.Context, discover bool) {
+	if discover {
+		n.ensureFresh(ctx)
+	}
 	msg := guestsMsg{Guests: n.guestList(true)}
 	var wg sync.WaitGroup
 	for _, p := range n.allPeers() {

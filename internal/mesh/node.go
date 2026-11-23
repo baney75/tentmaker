@@ -47,6 +47,9 @@ type Options struct {
 	// implements core.ArchiveSource, /v1/archive/<ref> streams from it.
 	Broker core.WorkSource
 	Status func() any // this device's status for pool views
+	// LentStatus is what a lent device shows the pool owner's devices: no
+	// repos, jobs or problems of its own. nil serves {}.
+	LentStatus func() any
 	// Runs is this device's run history; nil serves an empty one.
 	Runs RunsSource
 	// Views serves GET /metrics and the status page (GET / and GET
@@ -650,28 +653,13 @@ func (n *Node) callerDevice(ctx context.Context, id Identity, remote string) (na
 	}
 	ip := ap.Addr()
 	look := func() (string, string, bool) {
-		n.peersMu.Lock()
-		defer n.peersMu.Unlock()
-		me := n.peers[id.ID]
-		if me == nil || me.id != id.ID || !slices.Contains(me.ips, ip) {
-			return "", "", false
+		name, why, kind, ok := n.lookCaller(id.ID, ip)
+		if ok && why == "" && kind != kindOwner && n.ownerHoldsName(name, id.ID) {
+			// A sleeping owner device is out of the peer table, not out
+			// of the pool: a lent device can't take its name meanwhile.
+			return "", "one of the pool owner's devices has that name", true
 		}
-		name := me.hello.Device
-		if name == "" || name == n.o.Device {
-			return "", "it announced no name or this device's own", true
-		}
-		for _, st := range n.peers {
-			if st == nil || st == me || st.hello.Device != name {
-				continue
-			}
-			// The owner's device keeps its name against a guest or a
-			// host that announces it too; anyone else loses it.
-			if me.kind == kindOwner && st.kind != kindOwner {
-				continue
-			}
-			return "", "another pool device announced the same name", true
-		}
-		return name, "", true
+		return name, why, ok
 	}
 	if name, why, ok := look(); ok {
 		return name, why
@@ -681,6 +669,43 @@ func (n *Node) callerDevice(ctx context.Context, id Identity, remote string) (na
 		return name, why
 	}
 	return "", "it is not a known pool device"
+}
+
+// ownerHoldsName reports whether a known device of the pool owner's other
+// than node id announced name.
+func (n *Node) ownerHoldsName(name, id string) bool {
+	for _, d := range n.knownList() {
+		if d.Device == name && d.ID != id && ownerRecord(d) {
+			return true
+		}
+	}
+	return false
+}
+
+// lookCaller finds the peer table's name for node id at ip, and its kind.
+func (n *Node) lookCaller(id string, ip netip.Addr) (name, why, kind string, ok bool) {
+	n.peersMu.Lock()
+	defer n.peersMu.Unlock()
+	me := n.peers[id]
+	if me == nil || me.id != id || !slices.Contains(me.ips, ip) {
+		return "", "", "", false
+	}
+	name = me.hello.Device
+	if name == "" || name == n.o.Device {
+		return "", "it announced no name or this device's own", me.kind, true
+	}
+	for _, st := range n.peers {
+		if st == nil || st == me || st.hello.Device != name {
+			continue
+		}
+		// The owner's device keeps its name against a guest or a
+		// host that announces it too; anyone else loses it.
+		if me.kind == kindOwner && st.kind != kindOwner {
+			continue
+		}
+		return "", "another pool device announced the same name", me.kind, true
+	}
+	return name, "", me.kind, true
 }
 
 // refusalLog keeps a refusal log line per caller and reason to one a minute,
@@ -746,6 +771,15 @@ func (n *Node) handleHello(w http.ResponseWriter, r *http.Request) {
 
 func (n *Node) handleStatus(w http.ResponseWriter, r *http.Request) {
 	var st any = map[string]any{}
+	if callerRelation(r.Context()).kind == kindHost {
+		// The pool owner sees this lent device's slots, never its own
+		// repos, jobs or problems.
+		if n.o.LentStatus != nil {
+			st = n.o.LentStatus()
+		}
+		writeJSON(w, http.StatusOK, st)
+		return
+	}
 	if n.o.Status != nil {
 		st = n.o.Status()
 	}

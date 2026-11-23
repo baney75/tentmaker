@@ -1273,9 +1273,11 @@ sent. The `WakeLog` lives as long as the daemon, so a mesh rebuild keeps the cou
 Wake facts come only from the same tailnet user (#58). `/v1/hello` carries `wake` (and the guest
 table's revision, `guests`) only to a caller of this device's own tailnet user; discovery drops
 both from any other device's hello before it records it, so a `members` login or a lent device
-can't steer the broker's wakes with made-up facts. `POST /v1/wake` answers 403 to anyone but the
-same user. A name a lent device announces never displaces an owner device's record: a name lookup
-prefers the record with wake facts.
+can't steer the broker's wakes with made-up facts, and each discovery drops wake facts an older
+version recorded for any tailnet node of another user. `POST /v1/wake` answers 403 to anyone but
+the same user. Only the owner's devices' records stand for a name in a wake (a lent device's or a
+host's never does, so a guest announcing a sleeping device's name neither hides it nor makes it
+look awake), and of two such records the one with wake facts wins.
 
 ### Lent devices
 
@@ -1294,12 +1296,13 @@ tagged device, a device with no user, or its own user's device is refused), and 
 `POST /v1/join {code: <secret>, device}` there. The host serves `/v1/join` to any `WhoIs`-named
 caller before the usual admission. It refuses a tagged caller or one with no user (403) and one
 already an owner device (409), then compares the hash in constant time with every unexpired
-invite. A wrong, used or expired code gets one answer (403, "that join code is not valid") and
-counts a failure: 5 failures per node or 30 from everyone in 10 minutes and every join answers 429
-until the window passes. A match burns the invite and records a `Guest`: the caller's stable node
+invite. A wrong, used or expired code gets one answer (403, "that join code is not valid"). Every
+try counts as a failure until it succeeds, so parallel tries can't pass the limit: 5 failures per
+node or 30 from everyone in 10 minutes and every join answers 429 until the window passes. A match burns the invite and records a `Guest`: the caller's stable node
 ID, user ID and login from `WhoIs`, the trust and repos from the invite, and the name it announces
 (for people only). Nothing in the body but the secret counts. When the save fails the invite is
-put back. The answer names the pool, the host device, and the trust and repos; the guest saves
+put back. The host answers before it tells its other devices, so a slow peer can't cost the guest
+its answer and its one-time code. The answer names the pool, the host device, and the trust and repos; the guest saves
 them with its own `WhoIs` facts as `Lent` in `<state_dir>/mesh-lent.json` and works for that pool
 from then on (`PoolName`), until `tentmaker leave`. No message, log line or error on either side
 carries the code.
@@ -1307,15 +1310,20 @@ carries the code.
 The owner's devices share the guest table. A join or a removal is posted to every same-user peer
 (`POST /v1/guests`), and each hello names the table's revision, so a device that missed the post
 fetches it (`GET /v1/guests`) on its next discovery. A merge keeps the newer record of each guest,
-and a removal wins a tie. Only the same tailnet user reaches `/v1/guests`.
+and a removal wins a tie. A join over an old record and a removal stamp `Updated` after the
+record's own, so a change beats a record another owner device stamped with a clock that runs
+ahead. Only the same tailnet user reaches `/v1/guests`.
 
 Who reaches which route (`routeAllows`): `/v1/hello` anyone admitted; `/v1/status` owner devices
-and, on a lent device, the host's; `/v1/work` and `/v1/archive` owner devices and guests;
+and, on a lent device, the host's, which get only `Options.LentStatus` (version, profile, slots,
+paused; never the lender's repos, jobs, schedule names or problems); `/v1/work` and `/v1/archive` owner devices and guests;
 `/v1/wake` and `/v1/guests` the same tailnet user only; `/v1/leave` guests; every other route
 owner devices only. A guest's work and archive calls carry its lend (`core.WithCallerLend`, from
 the guest table, never from the request) to the broker. A device is an owner device when it is
 the same tailnet user or a `members` login, as before: `members` keeps owner trust. When a guest
-and an owner device announce one name, the owner device keeps it.
+and an owner device announce one name, the owner device keeps it, and a guest or host may not act
+under a name any known owner device holds, even one asleep and out of discovery, so it can't take
+that device's grants or get it quarantined.
 
 Trust levels (enforced in Dispatch, on both sides):
 

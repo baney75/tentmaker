@@ -388,19 +388,45 @@ func (n *Node) knownByName(name string) (knownDevice, bool) {
 	var best knownDevice
 	found := false
 	for _, d := range n.knownList() {
-		if d.Device != name {
+		if d.Device != name || !ownerRecord(d) {
 			continue
 		}
-		better := !found || (d.Wake != nil) != (best.Wake != nil) && d.Wake != nil ||
-			(d.Wake != nil) == (best.Wake != nil) && d.LastSeen.After(best.LastSeen)
-		if better {
+		if !found || betterRecord(d, best) {
 			best, found = d, true
 		}
 	}
 	return best, found
 }
 
-// lastSeen is when any known device with that name last answered.
+// betterRecord: of two records of one name, d stands for it over o when
+// only d has wake facts, or both or neither do and d was seen later.
+func betterRecord(d, o knownDevice) bool {
+	if (d.Wake != nil) != (o.Wake != nil) {
+		return d.Wake != nil
+	}
+	return d.LastSeen.After(o.LastSeen)
+}
+
+// ownerRecord: a known device of the pool owner's (or one recorded before
+// kinds were, which discovery clears of a non-owner's wake facts). A lent
+// device's or a host's record never stands for a name in a wake.
+func ownerRecord(d knownDevice) bool { return d.Kind == "" || d.Kind == kindOwner }
+
+// scrubForeignWake drops wake facts recorded for a tailnet node that is not
+// this device's own user (recorded before only the same user's were kept).
+func (n *Node) scrubForeignWake(self Peer, all []Peer) {
+	n.known.mu.Lock()
+	defer n.known.mu.Unlock()
+	for _, p := range all {
+		d := n.known.devs[p.ID]
+		if d != nil && d.Wake != nil && !sameUser(self, p.UserID, p.LoginName, p.Tags) {
+			d.Wake = nil
+			n.known.dirty = true
+		}
+	}
+}
+
+// lastSeen is when the pool owner's device with that name last answered.
 func (n *Node) lastSeen(name string) time.Time {
 	d, _ := n.knownByName(name)
 	return d.LastSeen
@@ -613,7 +639,7 @@ func (n *Node) WakeTick(ctx context.Context) {
 	known := n.knownList()
 	byName := map[string]knownDevice{}
 	for _, d := range known {
-		if o, ok := byName[d.Device]; !ok || d.LastSeen.After(o.LastSeen) {
+		if o, ok := byName[d.Device]; ownerRecord(d) && (!ok || betterRecord(d, o)) {
 			byName[d.Device] = d
 		}
 	}
