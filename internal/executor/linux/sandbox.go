@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -183,6 +184,7 @@ func (e *Executor) Exec(ctx context.Context, name string, req core.SandboxExec, 
 	}
 	unit := ExecPrefix + name + "-" + randHex(6) + ".service"
 	args := e.execArgs(name, unit, req, limits, uid, gid, netns, timeout)
+	began := e.o.Now()
 	code, err := sh.Stream(ctx, Cmd{Path: "systemd-run", Args: args, Timeout: timeout + 30*time.Second}, stdin, stdout, stderr)
 	if err != nil || ctx.Err() != nil {
 		// systemd-run ended before the command did: stop the command.
@@ -192,7 +194,27 @@ func (e *Executor) Exec(ctx context.Context, name string, req core.SandboxExec, 
 		}
 		return -1, fmt.Errorf("run in sandbox %s: %w", name, err)
 	}
+	// systemd ends a command at its RuntimeMaxSec (its timeout, capped at
+	// the sandbox's TTL) and when the sandbox's slice stops; either way
+	// systemd-run returns an exit code the command never chose. A command
+	// cut off is an error, not an exit (core.Sandboxer).
+	if limit := runtimeMax(timeout); e.o.Now().Sub(began) >= limit {
+		return -1, fmt.Errorf("run in sandbox %s: the command ran out of time after %s", name, limit)
+	}
+	st, err = e.State(context.WithoutCancel(ctx), name)
+	if err != nil {
+		return -1, fmt.Errorf("run in sandbox %s: can't tell whether the sandbox stopped under the command: %v", name, err)
+	}
+	if st != core.ExecRunning {
+		return -1, fmt.Errorf("run in sandbox %s: the sandbox stopped while the command ran", name)
+	}
 	return code, nil
+}
+
+// runtimeMax is the RuntimeMaxSec jobProps gives a unit for d: whole
+// seconds, rounded up, at least one.
+func runtimeMax(d time.Duration) time.Duration {
+	return time.Duration(max(1, int64(math.Ceil(d.Seconds())))) * time.Second
 }
 
 // execArgs is the systemd-run argv for one command in a sandbox.

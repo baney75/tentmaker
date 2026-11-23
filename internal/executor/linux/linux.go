@@ -124,6 +124,8 @@ type Options struct {
 	// WorkerDLL overrides the pinned Runner.Worker.dll hashes (tests).
 	WorkerDLL *DLLPin
 	Sleep     func(time.Duration)
+	// Now is the clock; nil is time.Now (tests).
+	Now func() time.Time
 	// CacheMax caps the repo caches under <CacheDir>/repos (config
 	// cache_max); 0 means repocache.DefaultMax, below 0 turns them off.
 	CacheMax int64
@@ -179,6 +181,9 @@ func New(o Options) *Executor {
 	}
 	if o.Sleep == nil {
 		o.Sleep = time.Sleep
+	}
+	if o.Now == nil {
+		o.Now = time.Now
 	}
 	e := &Executor{o: o, p: o.Paths.withDefaults(), log: o.Log, h: o.Host, arch: o.Arch}
 	e.root = filepath.Join(o.StateDir, "linux")
@@ -579,11 +584,8 @@ func (e *Executor) unitArgs(spec core.ExecSpec, kind string, uid, gid int, stdin
 
 // jobProps are the limits and walls of a job's unit, and of every command
 // a sandbox runs: memory, CPU, its own network namespace, the job mounts.
-func (e *Executor) jobProps(spec core.ExecSpec, uid int, netns string, runtimeMax time.Duration) []string {
-	secs := int64(math.Ceil(runtimeMax.Seconds()))
-	if secs < 1 {
-		secs = 1
-	}
+func (e *Executor) jobProps(spec core.ExecSpec, uid int, netns string, maxRun time.Duration) []string {
+	secs := int64(runtimeMax(maxRun) / time.Second)
 	args := []string{
 		"-p", "Type=exec",
 		"-p", "MemoryMax=" + strconv.FormatInt(spec.Limits.MemoryBytes, 10),

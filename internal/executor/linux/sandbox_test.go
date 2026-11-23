@@ -424,3 +424,54 @@ func TestSandboxExecDirStaysInTheWorkFolder(t *testing.T) {
 		t.Fatalf("%d commands ran", streams)
 	}
 }
+
+// systemd ends a command when the sandbox stops under it or its time runs
+// out, and systemd-run then returns an exit code the command never chose.
+// Exec reports that as an error, not an exit.
+func TestSandboxExecCutOffIsAnError(t *testing.T) {
+	v := newEnv(t)
+	v.installed(t)
+	if err := v.e.Start(context.Background(), sandboxSpec()); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { streamFn = nil }()
+	req := core.SandboxExec{Argv: []string{"sleep", "1000"}, Timeout: time.Minute}
+
+	// The sandbox is stopped (removed, or its TTL ran out) while the
+	// command runs.
+	v.f.respond = running
+	streamFn = func(c Cmd, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
+		v.f.respond = func(c Cmd) (Result, error) {
+			if c.Path == "systemctl" && len(c.Args) > 0 && c.Args[0] == "show" {
+				return Result{Stdout: "ActiveState=inactive\nLoadState=loaded\n"}, nil
+			}
+			return Result{}, nil
+		}
+		return 143, nil
+	}
+	if code, err := v.e.Exec(context.Background(), sbx, req, nil, io.Discard, io.Discard); err == nil || !strings.Contains(err.Error(), "stopped") {
+		t.Fatalf("a command cut off by a stop returned %d, %v", code, err)
+	}
+
+	// Its own time runs out.
+	v.f.respond = running
+	now := time.Date(2026, 11, 23, 12, 0, 0, 0, time.UTC)
+	v.e.o.Now = func() time.Time { return now }
+	streamFn = func(c Cmd, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
+		now = now.Add(time.Minute)
+		return 143, nil
+	}
+	if code, err := v.e.Exec(context.Background(), sbx, req, nil, io.Discard, io.Discard); err == nil || !strings.Contains(err.Error(), "ran out of time") {
+		t.Fatalf("a command cut off at its timeout returned %d, %v", code, err)
+	}
+
+	// A command that ends on its own, in time, in a running sandbox,
+	// returns its exit code.
+	streamFn = func(c Cmd, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
+		now = now.Add(59 * time.Second)
+		return 3, nil
+	}
+	if code, err := v.e.Exec(context.Background(), sbx, req, nil, io.Discard, io.Discard); err != nil || code != 3 {
+		t.Fatalf("a command's own exit returned %d, %v", code, err)
+	}
+}
