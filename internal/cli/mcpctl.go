@@ -426,6 +426,9 @@ func (c controller) SandboxCopy(ctx context.Context, from, to string) (any, erro
 		if c.a.mcpRoot == "" && c.a.mcpNoRoot != "" {
 			return nil, fmt.Errorf("sandbox_cp won't copy out of a sandbox: %s, so it would confine nothing; start the server with tentmaker mcp --root DIR", c.a.mcpNoRoot)
 		}
+		if sandbox.HasGitPart(to) {
+			return nil, fmt.Errorf("sandbox_cp won't copy into %q: a .git folder's config and hooks run code on the next git command", to)
+		}
 		dst, err := underRoot(c.a.mcpRoot, to)
 		if err != nil {
 			return nil, err
@@ -435,6 +438,9 @@ func (c controller) SandboxCopy(ctx context.Context, from, to string) (any, erro
 	v, err := c.a.sandboxCopy(ctx, from, to)
 	return v, mcpErr(err)
 }
+
+// geteuid is os.Geteuid (tests replace it). It is -1 on Windows.
+var geteuid = os.Geteuid
 
 // defaultRoot is the copy-out root when --root is not given: the current
 // folder, resolved. It is "" with the reason when that can't be read, or
@@ -456,10 +462,18 @@ func defaultRoot(getwd func() (string, error)) (root, why string) {
 	if filepath.Dir(r) == r {
 		return "", "the current folder is " + r + ", a filesystem root"
 	}
-	if home, err := os.UserHomeDir(); err == nil {
-		if h, err := resolveRoot(home); err == nil && h == r {
-			return "", "the current folder is the home folder"
-		}
+	// A server running as root reaches every file, and sudo often sets HOME
+	// to root's while the folder is a user's home, so it gets no default
+	// (review r2 sol-F1, first-F1).
+	if geteuid() == 0 {
+		return "", "the server runs as root"
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", "the home folder is unknown"
+	}
+	if h, err := resolveRoot(home); err != nil || h == r {
+		return "", "the current folder is the home folder, or the home folder can't be resolved"
 	}
 	return r, ""
 }

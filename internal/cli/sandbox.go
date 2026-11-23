@@ -447,7 +447,8 @@ func (a *app) copyOut(ctx context.Context, c *control.Client, id, src, dst strin
 	}
 	done := make(chan result, 1)
 	go func() {
-		r, err := sandbox.Extract(pr, dst)
+		// The MCP server (mcpRoot set) copies for an agent: guarded.
+		r, err := sandbox.ExtractWith(pr, dst, sandbox.ExtractOptions{Guarded: a.mcpRoot != ""})
 		// Drain so a failed extract can't stall the frame reader.
 		_, _ = io.Copy(io.Discard, pr)
 		done <- result{r, err}

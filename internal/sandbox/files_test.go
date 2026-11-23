@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -188,5 +189,36 @@ func TestPackWorkTreeThroughASymlink(t *testing.T) {
 	n, err := PackWorkTree(context.Background(), io.Discard, filepath.Join(alias, "api"), git)
 	if err != nil || n != 0 || !asked {
 		t.Fatalf("packed %d, err %v, asked git %v", n, err, asked)
+	}
+}
+
+// A guarded extract (an agent's copy) writes no .git entry and replaces no
+// existing file; an unguarded one still replaces (review r2
+// second-second-F1).
+func TestExtractGuarded(t *testing.T) {
+	dst := t.TempDir()
+	os.WriteFile(filepath.Join(dst, "Makefile"), []byte("keep"), 0o644)
+	for _, name := range []string{".git/config", "a/.Git/hooks/pre-commit"} {
+		if _, err := ExtractWith(tarOf(t, tarEntry{name: name, body: "evil", typ: tar.TypeReg}), dst, ExtractOptions{Guarded: true}); err == nil || !strings.Contains(err.Error(), ".git") {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dst, ".git")); err == nil {
+		t.Error("a .git folder was written")
+	}
+	if _, err := ExtractWith(tarOf(t, tarEntry{name: "Makefile", body: "evil", typ: tar.TypeReg}), dst, ExtractOptions{Guarded: true}); err == nil {
+		t.Error("a guarded extract replaced Makefile")
+	}
+	if b, _ := os.ReadFile(filepath.Join(dst, "Makefile")); string(b) != "keep" {
+		t.Fatalf("Makefile: %q", b)
+	}
+	if _, err := ExtractWith(tarOf(t, tarEntry{name: "new.txt", body: "ok", typ: tar.TypeReg}), dst, ExtractOptions{Guarded: true}); err != nil {
+		t.Fatalf("a new file: %v", err)
+	}
+	if _, err := Extract(tarOf(t, tarEntry{name: "Makefile", body: "new", typ: tar.TypeReg}), dst); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(dst, "Makefile")); string(b) != "new" {
+		t.Fatalf("an unguarded extract did not replace: %q", b)
 	}
 }

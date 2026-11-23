@@ -162,15 +162,60 @@ func TestMCPSandboxCopyOutStaysUnderRoot(t *testing.T) {
 			t.Fatalf("cp out to %q: %s holds %q %v", to, landed, b, err)
 		}
 	}
-	// A symlink at a name the copy writes is replaced, not written through.
-	if res, ok := call("sandbox_cp", map[string]any{"from": id + ":inbox", "to": "trap"}); !ok {
-		t.Fatalf("cp out to trap: %s", mustJSON(res))
+	// A symlink at a name the copy writes is neither written through nor
+	// replaced: an agent's copy only adds files (review r2 second-second-F1).
+	if res, ok := call("sandbox_cp", map[string]any{"from": id + ":inbox", "to": "trap"}); ok || !strings.Contains(mustJSON(res), "already exists") {
+		t.Fatalf("cp out over trap: ok %v %s", ok, mustJSON(res))
 	}
 	if b, _ := os.ReadFile(victim); string(b) != "keep me\n" {
 		t.Fatalf("the copy wrote through a symlink to %s: %q", victim, b)
 	}
-	if st, err := os.Lstat(filepath.Join(root, "trap", "inbox", "notes.txt")); err != nil || !st.Mode().IsRegular() {
-		t.Fatalf("trap/inbox/notes.txt: %v %v", st, err)
+	if st, err := os.Lstat(filepath.Join(root, "trap", "inbox", "notes.txt")); err != nil || st.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("trap/inbox/notes.txt was replaced: %v %v", st, err)
+	}
+}
+
+// An agent's copy out never writes a .git folder, whose config and hooks
+// run code on the next git command, and never replaces an existing file
+// such as a Makefile (review r2 second-second-F1).
+func TestMCPSandboxCopyOutOnlyAddsFilesOutsideGit(t *testing.T) {
+	f := newFixture(t)
+	serveSandboxes(t, f, control.Caller{Admin: true, ID: "0"})
+	root := t.TempDir()
+	os.MkdirAll(filepath.Join(root, ".git"), 0o755)
+	os.WriteFile(filepath.Join(root, ".git", "config"), []byte("[core]\n"), 0o644)
+	os.WriteFile(filepath.Join(root, "Makefile"), []byte("all:\n"), 0o644)
+	call := mcpSession(t, f, "--root", root)
+	res, _ := call("sandbox_create", map[string]any{})
+	id := res["structuredContent"].(map[string]any)["id"].(string)
+
+	evil := t.TempDir()
+	os.MkdirAll(filepath.Join(evil, "x", ".git"), 0o755)
+	os.WriteFile(filepath.Join(evil, "x", ".git", "config"), []byte("[core]\n\tfsmonitor = evil\n"), 0o644)
+	os.WriteFile(filepath.Join(evil, "x", "Makefile"), []byte("all:\n\tevil\n"), 0o644)
+	if res, ok := call("sandbox_cp", map[string]any{"from": filepath.Join(evil, "x"), "to": id + ":"}); !ok {
+		t.Fatalf("cp in: %s", mustJSON(res))
+	}
+	for _, c := range []struct{ from, to, want string }{
+		{id + ":x/.git", ".", ".git"}, // entries named .git/config
+		{id + ":x/Makefile", ".", "already exists"},
+		{id + ":x/Makefile", ".git", ".git"},
+		{id + ":x/Makefile", "sub/.GIT/hooks", ".git"},
+	} {
+		res, ok := call("sandbox_cp", map[string]any{"from": c.from, "to": c.to})
+		if ok || !strings.Contains(mustJSON(res), c.want) {
+			t.Errorf("cp %s to %s: ok %v %s", c.from, c.to, ok, mustJSON(res))
+		}
+	}
+	if b, _ := os.ReadFile(filepath.Join(root, ".git", "config")); string(b) != "[core]\n" {
+		t.Fatalf(".git/config rewritten: %q", b)
+	}
+	if b, _ := os.ReadFile(filepath.Join(root, "Makefile")); string(b) != "all:\n" {
+		t.Fatalf("Makefile rewritten: %q", b)
+	}
+	// A new file still lands.
+	if res, ok := call("sandbox_cp", map[string]any{"from": id + ":x/Makefile", "to": "new"}); !ok {
+		t.Fatalf("cp to a new folder: %s", mustJSON(res))
 	}
 }
 
@@ -193,6 +238,9 @@ func TestMCPSandboxCopyOutRefusedWithoutAConfiningRoot(t *testing.T) {
 		{"unreadable", func() (string, error) { return "", errors.New("gone") }, "can't be read"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
+			old := geteuid
+			geteuid = func() int { return 1000 }
+			t.Cleanup(func() { geteuid = old })
 			f := newFixture(t)
 			serveSandboxes(t, f, control.Caller{Admin: true, ID: "0"})
 			f.env.Getwd = c.getwd
@@ -210,7 +258,37 @@ func TestMCPSandboxCopyOutRefusedWithoutAConfiningRoot(t *testing.T) {
 	}
 }
 
+// As root, or with no home folder known, there is no default root even in
+// an ordinary folder: sudo can leave HOME at root's while the folder is a
+// user's home (review r2 sol-F1, first-F1).
+func TestMCPDefaultRootNeedsAKnownHomeAndNoRoot(t *testing.T) {
+	wd := t.TempDir()
+	getwd := func() (string, error) { return wd, nil }
+	old := geteuid
+	t.Cleanup(func() { geteuid = old })
+
+	geteuid = func() int { return 1000 }
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("USERPROFILE", os.Getenv("HOME"))
+	if r, why := defaultRoot(getwd); r == "" {
+		t.Fatalf("an ordinary folder: no root (%s)", why)
+	}
+	geteuid = func() int { return 0 }
+	if r, why := defaultRoot(getwd); r != "" || !strings.Contains(why, "runs as root") {
+		t.Fatalf("as root: %q %q", r, why)
+	}
+	geteuid = func() int { return 1000 }
+	t.Setenv("HOME", "")
+	t.Setenv("USERPROFILE", "")
+	if r, why := defaultRoot(getwd); r != "" || !strings.Contains(why, "home folder") {
+		t.Fatalf("no HOME: %q %q", r, why)
+	}
+}
+
 func TestMCPSandboxCopyRootDefaultsToTheCurrentFolder(t *testing.T) {
+	old := geteuid
+	geteuid = func() int { return 1000 }
+	t.Cleanup(func() { geteuid = old })
 	f := newFixture(t)
 	serveSandboxes(t, f, control.Caller{Admin: true, ID: "0"})
 	wd := t.TempDir()

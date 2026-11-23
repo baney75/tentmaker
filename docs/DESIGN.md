@@ -903,13 +903,18 @@ each stream and says when it cut one. Over MCP, `sandbox_exec` keeps the last 64
 stream (the end is where an error usually is), starting on a UTF-8 boundary, and answers
 `stdout_cut_bytes` and `stderr_cut_bytes` with how many bytes it dropped from the start, so the
 answer fits a model's context. `tentmaker mcp --root DIR` (default: the current folder when it
-starts, symlinks resolved, unless that is a filesystem root, the home folder or can't be read:
-then there is no default, the server still serves, and copy out is refused with a note to pass
-`--root`; review first-F1 and second-F3) is the only place `sandbox_cp` may copy out of a sandbox into: a
+starts, symlinks resolved, unless that is a filesystem root, the home folder or can't be read,
+or the server runs as root or knows no home folder: then there is no default, the server still
+serves, and copy out is refused with a note to pass `--root`; review first-F1, second-F3 and r2
+sol-F1) is the only place `sandbox_cp` may copy out of a sandbox into: a
 relative `to` is taken from the root, the part of the path that exists has its symlinks resolved,
 and anything that isn't the root or under it is refused before the copy starts. `Extract` then
 writes only below that folder through `os.Root` and removes an existing entry before it writes a
-file, so a symlink or hardlink inside the root can't carry the write to a file outside it. Text in
+file, so a symlink or hardlink inside the root can't carry the write to a file outside it. An
+agent's copy out (`ExtractWith` with `Guarded`) also only adds files: it refuses any entry or `to`
+with a `.git` part, in any case, and refuses to replace an existing file, so an agent can't plant
+a git hook or config, or rewrite a Makefile, that runs on the owner's next command (r2
+second-second-F1). The CLI's own `tentmaker sandbox cp` still replaces. Text in
 a sandbox can steer the agent, and the server may run as root, so it must not be able to name a
 host file. The MCP tool's `timeout_s` is a whole number of seconds from 0
 (until the sandbox expires) to 604800; a fraction or a negative is refused, never truncated,

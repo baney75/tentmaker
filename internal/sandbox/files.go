@@ -212,6 +212,21 @@ type ExtractResult struct {
 // through a symlink already in dst, stops the copy. It writes at most
 // MaxCopy bytes.
 func Extract(r io.Reader, dst string) (ExtractResult, error) {
+	return ExtractWith(r, dst, ExtractOptions{})
+}
+
+// ExtractOptions narrow what an extract may write.
+type ExtractOptions struct {
+	// Guarded is for a copy an agent asked for (the MCP server): no entry
+	// may name a .git folder, whose config and hooks run code on the next
+	// git command, and no existing file is replaced, so a copy only adds
+	// files and can't rewrite a Makefile or uncommitted work (review r2
+	// second-second-F1).
+	Guarded bool
+}
+
+// ExtractWith is Extract with opts.
+func ExtractWith(r io.Reader, dst string, opts ExtractOptions) (ExtractResult, error) {
 	var res ExtractResult
 	dst, err := filepath.Abs(dst)
 	if err != nil {
@@ -242,6 +257,9 @@ func Extract(r io.Reader, dst string) (ExtractResult, error) {
 			return res, fmt.Errorf("the copy holds %q, which would land outside %s", h.Name, dst)
 		}
 		rel := filepath.FromSlash(name)
+		if opts.Guarded && HasGitPart(name) {
+			return res, fmt.Errorf("the copy holds %q, inside a .git folder, which an agent's copy never writes", h.Name)
+		}
 		switch h.Typeflag {
 		case tar.TypeDir:
 			if err := root.MkdirAll(rel, 0o755); err != nil {
@@ -261,6 +279,9 @@ func Extract(r io.Reader, dst string) (ExtractResult, error) {
 			// name itself is replaced, never written through, and a file
 			// hardlinked to one outside dst keeps its contents (sol-F1).
 			if _, err := root.Lstat(rel); err == nil {
+				if opts.Guarded {
+					return res, fmt.Errorf("%s already exists; an agent's copy only adds files, so copy into a new folder", filepath.Join(dst, rel))
+				}
 				if err := root.Remove(rel); err != nil {
 					return res, fmt.Errorf("%s is in the way: %v", filepath.Join(dst, rel), err)
 				}
@@ -287,4 +308,15 @@ func Extract(r io.Reader, dst string) (ExtractResult, error) {
 			res.Skipped++
 		}
 	}
+}
+
+// HasGitPart reports whether a slash or OS separated path has a .git
+// component, in any case (macOS and Windows folders ignore case).
+func HasGitPart(p string) bool {
+	for _, part := range strings.FieldsFunc(p, func(r rune) bool { return r == '/' || r == '\\' }) {
+		if strings.EqualFold(part, ".git") {
+			return true
+		}
+	}
+	return false
 }

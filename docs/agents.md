@@ -68,7 +68,7 @@ Without a terminal, install.sh runs sudo with `-n`, so it fails fast instead of 
 claude mcp add tentmaker -- tentmaker mcp
 ```
 
-`--root DIR` names the one folder `sandbox_cp` may copy files out of a sandbox into. It defaults to the folder the server starts in, which for Claude Code is the project you opened. When the server starts in `/`, a drive root or your home folder, there is no default and copying out is refused until you pass `--root`, because such a folder would confine nothing. Pin it when that isn't what you want:
+`--root DIR` names the one folder `sandbox_cp` may copy files out of a sandbox into. It defaults to the folder the server starts in, which for Claude Code is the project you opened. When the server starts in `/`, a drive root or your home folder, runs as root, or has no home folder set, there is no default and copying out is refused until you pass `--root`, because such a folder would confine nothing. Pin it when that isn't what you want:
 
 ```sh
 claude mcp add tentmaker -- tentmaker mcp --root /home/alice/src/myproject
@@ -105,7 +105,7 @@ claude mcp add tentmaker -- tentmaker mcp --root /home/alice/src/myproject
 
 Tools that change the device need the MCP server process to run as root or Administrator. Run as a normal user, they return an error saying so, and the read tools still work. For those changes, an agent can fall back to the CLI with `sudo`. The sandbox tools don't need root: they work for any account listed in `[sandbox] users` in the config (root and Administrator always may). Prefer that: run the server as your own account and add it to `[sandbox] users`.
 
-Text inside a sandbox can steer an agent, so treat what comes out of one as untrusted. That is why `sandbox_cp` writes only under `--root`: an agent told to copy a file over `~/.bashrc` or `/etc/passwd` gets a refusal, even when the server runs as root. Inside the root, the copy replaces a symlink or an existing file instead of writing through it, so it never changes a file outside the root.
+Text inside a sandbox can steer an agent, so treat what comes out of one as untrusted. That is why `sandbox_cp` writes only under `--root`: an agent told to copy a file over `~/.bashrc` or `/etc/passwd` gets a refusal, even when the server runs as root. Inside the root, the copy only adds files: it refuses to replace an existing file or symlink and refuses any path through a `.git` folder, so it can't plant a git hook or rewrite your Makefile. Copy into a new folder and move what you want yourself.
 
 ## The agent loop
 
