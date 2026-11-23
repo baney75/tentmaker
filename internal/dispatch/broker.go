@@ -478,7 +478,14 @@ func (b *Broker) newNameLocked(device string) string {
 // runners at once, so a concurrent request can't over-serve a job.
 func (b *Broker) pickLocked(req core.WorkRequest, now time.Time) []*grantRec {
 	skipped := false
-	picks := b.pickAllLocked(req, now, &skipped)
+	if req.OnlyRepoIdle {
+		// Another repo waits for a device that only a reset frees: offer
+		// nothing, so it empties, resets and takes that repo's job.
+		if b.pickAllLocked(req, now, &skipped, false); skipped {
+			return nil
+		}
+	}
+	picks := b.pickAllLocked(req, now, &skipped, true)
 	for _, rec := range picks {
 		rec.drain = skipped
 	}
@@ -486,8 +493,9 @@ func (b *Broker) pickLocked(req core.WorkRequest, now time.Time) []*grantRec {
 }
 
 // pickAllLocked picks grants for req; it sets *skipped when a job this
-// device could run waits only because of req.OnlyRepo.
-func (b *Broker) pickAllLocked(req core.WorkRequest, now time.Time, skipped *bool) []*grantRec {
+// device could run waits only because of req.OnlyRepo. With reserve false
+// it only sets *skipped and picks nothing.
+func (b *Broker) pickAllLocked(req core.WorkRequest, now time.Time, skipped *bool, reserve bool) []*grantRec {
 	var picks []*grantRec
 	type cand struct {
 		r      *repoState
@@ -559,7 +567,7 @@ func (b *Broker) pickAllLocked(req core.WorkRequest, now time.Time, skipped *boo
 		return a.ID < c.ID
 	})
 	for _, c := range cands {
-		if len(picks) >= req.Free {
+		if !reserve || len(picks) >= req.Free {
 			break
 		}
 		rec := &grantRec{Name: b.newNameLocked(req.Device), Kind: core.KindRunner, Device: req.Device,
@@ -575,7 +583,7 @@ func (b *Broker) pickAllLocked(req core.WorkRequest, now time.Time, skipped *boo
 		}
 		for _, h := range r.heads {
 			for _, cj := range h.jobs {
-				if len(picks) >= req.Free {
+				if reserve && len(picks) >= req.Free {
 					return picks
 				}
 				ctxName := CheckContext(cj)
@@ -592,6 +600,9 @@ func (b *Broker) pickAllLocked(req core.WorkRequest, now time.Time, skipped *boo
 				}
 				if !onlyRepo(req, r.forge, r.cfg.Name) {
 					*skipped = true
+					continue
+				}
+				if !reserve {
 					continue
 				}
 				job := core.Job{Forge: r.forge, Repo: r.cfg.Name, Name: cj.Name, Workflow: cj.Workflow,

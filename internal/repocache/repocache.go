@@ -10,7 +10,13 @@
 // a hash of the forge and repo, so names never nest (GitLab's group/sub/name
 // can't land inside group/sub's cache).
 //
-// The total is capped. After a job, the store measures that repo's folder
+// Each repo may also have a container store (podman's images, layers and
+// build cache) at <root>/.containers/<key>/storage. Every folder above it is
+// the daemon's, so a job can't swap a path on the way to it for a symlink:
+// the executor bind-mounts it by path. It counts toward the repo's size and
+// leaves with the repo.
+//
+// The total is capped. After a job, the store measures that repo's folders
 // and deletes whole repos, least recently used first, until the total fits;
 // a repo with a job on the host is never deleted.
 package repocache
@@ -38,6 +44,10 @@ import (
 const DefaultMax = 10 << 30
 
 const indexName = "index.json"
+
+// containersName is the root-owned folder in Root that holds each repo's
+// container store. It never matches keyRe.
+const containersName = ".containers"
 
 var keyRe = regexp.MustCompile(`^[0-9a-f]{32}$`)
 
@@ -205,7 +215,7 @@ func (s *Store) Done(c core.CacheRepo) ([]string, error) {
 	defer s.mu.Unlock()
 	idx := s.load()
 	if e := idx.Repos[k]; e != nil {
-		e.Bytes = usage(filepath.Join(s.o.Root, k))
+		e.Bytes = s.repoUsage(k)
 	}
 	return s.evictLocked(idx)
 }
@@ -232,12 +242,20 @@ func (s *Store) evictLocked(idx *index) ([]string, error) {
 	}
 	onDisk := map[string]bool{}
 	for _, d := range ents {
-		if !keyRe.MatchString(d.Name()) {
-			continue
+		if keyRe.MatchString(d.Name()) {
+			onDisk[d.Name()] = true
 		}
-		onDisk[d.Name()] = true
-		if idx.Repos[d.Name()] == nil {
-			idx.Repos[d.Name()] = &entry{Bytes: usage(filepath.Join(s.o.Root, d.Name()))}
+	}
+	if cents, err := os.ReadDir(filepath.Join(s.o.Root, containersName)); err == nil {
+		for _, d := range cents {
+			if keyRe.MatchString(d.Name()) {
+				onDisk[d.Name()] = true
+			}
+		}
+	}
+	for k := range onDisk {
+		if idx.Repos[k] == nil {
+			idx.Repos[k] = &entry{Bytes: s.repoUsage(k)}
 		}
 	}
 	var total int64
@@ -264,24 +282,56 @@ func (s *Store) evictLocked(idx *index) ([]string, error) {
 			}
 			return keys[a] < keys[b]
 		})
+		name := func(k string) string {
+			if r := idx.Repos[k].Repo; r != "" {
+				return r
+			}
+			return k
+		}
+		// Container stores go first, least recently used first: their
+		// images can be pulled again, and a repo's own store must not push
+		// its build cache out.
 		for _, k := range keys {
 			if total <= s.o.Max {
 				break
 			}
-			if inUse[k] {
+			dir := s.containersKeyDir(k)
+			if _, err := os.Lstat(dir); inUse[k] || err != nil {
+				continue
+			}
+			n := usage(dir)
+			if err := os.RemoveAll(dir); err != nil {
+				_ = s.save(idx)
+				return evicted, fmt.Errorf("repo cache: evict %s's container store: %w", k, err)
+			}
+			total -= n
+			e := idx.Repos[k]
+			if e.Bytes -= n; e.Bytes < 0 {
+				e.Bytes = 0
+			}
+			if _, err := os.Lstat(filepath.Join(s.o.Root, k)); errors.Is(err, fs.ErrNotExist) {
+				evicted = append(evicted, name(k))
+				delete(idx.Repos, k)
+			} else {
+				evicted = append(evicted, name(k)+" (container store)")
+			}
+		}
+		for _, k := range keys {
+			if total <= s.o.Max {
+				break
+			}
+			if inUse[k] || idx.Repos[k] == nil {
 				continue
 			}
 			e := idx.Repos[k]
-			if err := os.RemoveAll(filepath.Join(s.o.Root, k)); err != nil {
-				_ = s.save(idx)
-				return evicted, fmt.Errorf("repo cache: evict %s: %w", k, err)
+			for _, dir := range []string{filepath.Join(s.o.Root, k), s.containersKeyDir(k)} {
+				if err := os.RemoveAll(dir); err != nil {
+					_ = s.save(idx)
+					return evicted, fmt.Errorf("repo cache: evict %s: %w", k, err)
+				}
 			}
 			total -= e.Bytes
-			name := e.Repo
-			if name == "" {
-				name = k
-			}
-			evicted = append(evicted, name)
+			evicted = append(evicted, name(k))
 			delete(idx.Repos, k)
 		}
 	}
@@ -345,6 +395,11 @@ func (s *Store) save(idx *index) error {
 		return err
 	}
 	return config.WriteAtomic(filepath.Join(s.o.Root, indexName), append(data, '\n'), 0o600)
+}
+
+// repoUsage is what repo k takes: its folder and its container store.
+func (s *Store) repoUsage(k string) int64 {
+	return usage(filepath.Join(s.o.Root, k)) + usage(s.containersKeyDir(k))
 }
 
 // usage is the disk space a tree takes. It never follows a symlink.
@@ -454,6 +509,95 @@ func (s *Store) checkActionsDir(fi fs.FileInfo) error {
 	}
 	if fi.Mode().Perm() != 0o700 {
 		return fmt.Errorf("mode %v, not 0700", fi.Mode().Perm())
+	}
+	return nil
+}
+
+func (s *Store) containersKeyDir(k string) string {
+	return filepath.Join(s.o.Root, containersName, k)
+}
+
+// ContainersPath is where repo c's container store is (or would be) on the
+// host. It makes nothing.
+func (s *Store) ContainersPath(c core.CacheRepo) (string, error) {
+	k, err := Key(c)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(s.containersKeyDir(k), "storage"), nil
+}
+
+// PrepareContainers makes repo c's container store, owned by uid:gid with
+// mode 0700, marks the repo used now and returns the store. The two
+// folders above it (.containers and the key) are the daemon's with mode
+// 0700 and are checked like Root, so no job can put a symlink anywhere on
+// the path; the store itself must be a real folder. Call it after the job
+// is registered with InUse.
+func (s *Store) PrepareContainers(c core.CacheRepo, uid, gid int) (string, error) {
+	if !s.Enabled() {
+		return "", errors.New("the repo cache is off")
+	}
+	k, err := Key(c)
+	if err != nil {
+		return "", err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.ensureRoot(); err != nil {
+		return "", fmt.Errorf("repo cache: %w", err)
+	}
+	for _, dir := range []string{filepath.Join(s.o.Root, containersName), s.containersKeyDir(k)} {
+		if err := s.ensureOwnDir(dir); err != nil {
+			return "", fmt.Errorf("repo cache: %w", err)
+		}
+	}
+	store := filepath.Join(s.containersKeyDir(k), "storage")
+	if err := os.Mkdir(store, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
+		return "", fmt.Errorf("repo cache: %w", err)
+	}
+	fi, err := os.Lstat(store)
+	if err != nil {
+		return "", fmt.Errorf("repo cache: %w", err)
+	}
+	if !fi.IsDir() {
+		return "", fmt.Errorf("repo cache: %s is not a folder", store)
+	}
+	if s.o.Chown != nil {
+		if err := s.o.Chown(store, uid, gid); err != nil {
+			return "", fmt.Errorf("repo cache: chown %s: %w", store, err)
+		}
+	}
+	idx := s.load()
+	e := idx.Repos[k]
+	if e == nil {
+		e = &entry{}
+		idx.Repos[k] = e
+	}
+	e.Forge, e.Repo, e.LastUsed = c.Forge, c.Repo, s.o.Now().UTC()
+	if err := s.save(idx); err != nil {
+		return "", fmt.Errorf("repo cache: %w", err)
+	}
+	return store, nil
+}
+
+// ensureOwnDir makes dir a real folder owned by the daemon with mode 0700,
+// or says why it can't be used.
+func (s *Store) ensureOwnDir(dir string) error {
+	if err := os.Mkdir(dir, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
+		return err
+	}
+	fi, err := os.Lstat(dir)
+	if err != nil {
+		return err
+	}
+	if !fi.IsDir() {
+		return fmt.Errorf("%s is not a folder", dir)
+	}
+	if uid, ok := ownerOf(fi); ok && uid != s.o.Owner {
+		return fmt.Errorf("%s is owned by uid %d, not %d", dir, uid, s.o.Owner)
+	}
+	if fi.Mode().Perm() != 0o700 {
+		return os.Chmod(dir, 0o700)
 	}
 	return nil
 }

@@ -146,6 +146,10 @@ type Executor struct {
 	// slotMu orders slot claims; cache holds the per-repo caches.
 	slotMu sync.Mutex
 	cache  *repocache.Store
+	// podMu orders podman restarts (a container store bind, Reset) against
+	// job starts; starting names the jobs whose Start is in flight.
+	podMu    sync.Mutex
+	starting map[string]bool
 	// patchMu guards the Actions cache patch state (patch.go).
 	patchMu        sync.Mutex
 	patchFor       string // the template the result is for
@@ -329,6 +333,8 @@ func (e *Executor) Start(ctx context.Context, spec core.ExecSpec) (err error) {
 	if slotRe.MatchString(spec.Name) {
 		return fmt.Errorf("job name %s looks like a job folder slot", spec.Name)
 	}
+	e.beginStart(spec.Name)
+	defer e.endStart(spec.Name)
 	if _, ok, err := e.slotOf(spec.Name); err != nil || ok {
 		return fmt.Errorf("job %s already exists", spec.Name)
 	}
@@ -340,6 +346,10 @@ func (e *Executor) Start(ctx context.Context, spec core.ExecSpec) (err error) {
 	undo := func() {
 		os.RemoveAll(dir)
 		e.dropSlot(spec.Name)
+	}
+	if err := e.claimStore(ctx, spec, uid, gid); err != nil {
+		e.dropSlot(spec.Name)
+		return err
 	}
 	if err := e.prepareJob(dir, kind, spec, uid, gid); err != nil {
 		undo()
@@ -457,6 +467,11 @@ func (e *Executor) jobEnv(spec core.ExecSpec, uid int) []string {
 		"RUNNER_TOOL_CACHE=" + filepath.Join(dir, "toolcache"),
 		"AGENT_TOOLSDIRECTORY=" + filepath.Join(dir, "toolcache"),
 		"DOCKER_HOST=unix://" + filepath.Join(e.runtimeDir(uid), "podman", "podman.sock"),
+		// podman serves docker's classic build API (buildah, in podman's
+		// store, so a repo's container store keeps its layers) but not
+		// BuildKit's, and buildx's fallback, a BuildKit container, gets no
+		// cgroup in the sandbox.
+		"DOCKER_BUILDKIT=0",
 		// The job's XDG_CONFIG_HOME is its own; this adds the runner's.
 		"CONTAINERS_CONF_OVERRIDE=" + e.podmanConf(),
 		"PATH=" + e.shimDir() + ":/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
@@ -470,6 +485,9 @@ func (e *Executor) jobEnv(spec core.ExecSpec, uid int) []string {
 	}
 	if e.cacheSource(spec.Name) != "" {
 		env = overrideEnv(env, e.cacheEnv())
+	}
+	if e.storeFor(spec.Name) != "" {
+		env = overrideEnv(env, e.storeEnv())
 	}
 	return env
 }
@@ -527,6 +545,10 @@ func (e *Executor) unitArgs(spec core.ExecSpec, kind string, uid, gid int, stdin
 	// Its own repo's cache, in its own mount namespace only.
 	if src := e.cacheSource(spec.Name); src != "" {
 		args = append(args, "-p", "BindPaths="+src+":"+e.cacheMount())
+	}
+	// Its repo's container store when bound, as podman's namespaces see it.
+	for _, p := range e.storeBind(e.storeFor(spec.Name)) {
+		args = append(args, "-p", p)
 	}
 	args = append(args,
 		"-p", "StandardInput=file:"+stdinFile,
@@ -924,7 +946,11 @@ func (e *Executor) Reset(ctx context.Context) error {
 	}
 	// Restart the user manager, in podman's network namespace, and make
 	// podman's namespaces before any podman command, or one would make them.
-	if err := e.startPodman(ctx, uid, gid); err != nil {
+	// No repo's container store stays bound (store.go).
+	e.podMu.Lock()
+	err = e.unbindLocked(ctx, uid, gid)
+	e.podMu.Unlock()
+	if err != nil {
 		return fmt.Errorf("reset: %v", err)
 	}
 	wipe := [][]string{
@@ -951,9 +977,10 @@ func (e *Executor) Reset(ctx context.Context) error {
 			problems = append(problems, "images left after reset")
 		}
 	}
+	// No store is bound from here on: a failure below is a CacheFreedError.
 	entries, err := os.ReadDir(e.jobsDir())
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
+		return &core.CacheFreedError{Err: err}
 	}
 	for _, ent := range entries {
 		if err := e.removeJobDir(ctx, filepath.Join(e.jobsDir(), ent.Name())); err != nil {
@@ -978,8 +1005,14 @@ func (e *Executor) Reset(ctx context.Context) error {
 	} else if len(extra) > 0 {
 		problems = append(problems, "unexpected user units after reset: "+strings.Join(extra, " "))
 	}
+	// A store that was bound is now subject to the cap again.
+	if evicted, err := e.cache.Evict(); err != nil {
+		e.log.Warn("repo cache eviction", "error", err)
+	} else if len(evicted) > 0 {
+		e.log.Info("repo caches evicted", "repos", strings.Join(evicted, " "))
+	}
 	if len(problems) > 0 {
-		return errors.New("reset: " + strings.Join(problems, "; "))
+		return &core.CacheFreedError{Err: errors.New("reset: " + strings.Join(problems, "; "))}
 	}
 	e.log.Info("reset", "executor", Name, "images_wiped", !e.o.KeepImages)
 	return nil

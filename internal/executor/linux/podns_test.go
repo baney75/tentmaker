@@ -56,7 +56,7 @@ func TestResetStartsPodmanNamespaceFirst(t *testing.T) {
 	}
 
 	// The unit gets a job's mounts, and no NoNewPrivileges (newuidmap).
-	args := v.e.podnsArgs(testUID, testGID, filepath.Join(v.o.Paths.Proc, strconv.Itoa(testPodnetPID), "ns", "net"))
+	args := v.e.podnsArgs(testUID, testGID, filepath.Join(v.o.Paths.Proc, strconv.Itoa(testPodnetPID), "ns", "net"), "")
 	if !strings.Contains(cmds[podns], strings.Join(args, " ")) {
 		t.Fatalf("podns unit:\n%s\nwant args %q", cmds[podns], args)
 	}
@@ -125,11 +125,13 @@ func TestResetRefusesPodmanNamespace(t *testing.T) {
 			switch tc.pause {
 			case "none":
 				must(t, os.Remove(pidFile))
+				v.f.pause = "none"
 			case "self":
 				// A pause process left in the host's user namespace.
 				must(t, os.MkdirAll(filepath.Join(v.o.Paths.Proc, "4444", "ns"), 0o755))
 				must(t, os.Symlink("user:[4026531837]", filepath.Join(v.o.Paths.Proc, "4444", "ns", "user")))
 				must(t, os.WriteFile(pidFile, []byte(strconv.Itoa(4444)), 0o600))
+				v.f.pause = "4444"
 			case "host-netns":
 				setNetns(t, v, testPausePID, "net:[4026531840]")
 			case "manager-host-netns":

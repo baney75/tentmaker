@@ -496,6 +496,15 @@ diag() {
 		systemctl list-units --all --no-pager 'tentmaker*' || true
 		echo "== runner processes"
 		ps -u tentmaker-runner -o pid,etime,args 2>/dev/null || true
+		echo "== runner's user units and journal"
+		ruid=$(id -u tentmaker-runner 2>/dev/null || true)
+		if [ -n "$ruid" ]; then
+			sudo systemctl --user -M tentmaker-runner@ --no-pager --all list-units 'podman*' 2>&1 || true
+			sudo systemctl --user -M tentmaker-runner@ show-environment 2>&1 | grep -E '^XDG_' || true
+			grep -Hs '^XDG_' /etc/environment /etc/environment.d/* /usr/lib/environment.d/* || true
+			sudo journalctl --no-pager -n 120 _UID="$ruid" 2>&1 || true
+			sudo journalctl --no-pager -n 40 -u "user@$ruid.service" 2>&1 || true
+		fi
 	fi
 	echo "== kept check logs"
 	if [ "$OS" = linux ]; then

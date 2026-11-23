@@ -207,3 +207,145 @@ func TestDisabled(t *testing.T) {
 		t.Fatal("Prepare must fail when the cache is off")
 	}
 }
+
+func TestPrepareContainersSitsUnderDaemonFolders(t *testing.T) {
+	s, root := newStore(t, 1<<30, nil)
+	store, err := s.PrepareContainers(repo("acme/app"), os.Getuid(), os.Getgid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, _ := s.ContainersPath(repo("acme/app"))
+	if store != want {
+		t.Fatalf("store %s, ContainersPath %s", store, want)
+	}
+	repoDir, _ := s.Path(repo("acme/app"))
+	if strings.HasPrefix(store, repoDir+string(filepath.Separator)) {
+		t.Fatalf("store %s is inside the CI user's repo folder %s, where a job could swap the path for a symlink", store, repoDir)
+	}
+	if runtime.GOOS == "windows" {
+		return
+	}
+	// Every folder from Root down to the store is the daemon's, mode 0700.
+	for d := filepath.Dir(store); d != filepath.Dir(root); d = filepath.Dir(d) {
+		fi, err := os.Lstat(d)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !fi.IsDir() || fi.Mode().Perm() != 0o700 {
+			t.Fatalf("%s: mode %v, want a 0700 folder", d, fi.Mode())
+		}
+	}
+	other, _ := s.ContainersPath(repo("acme/other"))
+	if filepath.Dir(other) == filepath.Dir(store) {
+		t.Fatalf("two repos share a container store folder: %s %s", store, other)
+	}
+}
+
+func TestPrepareContainersRefusesSymlinks(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks need privileges on Windows")
+	}
+	s, root := newStore(t, 1<<30, nil)
+	victim := t.TempDir()
+	// The store folder itself, planted as a symlink to another place.
+	if _, err := s.PrepareContainers(repo("acme/app"), os.Getuid(), os.Getgid()); err != nil {
+		t.Fatal(err)
+	}
+	store, _ := s.ContainersPath(repo("acme/evil"))
+	if err := os.MkdirAll(filepath.Dir(store), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(victim, store); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PrepareContainers(repo("acme/evil"), os.Getuid(), os.Getgid()); err == nil {
+		t.Fatal("PrepareContainers accepted a symlink as the store")
+	}
+	// The key folder above it.
+	key, _ := s.ContainersPath(repo("acme/evil2"))
+	if err := os.Symlink(victim, filepath.Dir(key)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PrepareContainers(repo("acme/evil2"), os.Getuid(), os.Getgid()); err == nil {
+		t.Fatal("PrepareContainers followed a symlinked key folder")
+	}
+	if ents, _ := os.ReadDir(victim); len(ents) != 0 {
+		t.Fatalf("PrepareContainers wrote through a symlink into %s", victim)
+	}
+	_ = root
+}
+
+func TestEvictCountsAndRemovesContainerStores(t *testing.T) {
+	inUse := map[string]bool{}
+	s, _ := newStore(t, 5<<20, func() (map[string]bool, error) { return inUse, nil })
+	old, err := s.PrepareContainers(repo("acme/old"), os.Getuid(), os.Getgid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fill(t, old, 4<<20) // only the container store holds anything
+	if _, err := s.Done(repo("acme/old")); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.Size(repo("acme/old")); got < 4<<20 {
+		t.Fatalf("size %d leaves out the container store", got)
+	}
+	// A bound store counts as in use: it is never evicted.
+	k, _ := Key(repo("acme/old"))
+	kn, _ := Key(repo("acme/new"))
+	inUse[k], inUse[kn] = true, true
+	nw, err := s.Prepare(repo("acme/new"), os.Getuid(), os.Getgid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fill(t, nw, 2<<20)
+	if _, err := s.Done(repo("acme/new")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(old); err != nil {
+		t.Fatalf("a container store in use was evicted: %v", err)
+	}
+	delete(inUse, k)
+	delete(inUse, kn)
+	got, err := s.Evict()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0] != "acme/old" {
+		t.Fatalf("evicted %v, want [acme/old]", got)
+	}
+	if _, err := os.Stat(filepath.Dir(old)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the evicted repo's container store is still there: %v", err)
+	}
+}
+
+// A repo whose container store alone passes the cap loses the store, not
+// its build cache: images can be pulled again.
+func TestEvictTakesContainerStoresBeforeCaches(t *testing.T) {
+	s, _ := newStore(t, 5<<20, func() (map[string]bool, error) { return map[string]bool{}, nil })
+	dir, err := s.Prepare(repo("acme/app"), os.Getuid(), os.Getgid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fill(t, dir, 1<<20)
+	store, err := s.PrepareContainers(repo("acme/app"), os.Getuid(), os.Getgid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fill(t, store, 5<<20)
+	got, err := s.Done(repo("acme/app"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0] != "acme/app (container store)" {
+		t.Fatalf("evicted %v, want acme/app's container store", got)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "blob")); err != nil {
+		t.Fatalf("the repo's build cache was evicted: %v", err)
+	}
+	if _, err := os.Stat(store); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the container store survived: %v", err)
+	}
+	if n := s.Size(repo("acme/app")); n <= 0 || n >= 2<<20 {
+		t.Fatalf("size %d after the store went, want the cache folder's", n)
+	}
+}

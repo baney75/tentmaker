@@ -458,17 +458,24 @@ type WorkRequest struct {
 	// Results carries finished check jobs back to the broker that granted
 	// them, which posts the commit statuses.
 	Results []CheckResult `json:"results"`
-	// OnlyRepo, when set, says a job on the device holds this repo's cache:
-	// every job there runs as one user and can reach the others through
-	// /proc, so the device takes only that repo's cache-safe jobs until it
-	// ends. A broker offers nothing else (an older one that does gets its
-	// offers declined).
+	// OnlyRepo, when set, says the device holds this repo's cache: a job
+	// there holds it, or one did since the device's last reset (an executor
+	// may keep the repo's data reachable until then). Every job there runs
+	// as one user and can reach the others through /proc, so the device
+	// takes only that repo's cache-safe jobs until the reset. A broker
+	// offers nothing else (an older one that does gets its offers
+	// declined).
 	OnlyRepo *CacheRepo `json:"only_repo,omitempty"`
 	// Kept names repos (forge and owner/name) with a failed job's sandbox
 	// kept on the device for debugging; it takes no job of them until the
 	// sandbox is cleaned up. A broker offers none (an older one that does
 	// gets its offers declined).
 	Kept []CacheRepo `json:"kept,omitempty"`
+	// OnlyRepoIdle says no job holding OnlyRepo's cache runs any more: the
+	// hold lasts only until the next reset. A broker with another repo's
+	// job waiting for the device then offers nothing, so the device empties,
+	// resets and takes the waiting job.
+	OnlyRepoIdle bool `json:"only_repo_idle,omitempty"`
 }
 
 // WorkOffer is one job for the worker, with the grant to run it.
@@ -498,6 +505,16 @@ type WorkOffer struct {
 type RepoCacher interface {
 	CachesRepos() bool
 }
+
+// CacheFreedError is a failed Reset that still released every repo's data
+// the executor kept reachable between jobs (a Linux container store bound
+// to podman). The device stays dirty, but the worker's cache hold
+// (state.json held_cache) ends, so a failing later step of the reset
+// doesn't keep the device to one repo.
+type CacheFreedError struct{ Err error }
+
+func (e *CacheFreedError) Error() string { return e.Err.Error() }
+func (e *CacheFreedError) Unwrap() error { return e.Err }
 
 // WorkResponse answers a WorkRequest.
 type WorkResponse struct {

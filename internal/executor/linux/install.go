@@ -278,6 +278,7 @@ func Install(ctx context.Context, o Options) error {
 		{e.slotsDir(), 0o700, 0, 0},
 		{e.affinityDir(), 0o700, 0, 0},
 		{e.cacheMount(), 0o755, 0, 0},
+		{e.storeMount(), 0o755, 0, 0},
 		{e.p.Lib, 0o755, 0, 0},
 		{e.shimDir(), 0o755, 0, 0},
 		{filepath.Join(e.p.Lib, "guest"), 0o755, 0, 0},
@@ -309,7 +310,7 @@ func Install(ctx context.Context, o Options) error {
 	if entries, err := os.ReadDir(e.root); err == nil {
 		for _, ent := range entries {
 			switch ent.Name() {
-			case "jobs", "repo-cache", ".config", ".local":
+			case "jobs", "repo-cache", "container-store", ".config", ".local":
 			default:
 				os.RemoveAll(filepath.Join(e.root, ent.Name()))
 			}
@@ -356,10 +357,18 @@ func Install(ctx context.Context, o Options) error {
 	if err := writeRoot(h, filepath.Join(dropDir, "50-tentmaker.conf"), []byte(userManagerDropIn), 0o644); err != nil {
 		return err
 	}
-	// Rootless podman refuses a ~/.config it doesn't own unless
-	// XDG_CONFIG_HOME names it; this sets it for the runner's manager.
-	envd := "# Written by tentmaker setup.\nXDG_CONFIG_HOME=" + filepath.Join(e.root, ".config") + "\n"
-	if err := writeRoot(h, filepath.Join(e.root, ".config", "environment.d", "10-tentmaker.conf"), []byte(envd), 0o644); err != nil {
+	// The runner's manager environment: rootless podman refuses a ~/.config
+	// it doesn't own unless XDG_CONFIG_HOME names it, and the runtime dir
+	// is the runner's own. systemd's environment.d generator also reads
+	// /etc/environment (99-environment.conf), which on some hosts names
+	// another user's XDG_CONFIG_HOME and XDG_RUNTIME_DIR; podman's service
+	// then fails to start. Later files win, and "zz" sorts after every
+	// numbered one.
+	envDir := filepath.Join(e.root, ".config", "environment.d")
+	if err := os.Remove(filepath.Join(envDir, "10-tentmaker.conf")); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	if err := writeRoot(h, e.managerEnvFile(), []byte(managerEnvText(filepath.Join(e.root, ".config"), e.runtimeDir(uid))), 0o644); err != nil {
 		return err
 	}
 	if err := writeRoot(h, e.podmanConf(), []byte(podmanConfText), 0o644); err != nil {
@@ -390,7 +399,10 @@ func Install(ctx context.Context, o Options) error {
 	// Restart the manager so the slice drop-in and environment.d apply, in
 	// podman's network namespace, and make podman's namespaces before any
 	// podman command does.
-	if err := e.startPodman(ctx, uid, gid); err != nil {
+	e.podMu.Lock()
+	err = e.unbindLocked(ctx, uid, gid)
+	e.podMu.Unlock()
+	if err != nil {
 		return err
 	}
 	bus := filepath.Join(e.runtimeDir(uid), "bus")
@@ -578,4 +590,13 @@ func rmIfExists(p string) error {
 		return err
 	}
 	return nil
+}
+
+// managerEnvFile is the runner's environment.d file.
+func (e *Executor) managerEnvFile() string {
+	return filepath.Join(e.root, ".config", "environment.d", "zz-tentmaker.conf")
+}
+
+func managerEnvText(configHome, runtimeDir string) string {
+	return "# Written by tentmaker setup.\nXDG_CONFIG_HOME=" + configHome + "\nXDG_RUNTIME_DIR=" + runtimeDir + "\n"
 }

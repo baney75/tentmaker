@@ -212,6 +212,14 @@ func (e *Executor) cacheInUse() (map[string]bool, error) {
 	for _, r := range held {
 		out[r.Key] = true
 	}
+	// A bound container store is mounted in podman's namespaces.
+	b, bound, err := e.boundStore()
+	if err != nil {
+		return nil, err
+	}
+	if bound {
+		out[b.Key] = true
+	}
 	return out, nil
 }
 

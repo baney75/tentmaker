@@ -138,6 +138,11 @@ func (e *Executor) debugArgs(name, unit string, spec core.DebugSpec, tty bool, u
 	for _, p := range e.jobMounts(uid, dir) {
 		args = append(args, "-p", p)
 	}
+	// Its repo's container store when bound, where the job saw it: its env
+	// points podman there (store.go). Same uid, so no reach it lacked.
+	for _, p := range e.storeBind(e.storeFor(name)) {
+		args = append(args, "-p", p)
+	}
 	env := e.jobEnv(core.ExecSpec{Name: name, Kind: e.kindOf(name)}, uid)
 	if tty {
 		env = append(env, "TERM=xterm-256color")
