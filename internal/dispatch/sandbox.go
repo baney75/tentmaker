@@ -114,7 +114,9 @@ func (w *Worker) StartSandbox(ctx context.Context, spec SandboxSpec) (SandboxInf
 	rec := &jobRec{Name: spec.Name, Source: SandboxSource, Kind: core.KindSandbox, Executor: e.name,
 		Platform: plat, Started: now, Limits: limits, Expires: now.Add(spec.TTL), Owner: spec.Owner, starting: true}
 	w.st.Jobs = append(w.st.Jobs, rec)
-	w.st.Dirty = true
+	// A sandbox runs whatever an agent sends, as the user every job runs
+	// as, so no repo gets a cache again until the next reset.
+	w.markDirtyLocked()
 	w.mu.Unlock()
 	if err := w.save(); err != nil {
 		w.log.Error("state not saved before a sandbox start", "error", err)
@@ -167,6 +169,10 @@ func (w *Worker) admitSandboxLocked(want core.Platform, limits core.Resources, n
 		return nil, core.Platform{}, why
 	case w.holds > 0:
 		return nil, core.Platform{}, "an update is in progress"
+	case w.cachedRepoLocked() != nil:
+		// A cache is only as private as the least trusted job beside it,
+		// and a sandbox is trusted for no repo (cacheDecisionLocked).
+		return nil, core.Platform{}, "this device holds a repo's cache for its trusted CI jobs until its next reset; try again later"
 	case w.lastTick.IsZero():
 		return nil, core.Platform{}, "the budget has not been decided yet; try again in a few seconds"
 	case !d.Admit:

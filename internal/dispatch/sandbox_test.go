@@ -255,3 +255,78 @@ func TestSandboxesEndAfterACrash(t *testing.T) {
 		t.Fatal("not stopped and cleaned after the restart")
 	}
 }
+
+// A sandbox runs as the user every job runs as, so it can reach a cache
+// beside it through /proc. While the device holds a repo's cache, a job
+// that holds it now or one that held it since the last reset, no sandbox
+// starts.
+func TestSandboxRefusedWhileACacheIsHeld(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		hold func(w *Worker)
+	}{
+		{"a cached job runs", func(w *Worker) {
+			j := heldBy(repoApp)
+			j.Name, j.Executor, j.Kind = "tm-cached", "fake-w1", core.KindRunner
+			w.st.Jobs = append(w.st.Jobs, j)
+		}},
+		{"a cached job ran since the reset", func(w *Worker) {
+			w.st.Held = &core.CacheRepo{Forge: "github", Repo: repoApp}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newRig(t)
+			wr := r.addWorker("w1", 4)
+			wr.ex.SetCachesRepos(true)
+			r.tick()
+			wr.w.mu.Lock()
+			tc.hold(wr.w)
+			wr.w.mu.Unlock()
+			_, err := wr.w.StartSandbox(bg, sbxSpec("sbx-000000000001"))
+			noRoom(t, err, "cache")
+			if called(wr.ex, "Start", "sbx-000000000001") {
+				t.Fatal("a sandbox started beside a held cache")
+			}
+		})
+	}
+}
+
+// Anything a sandbox left behind can read or poison a later job's cache,
+// so after a sandbox no repo gets one until the node is reset, even the
+// repo whose trusted jobs alone ran before it.
+func TestNoCacheAfterASandboxUntilAReset(t *testing.T) {
+	r := newRig(t)
+	wr := r.addWorker("w1", 4)
+	wr.ex.SetCachesRepos(true)
+	r.tick()
+	e := wr.w.execByName("fake-w1")
+	offer := cacheOffer(repoApp, true, false)
+	cache := func() bool {
+		wr.w.mu.Lock()
+		defer wr.w.mu.Unlock()
+		c, ok := wr.w.cacheDecisionLocked(e, offer)
+		return ok && !c.IsZero()
+	}
+	wr.w.mu.Lock()
+	wr.w.ranLocked(trustKey(core.CacheRepo{Forge: "github", Repo: repoApp}))
+	wr.w.mu.Unlock()
+	if !cache() {
+		t.Fatal("no cache after only the repo's own trusted jobs ran")
+	}
+	if _, err := wr.w.StartSandbox(bg, sbxSpec("sbx-000000000001")); err != nil {
+		t.Fatal(err)
+	}
+	if err := wr.w.StopSandbox(bg, "sbx-000000000001", "removed"); err != nil {
+		t.Fatal(err)
+	}
+	if cache() {
+		t.Fatal("a trusted job got its repo's cache after a sandbox ran, before a reset")
+	}
+	r.run(2*time.Minute, 10*time.Second)
+	if wr.ex.Resets() == 0 {
+		t.Fatal("no reset after the sandbox")
+	}
+	if !cache() {
+		t.Fatal("no cache after the reset")
+	}
+}
