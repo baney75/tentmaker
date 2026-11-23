@@ -29,7 +29,8 @@ func (e *Executor) JobLog(ctx context.Context, name string, max int64) (core.Job
 // memory.peak (the most memory it held) and cpu.stat's usage_usec. The
 // cgroup goes away when the unit stops, so the worker samples it while the
 // job runs and keeps the last reading. The cache size is what the repo
-// cache index last measured for the job's repo.
+// cache index last measured for the job's repo; the cache outcomes come
+// from the slot record, written when the job claimed its cache.
 func (e *Executor) JobUsage(ctx context.Context, name string) (core.Usage, error) {
 	if err := checkName(name); err != nil {
 		return core.Usage{}, err
@@ -37,6 +38,7 @@ func (e *Executor) JobUsage(ctx context.Context, name string) (core.Usage, error
 	var u core.Usage
 	if r, ok, err := e.slotOf(name); err == nil && ok {
 		u.CacheBytes = e.cache.Size(core.CacheRepo{Forge: r.Forge, Repo: r.Repo})
+		u.RepoCache, u.ContainerStore = cacheOutcomes(r)
 	}
 	cg := filepath.Join(filepath.Dir(e.p.CgroupControllers), Slice, unitName(name))
 	peak, perr := readInt(filepath.Join(cg, "memory.peak"))

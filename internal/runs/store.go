@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/baney75/tentmaker/internal/config"
 	"github.com/baney75/tentmaker/internal/core"
@@ -168,6 +169,19 @@ func (s *Store) Len() int {
 	defer s.mu.Unlock()
 	s.loadLocked()
 	return len(s.recs)
+}
+
+// HistoryFrom is when the oldest kept record ended (or started) once the
+// store is full, so older records may have been dropped; zero while the
+// store holds fewer than Max.
+func (s *Store) HistoryFrom() time.Time {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.loadLocked()
+	if len(s.recs) < s.max || len(s.recs) == 0 {
+		return time.Time{}
+	}
+	return s.recs[0].at()
 }
 
 // Get returns the record with id.

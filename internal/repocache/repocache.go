@@ -517,6 +517,58 @@ func (s *Store) containersKeyDir(k string) string {
 	return filepath.Join(s.o.Root, containersName, k)
 }
 
+// Warm reports whether repo c's cache folder holds anything: a job that
+// starts now finds an earlier job's cache. It reads one name and follows
+// no link.
+func (s *Store) Warm(c core.CacheRepo) bool {
+	if !s.Enabled() {
+		return false
+	}
+	k, err := Key(c)
+	if err != nil {
+		return false
+	}
+	f, err := os.Open(filepath.Join(s.o.Root, k))
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	names, _ := f.Readdirnames(1)
+	return len(names) > 0
+}
+
+// imagesIndexes are podman's image lists in a store, one per graph driver.
+// An empty list is "[]"; one image takes hundreds of bytes.
+var imagesIndexes = []string{"overlay-images/images.json", "vfs-images/images.json"}
+
+// minImagesIndex is the smallest image list that names an image.
+const minImagesIndex = 16
+
+// ContainersWarm reports whether repo c's container store holds at least
+// one image. The store belongs to the job user, so it is read through an
+// os.Root: a link can't point the daemon outside it, and only the list's
+// size is read, never its contents.
+func (s *Store) ContainersWarm(c core.CacheRepo) bool {
+	if !s.Enabled() {
+		return false
+	}
+	p, err := s.ContainersPath(c)
+	if err != nil {
+		return false
+	}
+	root, err := os.OpenRoot(p)
+	if err != nil {
+		return false
+	}
+	defer root.Close()
+	for _, name := range imagesIndexes {
+		if fi, err := root.Lstat(name); err == nil && fi.Mode().IsRegular() && fi.Size() >= minImagesIndex {
+			return true
+		}
+	}
+	return false
+}
+
 // ContainersPath is where repo c's container store is (or would be) on the
 // host. It makes nothing.
 func (s *Store) ContainersPath(c core.CacheRepo) (string, error) {

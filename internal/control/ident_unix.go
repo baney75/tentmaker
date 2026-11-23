@@ -21,7 +21,13 @@ const DefaultAddr = "unix:/var/run/tentmaker/control.sock"
 // /etc/subuid) as CI jobs. It reads both files on every connection, since
 // setup may create the user after the daemon starts.
 func HostIdentify(runnerUser string) Identify {
-	return unixIdentify(func() ([]IDRange, error) {
+	return unixIdentify(hostRunnerIDs(runnerUser))
+}
+
+// hostRunnerIDs reads runnerUser's uid and subordinate uids from
+// /etc/passwd and /etc/subuid on each call.
+func hostRunnerIDs(runnerUser string) func() ([]IDRange, error) {
+	return func() ([]IDRange, error) {
 		passwd, err := os.ReadFile("/etc/passwd")
 		if err != nil {
 			return nil, err
@@ -31,7 +37,7 @@ func HostIdentify(runnerUser string) Identify {
 			return nil, err
 		}
 		return RunnerIDs(runnerUser, passwd, sub)
-	})
+	}
 }
 
 func unixIdentify(runner func() ([]IDRange, error)) Identify {

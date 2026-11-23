@@ -96,3 +96,29 @@ func TestValidateCPUs(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateViewersAndMetricsListen(t *testing.T) {
+	c := Default(16*int64(GiB), 8)
+	c.Mesh.Viewers = []string{"tag:monitoring", "grafana-box", "nKx7abc.ts.net"}
+	c.MetricsListen = "127.0.0.1:9437"
+	if p := c.Validate(); len(p) != 0 {
+		t.Fatalf("good viewers and listener refused: %q", p)
+	}
+	c.MetricsListen = "[::1]:9437"
+	if p := c.Validate(); len(p) != 0 {
+		t.Fatalf("::1 refused: %q", p)
+	}
+	for _, bad := range []string{"0.0.0.0:9437", "100.64.0.1:9437", "localhost:9437", "127.0.0.1", "127.0.0.1:0", "127.0.0.1:70000"} {
+		c.MetricsListen = bad
+		if p := c.Validate(); !strings.Contains(strings.Join(p, "\n"), "metrics_listen") {
+			t.Errorf("metrics_listen %q accepted", bad)
+		}
+	}
+	c.MetricsListen = ""
+	for _, bad := range []string{"tag:", "*", "tag:a b", "bob@example.com", ""} {
+		c.Mesh.Viewers = []string{bad}
+		if p := c.Validate(); !strings.Contains(strings.Join(p, "\n"), "mesh.viewers") {
+			t.Errorf("viewer %q accepted", bad)
+		}
+	}
+}

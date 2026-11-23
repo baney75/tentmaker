@@ -7,7 +7,8 @@
 // account of the process that owns the TCP connection. A CI job (the
 // runner user, or on Linux one of its subordinate uids) gets 403 on every
 // route, wherever the job fence leaks; Windows Firewall doesn't filter
-// loopback at all. Anyone else may read status and pool. Doctor makes the
+// loopback at all. Anyone else may read status and pool, the metrics
+// (GET /metrics) and the status page (GET /). Doctor makes the
 // daemon call the forges, so it needs the token or an admin caller (root,
 // SYSTEM or an elevated Administrator). POSTs (pause, resume, reload) need
 // the token from <state>/control.token, which only root (or SYSTEM and
@@ -89,6 +90,13 @@ type Handler interface {
 // caller gets the pull request's number and URL.
 type PROpener interface {
 	OpenPR(ctx context.Context, pr core.PullRequest) (core.PullRequestResult, error)
+}
+
+// ViewsHandler serves the metrics and the status page (internal/observe):
+// GET /metrics, and the page at GET / and GET /status. They are open like
+// status, so every caller check in ServeHTTP applies and a CI job gets 403.
+type ViewsHandler interface {
+	Views() http.Handler
 }
 
 // Relayer streams check jobs' source archives. An unknown or expired id is
@@ -200,6 +208,13 @@ func NewServer(h Handler, token string, ident Identify, log *slog.Logger) *Serve
 	s.mux.HandleFunc("POST /v1/reload", s.auth(func(w http.ResponseWriter, r *http.Request) {
 		s.reply(w, nil, h.Reload(r.Context()))
 	}))
+	if vh, ok := h.(ViewsHandler); ok {
+		if v := vh.Views(); v != nil {
+			s.mux.Handle("GET /metrics", v)
+			s.mux.Handle("GET /status", v)
+			s.mux.Handle("GET /{$}", v)
+		}
+	}
 	if rh, ok := h.(RunsHandler); ok {
 		s.addRuns(rh)
 	}
@@ -233,6 +248,27 @@ func NewRelayServer(r Relayer, log *slog.Logger) *Server {
 	s.mux.HandleFunc("GET /v1/relay/{id}", s.relay)
 	s.mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "the relay listener serves only /v1/relay/<id>"})
+	})
+	return s
+}
+
+// NewMetricsServer returns a Server for the loopback metrics listener
+// (config metrics_listen): GET /metrics from views and nothing else, so a
+// Prometheus on this device can scrape it over TCP, which the control
+// API's Unix socket doesn't allow. Like the control API, it names every
+// caller from the connection (TCPIdentify in the daemon) and refuses a CI
+// job, and every caller when ident is nil or can't name one. It takes no
+// token and has no other route.
+func NewMetricsServer(views http.Handler, ident Identify, log *slog.Logger) *Server {
+	if log == nil {
+		log = slog.New(slog.DiscardHandler)
+	}
+	s := &Server{ident: ident, guarded: true, log: log, mux: http.NewServeMux()}
+	if views != nil {
+		s.mux.Handle("GET /metrics", views)
+	}
+	s.mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "the metrics listener serves only GET /metrics"})
 	})
 	return s
 }

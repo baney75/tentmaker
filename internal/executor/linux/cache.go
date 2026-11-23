@@ -43,6 +43,49 @@ type slotRec struct {
 	Forge string `json:"forge"`
 	Repo  string `json:"repo"`
 	Key   string `json:"key"`
+	// Warm: the repo's cache held something when the job claimed it.
+	Warm bool `json:"warm,omitempty"`
+	// StoreWarm: the repo's container store was bound for the job and
+	// held images when the job claimed it.
+	StoreWarm bool `json:"store_warm,omitempty"`
+	// StoreMiss: the repo's container store held images when the job
+	// claimed its cache, but the job started without it (other jobs used
+	// podman, or binding it failed).
+	StoreMiss bool `json:"store_miss,omitempty"`
+}
+
+// markSlot changes job name's slot record with f. A job with no record is
+// left alone. It only feeds metrics, so a failure is logged, never fatal.
+func (e *Executor) markSlot(name string, f func(*slotRec)) {
+	e.slotMu.Lock()
+	defer e.slotMu.Unlock()
+	r, ok, err := e.slotOf(name)
+	if err != nil || !ok {
+		return
+	}
+	f(&r)
+	data, _ := json.Marshal(r)
+	if err := config.WriteAtomic(e.slotPath(name), data, 0o600); err != nil {
+		e.log.Warn("slot record not updated", "name", name, "error", err)
+	}
+}
+
+// cacheOutcomes says whether job r started with a warm repo cache and a
+// warm container store (core.Usage.RepoCache and ContainerStore). Both
+// come from the slot record alone, written when the job claimed its
+// cache, so a reading never depends on when it is taken.
+func cacheOutcomes(r slotRec) (repo, store string) {
+	repo = core.CacheMiss
+	if r.Warm {
+		repo = core.CacheHit
+	}
+	switch {
+	case r.StoreWarm:
+		store = core.CacheHit
+	case r.StoreMiss:
+		store = core.CacheMiss
+	}
+	return repo, store
 }
 
 func (e *Executor) slotsDir() string    { return filepath.Join(e.priv, "slots") }

@@ -49,6 +49,19 @@ type Options struct {
 	Status func() any // this device's status for pool views
 	// Runs is this device's run history; nil serves an empty one.
 	Runs RunsSource
+	// Views serves GET /metrics and the status page (GET / and GET
+	// /status) to the callers the rest of the peer API serves, and to
+	// Viewers. A browser or Prometheus sends no pool header, so these GETs
+	// need none; instead the Host header must name this device (one of its
+	// tailnet IPs or MagicDNS names), so a web page that rebinds its own
+	// name to a tailnet address can't read them. nil serves 404.
+	Views http.Handler
+	// Viewers admits more tailnet nodes to Views alone, never to the rest
+	// of the peer API (work, claim, release, runs): an entry "tag:<name>"
+	// admits nodes with that ACL tag, any other entry the node with that
+	// MagicDNS name (in full, or its first label) or stable node ID. A
+	// request from this device itself is still refused.
+	Viewers []string
 
 	// Version and Platforms are reported by /v1/hello.
 	Version   string
@@ -63,9 +76,11 @@ type Node struct {
 	o       Options
 	log     *slog.Logger
 	members map[string]bool
-	leases  *leases
-	client  *http.Client
-	stream  *http.Client // no overall timeout: archive streams
+	// viewTags and viewNodes are Options.Viewers, lower case.
+	viewTags, viewNodes map[string]bool
+	leases              *leases
+	client              *http.Client
+	stream              *http.Client // no overall timeout: archive streams
 
 	// Seams for tests.
 	now           func() time.Time
@@ -104,6 +119,8 @@ func New(o Options) *Node {
 		o:             o,
 		log:           log,
 		members:       map[string]bool{},
+		viewTags:      map[string]bool{},
+		viewNodes:     map[string]bool{},
 		leases:        newLeases(),
 		now:           time.Now,
 		retryEvery:    15 * time.Second,
@@ -118,6 +135,15 @@ func New(o Options) *Node {
 	for _, m := range o.Members {
 		if m = strings.ToLower(strings.TrimSpace(m)); m != "" {
 			n.members[m] = true
+		}
+	}
+	for _, v := range o.Viewers {
+		v = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(v), "."))
+		switch {
+		case strings.HasPrefix(v, "tag:") && len(v) > len("tag:"):
+			n.viewTags[v] = true
+		case v != "" && !strings.HasPrefix(v, "tag:"):
+			n.viewNodes[v] = true
 		}
 	}
 	n.peerURL = func(p Peer) string {
@@ -319,9 +345,33 @@ func (n *Node) allowed(self Peer, userID int64, login string, tags []string) boo
 	return userID != 0 && userID == self.UserID
 }
 
+// viewer reports whether the node id names is in Options.Viewers.
+func (n *Node) viewer(id Identity) bool {
+	for _, t := range id.Tags {
+		if n.viewTags[strings.ToLower(t)] {
+			return true
+		}
+	}
+	node := strings.ToLower(strings.TrimSuffix(id.Node, "."))
+	short, _, _ := strings.Cut(node, ".")
+	return (node != "" && (n.viewNodes[node] || n.viewNodes[short])) ||
+		(id.ID != "" && n.viewNodes[strings.ToLower(id.ID)])
+}
+
 // handler is the peer API with WhoIs auth in front of every route.
 func (n *Node) handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if isView(r.URL.Path) {
+			// The views alone also admit Viewers.
+			id, ok := n.authorizeWith(w, r, func(self Peer, id Identity) bool {
+				return n.allowed(self, id.UserID, id.LoginName, id.Tags) || n.viewer(id)
+			})
+			if !ok {
+				return
+			}
+			n.serveView(w, r.WithContext(context.WithValue(r.Context(), callerKey{}, id)))
+			return
+		}
 		id, ok := n.authorize(w, r)
 		if !ok {
 			return
@@ -365,6 +415,52 @@ func (n *Node) handler() http.Handler {
 	})
 }
 
+// isView reports whether path is one of the read-only views Options.Views
+// serves.
+func isView(path string) bool { return path == "/metrics" || path == "/" || path == "/status" }
+
+// serveView serves a view to a caller authorize already let in, when the
+// Host header names this device.
+func (n *Node) serveView(w http.ResponseWriter, r *http.Request) {
+	if n.o.Views == nil {
+		writeErr(w, http.StatusNotFound, "no such endpoint")
+		return
+	}
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		writeErr(w, http.StatusMethodNotAllowed, "use GET")
+		return
+	}
+	self, err := n.selfPeer(r.Context(), false)
+	if err != nil || !hostIsSelf(self, r.Host) {
+		n.refuse(r, "", "the Host header names another site")
+		writeErr(w, http.StatusForbidden, "use this device's tailnet address or name")
+		return
+	}
+	n.o.Views.ServeHTTP(w, r)
+}
+
+// hostIsSelf reports whether host (a Host header, port optional) is one of
+// self's tailnet IPs, its MagicDNS name or that name's first label.
+func hostIsSelf(self Peer, host string) bool {
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	host = strings.ToLower(strings.TrimSuffix(strings.Trim(host, "[]"), "."))
+	if host == "" {
+		return false
+	}
+	if ip, err := netip.ParseAddr(host); err == nil {
+		return slices.Contains(self.IPs, ip.Unmap().WithZone(""))
+	}
+	dns := strings.ToLower(strings.TrimSuffix(self.DNSName, "."))
+	if dns == "" {
+		return false
+	}
+	short, _, _ := strings.Cut(dns, ".")
+	return host == dns || host == short
+}
+
 func (n *Node) route(w http.ResponseWriter, r *http.Request, method string, h http.HandlerFunc) {
 	if r.Method != method {
 		w.Header().Set("Allow", method)
@@ -385,6 +481,15 @@ type callerKey struct{}
 // authorize runs WhoIs on the caller and fails closed. It returns the
 // caller's identity.
 func (n *Node) authorize(w http.ResponseWriter, r *http.Request) (Identity, bool) {
+	return n.authorizeWith(w, r, func(self Peer, id Identity) bool {
+		return n.allowed(self, id.UserID, id.LoginName, id.Tags)
+	})
+}
+
+// authorizeWith is authorize with admit as its last rule: a request from
+// this device itself, or one WhoIs can't name, is refused whatever admit
+// says.
+func (n *Node) authorizeWith(w http.ResponseWriter, r *http.Request, admit func(Peer, Identity) bool) (Identity, bool) {
 	ctx, cancel := context.WithTimeout(r.Context(), whoisTimeout)
 	defer cancel()
 	self, err := n.selfPeer(ctx, false)
@@ -411,7 +516,7 @@ func (n *Node) authorize(w http.ResponseWriter, r *http.Request) (Identity, bool
 			return Identity{}, false
 		}
 	}
-	if !n.allowed(self, id.UserID, id.LoginName, id.Tags) {
+	if !admit(self, id) {
 		n.refuse(r, id.LoginName+" on "+id.Node, "not this tailnet user or a member")
 		writeErr(w, http.StatusForbidden, "forbidden")
 		return Identity{}, false

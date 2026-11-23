@@ -220,14 +220,19 @@ func (e *Executor) claimStore(ctx context.Context, spec core.ExecSpec, uid, gid 
 	if err != nil || !ok {
 		return nil
 	}
+	c := core.CacheRepo{Forge: r.Forge, Repo: r.Repo}
+	// The job's container store outcome is a fact of this moment: set
+	// once the job's start with or without its store is decided.
+	withStore := false
+	defer func() { e.markStore(spec.Name, c, withStore) }()
 	if bound && b.Key == r.Key {
+		withStore = true
 		return nil
 	}
 	if !e.idleLocked(ctx, spec.Name) {
 		e.log.Info("job runs without its container store: other jobs use podman", "name", spec.Name, "repo", r.Repo)
 		return nil
 	}
-	c := core.CacheRepo{Forge: r.Forge, Repo: r.Repo}
 	src, err := e.cache.PrepareContainers(c, uid, gid)
 	if err != nil {
 		e.log.Warn("job runs without its container store", "name", spec.Name, "repo", r.Repo, "error", err)
@@ -252,6 +257,7 @@ func (e *Executor) claimStore(ctx context.Context, spec core.ExecSpec, uid, gid 
 	}
 	if why == "" {
 		e.log.Info("container store bound", "name", spec.Name, "repo", r.Repo, "took", time.Since(t0).Round(time.Millisecond).String())
+		withStore = true
 		return nil
 	}
 	e.log.Warn("job runs without its container store", "name", spec.Name, "repo", r.Repo, "error", why)
@@ -359,4 +365,21 @@ func (e *Executor) storeBind(store string) []string {
 		return nil
 	}
 	return []string{"BindPaths=" + store + ":" + e.storeMount()}
+}
+
+// markStore records job name's container store outcome as it claims its
+// cache, when its repo's store holds images: a hit when the job starts
+// with the store bound, a miss when it starts without it. A store with no
+// image yet is no outcome.
+func (e *Executor) markStore(name string, c core.CacheRepo, bound bool) {
+	if !e.cache.ContainersWarm(c) {
+		return
+	}
+	e.markSlot(name, func(r *slotRec) {
+		if bound {
+			r.StoreWarm = true
+		} else {
+			r.StoreMiss = true
+		}
+	})
 }

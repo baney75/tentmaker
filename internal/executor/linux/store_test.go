@@ -522,3 +522,83 @@ func TestResetErrorSaysWhetherTheStoreIsFree(t *testing.T) {
 		}
 	}
 }
+
+// writeImages makes podman's image list in store name an image.
+func writeImages(t *testing.T, store string) {
+	t.Helper()
+	must(t, os.MkdirAll(filepath.Join(store, "overlay-images"), 0o700))
+	must(t, os.WriteFile(filepath.Join(store, "overlay-images", "images.json"),
+		[]byte(`[{"id":"`+strings.Repeat("a", 64)+`","names":["localhost/app:latest"]}]`), 0o600))
+}
+
+func usageOf(t *testing.T, v *env, name string) core.Usage {
+	t.Helper()
+	u, _ := v.e.JobUsage(context.Background(), name)
+	return u
+}
+
+// Each job's usage says whether its repo cache and container store were
+// warm when it claimed its cache (issue #45), and a later reading never
+// changes that (review first-F2): the first job of a repo misses its repo
+// cache and has no store outcome, even after it builds an image; the next
+// job of the repo hits both. A job that ran without the store while it
+// held images is a miss; one that ran without it while it was empty stays
+// no outcome when images come later; a cold job has neither.
+func TestCacheOutcomes(t *testing.T) {
+	v, sh := storeTestEnv(t)
+	ctx := context.Background()
+	must(t, v.e.Start(ctx, cachedSpec("chk-app", core.KindCheck, "acme/app")))
+	if u := usageOf(t, v, "chk-app"); u.RepoCache != core.CacheMiss || u.ContainerStore != "" {
+		t.Fatalf("first job: repo %q store %q, want miss and none", u.RepoCache, u.ContainerStore)
+	}
+	// The job fills its cache and builds an image.
+	repoDir, _ := v.e.cache.Path(core.CacheRepo{Forge: "github", Repo: "acme/app"})
+	must(t, os.WriteFile(filepath.Join(repoDir, "go-build"), []byte("x"), 0o600))
+	writeImages(t, storePath(t, v, "acme/app"))
+	if u := usageOf(t, v, "chk-app"); u.RepoCache != core.CacheMiss || u.ContainerStore != "" {
+		t.Fatalf("first job after its build: repo %q store %q, want miss and none", u.RepoCache, u.ContainerStore)
+	}
+	sh.run("chk-app")
+	must(t, v.e.Start(ctx, cachedSpec("chk-app2", core.KindCheck, "acme/app")))
+	if u := usageOf(t, v, "chk-app2"); u.RepoCache != core.CacheHit || u.ContainerStore != core.CacheHit {
+		t.Fatalf("second job: repo %q store %q, want hit and hit", u.RepoCache, u.ContainerStore)
+	}
+	// app's store is bound, so another repo's job runs without its own.
+	// While that store is empty the job has no outcome, and images a later
+	// job puts there don't make it a miss.
+	must(t, v.e.Start(ctx, cachedSpec("job-other0", "", "acme/other")))
+	writeImages(t, storePath(t, v, "acme/other"))
+	if u := usageOf(t, v, "job-other0"); u.ContainerStore != "" {
+		t.Fatalf("unbound job of a store empty at its start: store %q, want none", u.ContainerStore)
+	}
+	// Now the store holds images and app's is still bound: the next job of
+	// the repo runs without them.
+	must(t, v.e.Start(ctx, cachedSpec("job-other", "", "acme/other")))
+	if u := usageOf(t, v, "job-other"); u.ContainerStore != core.CacheMiss {
+		t.Fatalf("unbound job of a warm store: store %q, want miss", u.ContainerStore)
+	}
+	must(t, v.e.Start(ctx, spec("chk-cold", core.KindCheck)))
+	if u := usageOf(t, v, "chk-cold"); u.RepoCache != "" || u.ContainerStore != "" {
+		t.Fatalf("cold job: repo %q store %q, want none", u.RepoCache, u.ContainerStore)
+	}
+}
+
+// The store is the job user's, so a link in it can't make the daemon read
+// a file outside it: the image list is read through an os.Root.
+func TestContainersWarmIgnoresLinksOut(t *testing.T) {
+	v, _ := storeTestEnv(t)
+	c := core.CacheRepo{Forge: "github", Repo: "acme/app"}
+	store, err := v.e.cache.PrepareContainers(c, os.Getuid(), os.Getgid())
+	must(t, err)
+	outside := t.TempDir()
+	writeImages(t, outside)
+	must(t, os.Symlink(filepath.Join(outside, "overlay-images"), filepath.Join(store, "overlay-images")))
+	if v.e.cache.ContainersWarm(c) {
+		t.Fatal("a link out of the store read as a warm store")
+	}
+	must(t, os.Remove(filepath.Join(store, "overlay-images")))
+	writeImages(t, store)
+	if !v.e.cache.ContainersWarm(c) {
+		t.Fatal("a store with an image reads as cold")
+	}
+}

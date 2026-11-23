@@ -49,6 +49,14 @@ func (e *Engine) WithLocation(loc *time.Location) *Engine {
 	return e
 }
 
+// The budget's own guards, as core.Decision.Guards names them next to the
+// host guards (guards.Guard*).
+const (
+	GuardPower       = "power"        // power can't be read
+	GuardBattery     = "battery"      // on battery below pause_below_percent
+	GuardBatteryStop = "battery_stop" // on battery below stop_below_percent
+)
+
 // Decide returns the budget for now with running jobs already running.
 //
 // The profile comes from the first of these that applies: power unknown
@@ -76,14 +84,17 @@ func (e *Engine) Decide(ctx context.Context, now time.Time, running int) core.De
 	switch {
 	case perr != nil:
 		d.Profile, d.Admit = Everyday, false
+		d.Guards = append(d.Guards, GuardPower)
 		why("can't read power (%v), so no new jobs", perr)
 
 	case onBattery && ps.BatteryPercent < b.StopBelow:
 		d.Profile, d.Evict = Off, true
+		d.Guards = append(d.Guards, GuardBatteryStop)
 		why("on battery at %d%%, below %d%%, stopping running jobs", ps.BatteryPercent, b.StopBelow)
 
 	case onBattery && ps.BatteryPercent < b.PauseBelow:
 		d.Profile = Off
+		d.Guards = append(d.Guards, GuardBattery)
 		why("on battery at %d%%, below %d%%", ps.BatteryPercent, b.PauseBelow)
 
 	default:
@@ -138,8 +149,11 @@ func (e *Engine) Decide(ctx context.Context, now time.Time, running int) core.De
 		d.Evict = true
 	}
 	d.Reasons = append(d.Reasons, g.Reasons...)
+	d.Guards = append(d.Guards, g.Guards...)
 	if g.Busy && d.Profile == Boost {
 		d.Profile = Everyday
+		// Only here does a busy guard hold CI back.
+		d.Guards = append(d.Guards, g.BusyGuards...)
 		why("you are using the machine, so the reserved everyday budget instead of boost")
 	}
 

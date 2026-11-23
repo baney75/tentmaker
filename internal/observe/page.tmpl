@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="referrer" content="no-referrer">
+<title>tentmaker{{if .Pool}} · {{.Pool}}{{end}}</title>
+<link rel="icon" href="{{.Icon}}">
+<style>{{.CSS}}</style>
+</head>
+<body data-every="{{.Every}}">
+<header class="top">
+  <div class="brand">{{.Mark}}<span class="name">tentmaker</span>{{if .Pool}}<span class="pool">{{.Pool}}</span>{{end}}</div>
+  <p class="fresh" id="fresh" role="status" aria-live="polite">Updated <time id="updated" datetime="{{.Stamp}}">{{.Updated}}</time></p>
+</header>
+<main id="live" data-stamp="{{.Stamp}}">
+  <ul class="summary" aria-label="Pool summary">
+    <li><b>{{.Online}}</b><span>of {{.Total}} device{{if ne .Total 1}}s{{end}} up</span></li>
+    <li><b>{{.Running}}</b><span>job{{if ne .Running 1}}s{{end}} running</span></li>
+    <li><b>{{.Queued}}</b><span>queued</span></li>
+    <li{{if .Failed}} class="bad"{{end}}><b>{{.Failed}}</b><span>failed in {{if .Kept}}the last {{.Kept}}{{else}}24 h{{end}}</span></li>
+  </ul>
+
+  <section aria-labelledby="h-devices">
+    <h2 id="h-devices">Devices</h2>
+    <ul class="cards">
+    {{range .Devices}}
+      <li class="card{{if .Offline}} off{{else if not .Admit}} hold{{end}}">
+        <div class="head">
+          <h3>{{.Name}}</h3>
+          <span class="tags">{{if .Self}}<span class="tag">this device</span>{{end}}{{if .Broker}}<span class="tag">broker</span>{{end}}</span>
+        </div>
+        {{if .Offline}}
+          <p class="why">Unreachable: {{.Error}}</p>
+        {{else}}
+          <p class="profile"><span class="badge p-{{.Profile}}">{{.Profile}}</span> {{.Limits}}</p>
+          {{if .Slots}}<p class="slots">{{.Slots}}</p>{{end}}
+          {{if .Why}}<p class="why">{{.Why}}</p>{{end}}
+          {{if .Pause}}<p class="warn">{{.Pause}}</p>{{end}}
+          {{if .Guards}}<p class="warn">Held back by: {{range $i, $g := .Guards}}{{if $i}}, {{end}}{{$g}}{{end}}</p>{{end}}
+          {{if .Problems}}<p class="warn">{{.Problems}} problem{{if ne .Problems 1}}s{{end}}{{if .Next}}. Next: <code>{{.Next}}</code>{{end}}</p>{{end}}
+        {{end}}
+        {{if .Version}}<p class="meta">v{{.Version}}</p>{{end}}
+      </li>
+    {{else}}
+      <li class="empty">No devices answered.</li>
+    {{end}}
+    </ul>
+  </section>
+
+  <section aria-labelledby="h-running">
+    <h2 id="h-running">Running jobs</h2>
+    {{if .Jobs}}
+    <ul class="rows">
+    {{range .Jobs}}
+      <li>
+        <span class="what">{{if .URL}}<a href="{{.URL}}" rel="noreferrer noopener">{{.Repo}} · {{.Job}}</a>{{else}}{{.Repo}} · {{.Job}}{{end}}</span>
+        <span class="where">{{.Device}}</span>
+        <span class="when">{{if .At}}<time datetime="{{.At}}">{{.Age}}</time>{{else}}{{.Age}}{{end}}</span>
+      </li>
+    {{end}}
+    </ul>
+    {{else}}<p class="empty">Nothing running.</p>{{end}}
+  </section>
+
+  {{if .Queue}}
+  <section aria-labelledby="h-queued">
+    <h2 id="h-queued">Queued at the forge</h2>
+    <ul class="rows">
+    {{range .Queue}}
+      <li><span class="what">{{.Repo}}</span><span class="where">{{.Forge}}, {{.Mode}} mode</span><span class="when">{{.N}} waiting</span></li>
+    {{end}}
+    </ul>
+  </section>
+  {{end}}
+
+  <section aria-labelledby="h-failures">
+    <h2 id="h-failures">Last failures</h2>
+    {{if .Failures}}
+    <ul class="rows">
+    {{range .Failures}}
+      <li class="bad">
+        <span class="what">{{if .URL}}<a href="{{.URL}}" rel="noreferrer noopener">{{.Repo}} · {{.Job}}</a>{{else}}{{.Repo}} · {{.Job}}{{end}}{{if .Step}}<small>{{.Conclusion}} at {{.Step}}</small>{{else}}<small>{{.Conclusion}}</small>{{end}}</span>
+        <span class="where">{{.Device}}</span>
+        <span class="when">{{if .At}}<time datetime="{{.At}}">{{.Age}}</time>{{else}}{{.Age}}{{end}}</span>
+      </li>
+    {{end}}
+    </ul>
+    {{else}}<p class="empty">No failed jobs in the history.</p>{{end}}
+    {{if .Kept}}<p class="meta">The run history goes back only {{.Kept}} on at least one device (history_max), so older failures are not counted.</p>{{end}}
+  </section>
+
+  {{if .APIs}}
+  <section aria-labelledby="h-api">
+    <h2 id="h-api">Forge API quota</h2>
+    <ul class="rows">
+    {{range .APIs}}
+      <li{{if .Low}} class="lowq"{{end}}><span class="what">{{.Forge}}</span><span class="where">{{.Device}}</span><span class="when">{{.Left}} left{{if .Reset}}, {{.Reset}}{{end}}</span></li>
+    {{end}}
+    </ul>
+  </section>
+  {{end}}
+
+  {{if .Errors}}
+  <section aria-labelledby="h-errors">
+    <h2 id="h-errors">Not shown</h2>
+    <ul class="plain">{{range .Errors}}<li>{{.}}</li>{{end}}</ul>
+  </section>
+  {{end}}
+</main>
+<footer class="foot">
+  <p>Read only. This page refreshes itself every {{.Every}} seconds while it is open. Metrics for this device are at <a href="metrics">/metrics</a>.</p>
+</footer>
+<script>{{.JS}}</script>
+</body>
+</html>

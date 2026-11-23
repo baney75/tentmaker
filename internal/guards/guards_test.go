@@ -374,3 +374,43 @@ func TestMacProbe(t *testing.T) {
 		t.Error("ps fails: want error")
 	}
 }
+
+// Each tripped guard has a fixed name next to its sentence, for metrics.
+func TestCheckNamesGuards(t *testing.T) {
+	boom := errors.New("boom")
+	for _, tt := range []struct {
+		name  string
+		g     func(*config.Guards)
+		probe func(*Fake)
+		want  []string
+		busy  []string
+	}{
+		{name: "healthy"},
+		{name: "memory low", probe: func(f *Fake) { f.Memory = gib }, want: []string{GuardMemory}},
+		{name: "memory unreadable", probe: func(f *Fake) { f.MemErr = boom }, want: []string{GuardMemory}},
+		{name: "disk below stop", probe: func(f *Fake) { f.Disk = 4 * gib }, want: []string{GuardDisk, GuardDiskStop}},
+		{name: "load high", g: func(g *config.Guards) { g.MaxLoadPerCPU = 1 }, probe: func(f *Fake) { f.Load = 3 }, busy: []string{GuardLoad}},
+		{name: "process", g: func(g *config.Guards) { g.PauseWhenRunning = []string{"steam", "zsh", "launchd"} }, busy: []string{GuardProcess}},
+		{name: "all", g: func(g *config.Guards) { g.MaxLoadPerCPU = 0.5; g.PauseWhenRunning = []string{"steam"} },
+			probe: func(f *Fake) { f.Memory = gib; f.Disk = 3 * gib; f.Load = 2; f.Procs = []string{"steam"} },
+			want:  []string{GuardMemory, GuardDisk, GuardDiskStop}, busy: []string{GuardLoad, GuardProcess}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			g := baseGuards
+			if tt.g != nil {
+				tt.g(&g)
+			}
+			f := healthy
+			if tt.probe != nil {
+				tt.probe(&f)
+			}
+			r := Check(context.Background(), g, baseJob, f, "/state", 0)
+			if !reflect.DeepEqual(r.Guards, tt.want) || !reflect.DeepEqual(r.BusyGuards, tt.busy) {
+				t.Fatalf("guards %q busy %q, want %q and %q (reasons %q)", r.Guards, r.BusyGuards, tt.want, tt.busy, r.Reasons)
+			}
+		})
+	}
+	if r := Check(context.Background(), baseGuards, baseJob, nil, "/state", 0); !reflect.DeepEqual(r.Guards, []string{GuardProbe}) {
+		t.Fatalf("nil probe guards %q", r.Guards)
+	}
+}

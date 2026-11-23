@@ -78,6 +78,19 @@ type Answer struct {
 	Queued []string `json:"queued,omitempty"`
 	// Errors names the devices that did not answer, and why.
 	Errors []string `json:"errors,omitempty"`
+	// HistoryFrom, when not zero, is when the oldest record of a full run
+	// history ended (or started): history_max dropped what came before, so
+	// an answer can't speak for earlier jobs. A pool answer carries the
+	// latest of its devices'.
+	HistoryFrom time.Time `json:"history_from,omitzero"`
+}
+
+// Later returns the later of two HistoryFrom times; zero means none.
+func Later(a, b time.Time) time.Time {
+	if b.After(a) {
+		return b
+	}
+	return a
 }
 
 // LogAnswer is a job's log tail.

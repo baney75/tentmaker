@@ -30,6 +30,39 @@ type Result struct {
 	// busy probe that can't be read counts as busy.
 	Busy    bool     `json:"busy"`
 	Reasons []string `json:"reasons"` // one plain sentence per tripped guard
+	// Guards names each tripped guard that stops new or running jobs,
+	// once, in a word that never changes (the Guard constants), for
+	// metrics; Reasons says it in a sentence.
+	Guards []string `json:"guards,omitempty"`
+	// BusyGuards names each tripped guard that only marks the machine
+	// busy (load, process). They hold CI back only where busy lowers
+	// boost to everyday, which the budget decides.
+	BusyGuards []string `json:"busy_guards,omitempty"`
+}
+
+// Guard names, as Result.Guards and core.Decision.Guards list them.
+const (
+	GuardProbe    = "probe"     // no host probe at all
+	GuardMemory   = "memory"    // free memory is low or unreadable
+	GuardDisk     = "disk"      // free disk is low or unreadable
+	GuardDiskStop = "disk_stop" // free disk is below stop_below_disk
+	GuardLoad     = "load"      // load is high or unreadable
+	GuardProcess  = "process"   // a watched process runs, or the list is unreadable
+)
+
+// trip adds name to r.Guards once.
+func (r *Result) trip(name string) { r.Guards = addOnce(r.Guards, name) }
+
+// tripBusy adds name to r.BusyGuards once.
+func (r *Result) tripBusy(name string) { r.BusyGuards = addOnce(r.BusyGuards, name) }
+
+func addOnce(list []string, name string) []string {
+	for _, g := range list {
+		if g == name {
+			return list
+		}
+	}
+	return append(list, name)
 }
 
 // diskPerRunningJob is the extra free disk kept per running job, since each
@@ -46,6 +79,7 @@ func Check(ctx context.Context, g config.Guards, job config.Job, p Probe, stateD
 		r.Reasons = append(r.Reasons, fmt.Sprintf(format, a...))
 	}
 	if p == nil {
+		r.trip(GuardProbe)
 		block("no host probe, so no new jobs")
 		return r
 	}
@@ -54,17 +88,21 @@ func Check(ctx context.Context, g config.Guards, job config.Job, p Probe, stateD
 	}
 
 	if free, err := p.FreeMemory(ctx); err != nil {
+		r.trip(GuardMemory)
 		block("can't read free memory (%v), so no new jobs", err)
 	} else if need := int64(job.Memory) + int64(g.MinFreeMemory); free < need {
+		r.trip(GuardMemory)
 		block("free memory %s is below %s (a %s job plus %s kept free)",
 			FormatBytes(free), FormatBytes(need), FormatBytes(int64(job.Memory)), FormatBytes(int64(g.MinFreeMemory)))
 	}
 
 	if free, err := p.FreeDisk(ctx, stateDir); err != nil {
+		r.trip(GuardDisk)
 		block("can't read free disk at %s (%v), so no new jobs", diskName(stateDir), err)
 	} else {
 		need := int64(g.MinFreeDisk) + int64(running)*diskPerRunningJob
 		if free < need {
+			r.trip(GuardDisk)
 			if running > 0 {
 				block("free disk %s at %s is below %s (%s plus 1 GiB for each of %d running jobs)",
 					FormatBytes(free), diskName(stateDir), FormatBytes(need), FormatBytes(int64(g.MinFreeDisk)), running)
@@ -74,6 +112,7 @@ func Check(ctx context.Context, g config.Guards, job config.Job, p Probe, stateD
 		}
 		if stop := int64(g.StopBelowDisk); stop > 0 && free < stop {
 			r.Evict = true
+			r.trip(GuardDiskStop)
 			block("free disk %s at %s is below %s, stopping running jobs", FormatBytes(free), diskName(stateDir), FormatBytes(stop))
 		}
 	}
@@ -84,18 +123,22 @@ func Check(ctx context.Context, g config.Guards, job config.Job, p Probe, stateD
 	}
 	if g.MaxLoadPerCPU > 0 {
 		if load, err := p.LoadPerCPU(ctx); err != nil {
+			r.tripBusy(GuardLoad)
 			busy("can't read load (%v), so it counts as busy", err)
 		} else if load > g.MaxLoadPerCPU {
+			r.tripBusy(GuardLoad)
 			busy("load %.2f per CPU is above %.2f", load, g.MaxLoadPerCPU)
 		}
 	}
 
 	if names := wanted(g.PauseWhenRunning); len(names) > 0 {
 		if procs, err := p.Processes(ctx); err != nil {
+			r.tripBusy(GuardProcess)
 			busy("can't read the process list (%v), so it counts as busy", err)
 		} else {
 			for _, w := range names {
 				if matchAny(w.norm, procs) {
+					r.tripBusy(GuardProcess)
 					busy("%s is running", w.label)
 				}
 			}

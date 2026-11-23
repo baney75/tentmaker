@@ -404,9 +404,14 @@ func (e *Executor) claimCache(spec core.ExecSpec, uid, gid int) {
 		e.log.Warn("job runs without its repo cache", "name", spec.Name, "repo", spec.Cache.Repo, "error", err)
 		return
 	}
+	warm := e.cache.Warm(spec.Cache)
 	if _, err := e.cache.Prepare(spec.Cache, uid, gid); err != nil {
 		e.dropSlot(spec.Name)
 		e.log.Warn("job runs without its repo cache", "name", spec.Name, "repo", spec.Cache.Repo, "error", err)
+		return
+	}
+	if warm {
+		e.markSlot(spec.Name, func(r *slotRec) { r.Warm = true })
 	}
 }
 
