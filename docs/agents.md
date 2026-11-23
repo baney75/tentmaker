@@ -91,8 +91,13 @@ claude mcp add tentmaker -- tentmaker mcp
 | `flaky` | no | Tests that failed and passed on the same commit, or flip on a branch: `repo`, `since` (default `14d`). |
 | `why_failed` | no | Why a job failed, small: failed step, up to 5 failing tests with messages, the log around the first error, a flaky verdict. Pass `id`, or `repo` with `sha` or `run_id`. |
 | `debug_exec` | yes, in the kept sandbox | Run one `command` in a failed job's kept sandbox on this device: `id`, `timeout_s` (default 60, at most 600), `max_bytes` (default 65536, at most 1 MiB). Returns `exit_code`, `output`, `truncated`, `timed_out`. |
+| `sandbox_create` | starts a sandbox | A throwaway machine on this device: `os`, `cpus`, `memory`, `ttl` (default 30m), `copy_dir` (an absolute local folder to put in its work folder). Returns its `id`. |
+| `sandbox_exec` | in the sandbox | Run `command` (an argv array) in sandbox `id`, with optional `dir`, `timeout_s` and `stdin`. Returns `exit_code`, `stdout` and `stderr` (each capped at 1 MiB). |
+| `sandbox_cp` | in the sandbox or locally | Copy `from` to `to`; one of them is `ID:PATH`. |
+| `sandbox_ls` | no | Your sandboxes, with their size and when they expire. |
+| `sandbox_rm` | ends the sandbox | Remove a sandbox now. |
 
-Tools that change the device need the MCP server process to run as root or Administrator. Run as a normal user, they return an error saying so, and the read tools still work. For those changes, an agent can fall back to the CLI with `sudo`.
+Tools that change the device need the MCP server process to run as root or Administrator. Run as a normal user, they return an error saying so, and the read tools still work. For those changes, an agent can fall back to the CLI with `sudo`. The sandbox tools don't need root: they work for any account listed in `[sandbox] users` in the config (root and Administrator always may).
 
 ## The agent loop
 
@@ -124,3 +129,25 @@ An agent that pushes a fix can watch its own CI without a browser or a forge tok
 
 The same loop works from a shell: `tentmaker runs --sha SHA --json`, `tentmaker logs JOB-ID`,
 `sudo tentmaker rerun JOB-ID`.
+
+## Sandboxes
+
+An agent can get a throwaway machine on one of your devices, run commands in it and throw it away:
+
+```sh
+id=$(tentmaker sandbox create --ttl 1h --copy .)
+tentmaker sandbox exec "$id" -- go test ./...
+tentmaker sandbox cp "$id":coverage.out .
+tentmaker sandbox rm "$id"
+```
+
+A sandbox gets the same isolation a CI job gets and counts against the device's budget like one, so it can't take more than you gave CI. It always ends: when its time to live runs out, on `rm`, or when the service restarts. Its network is the job fence: it reaches the internet, not your LAN or tailnet. This version runs Linux sandboxes on the device you call from; macOS and Windows sandboxes and placement on other pool devices come later.
+
+To let your own account use sandboxes without sudo, add it to the config:
+
+```toml
+[sandbox]
+users = ["alice"]
+```
+
+Code in a sandbox runs as the same Linux user as CI jobs on that device, so give sandboxes only to agents you'd trust with a CI job there.

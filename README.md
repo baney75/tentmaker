@@ -249,7 +249,7 @@ Tentmaker also serves an MCP server. Register it with Claude Code:
 claude mcp add tentmaker -- tentmaker mcp
 ```
 
-Its read tools (`status`, `pool`, `doctor`, `runs`, `logs`, `stats`, `wait_for_run`) work as any user. Tools that change the device need the MCP server to run as root or Administrator, and return an error that says so otherwise. See [docs/agents.md](docs/agents.md).
+Its read tools (`status`, `pool`, `doctor`, `runs`, `logs`, `stats`, `wait_for_run`) work as any user. Agents can also get throwaway Linux machines from it, counted against the same budget: `tentmaker sandbox create|exec|cp|ls|rm`, and the matching MCP tools. Tools that change the device need the MCP server to run as root or Administrator, and return an error that says so otherwise. See [docs/agents.md](docs/agents.md).
 
 ## Watch your CI
 

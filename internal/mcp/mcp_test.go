@@ -257,7 +257,8 @@ func TestFullSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []string{"status", "pool", "doctor", "set_budget", "add_repo", "remove_repo", "pause", "resume", "migrate_workflows",
-		"install_on_device", "update", "runs", "logs", "rerun", "stats", "wait_for_run", "tests", "flaky", "why_failed", "debug_exec"}
+		"install_on_device", "update", "runs", "logs", "rerun", "stats", "wait_for_run", "tests", "flaky", "why_failed", "debug_exec",
+		"sandbox_create", "sandbox_exec", "sandbox_cp", "sandbox_ls", "sandbox_rm"}
 	if len(list.Tools) != len(want) {
 		t.Fatalf("got %d tools, want %d", len(list.Tools), len(want))
 	}

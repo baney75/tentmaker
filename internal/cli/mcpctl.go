@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/baney75/tentmaker/internal/mcp"
 	"github.com/baney75/tentmaker/internal/mesh"
 	"github.com/baney75/tentmaker/internal/runs"
+	"github.com/baney75/tentmaker/internal/sandbox"
 )
 
 // controller is the MCP Controller. Every tool calls the same functions
@@ -311,3 +313,37 @@ func (a *app) cmdMCP(args []string) (any, error) {
 type silentExit int
 
 func (s silentExit) exitCode() int { return int(s) }
+
+var _ mcp.SandboxController = controller{}
+
+// The sandbox tools need no root here: the daemon decides who may use
+// sandboxes from the connection.
+
+func (c controller) SandboxCreate(ctx context.Context, os, device string, cpus float64, memory, ttl, copyDir string) (any, error) {
+	v, err := c.a.sandboxCreate(ctx, sandboxOpts{OS: os, Device: device, CPUs: cpus, Memory: memory, TTL: ttl, Copy: copyDir})
+	return v, mcpErr(err)
+}
+
+func (c controller) SandboxExec(ctx context.Context, id string, argv []string, dir string, timeoutS float64, stdin string) (any, error) {
+	var in io.Reader
+	if stdin != "" {
+		in = strings.NewReader(stdin)
+	}
+	v, err := c.a.sandboxExecCollect(ctx, id, sandbox.ExecRequest{Argv: argv, Dir: dir, TimeoutS: int64(timeoutS)}, in)
+	return v, mcpErr(err)
+}
+
+func (c controller) SandboxCopy(ctx context.Context, from, to string) (any, error) {
+	v, err := c.a.sandboxCopy(ctx, from, to)
+	return v, mcpErr(err)
+}
+
+func (c controller) SandboxList(ctx context.Context) (any, error) {
+	v, err := c.a.sandboxList(ctx)
+	return v, mcpErr(err)
+}
+
+func (c controller) SandboxRemove(ctx context.Context, id string) (any, error) {
+	v, err := c.a.sandboxRemove(ctx, []string{id})
+	return v, mcpErr(err)
+}

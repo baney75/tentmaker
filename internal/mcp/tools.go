@@ -16,7 +16,7 @@ import (
 // prop is one tool argument.
 type prop struct {
 	Name        string
-	Type        string // "string", "number", "boolean"
+	Type        string // "string", "number", "boolean", "array" (of strings)
 	Description string
 	Enum        []string
 	Default     any
@@ -54,7 +54,65 @@ func (a args) flag(k string) bool {
 	return b
 }
 
+func (a args) strs(k string) []string {
+	l, _ := a[k].([]any)
+	out := make([]string, 0, len(l))
+	for _, v := range l {
+		s, _ := v.(string)
+		out = append(out, s)
+	}
+	return out
+}
+
 func ok(err error) (any, error) { return nil, err }
+
+// SandboxController is a Controller that serves the sandbox tools.
+type SandboxController interface {
+	SandboxCreate(ctx context.Context, os, device string, cpus float64, memory, ttl, copyDir string) (any, error)
+	SandboxExec(ctx context.Context, id string, argv []string, dir string, timeoutS float64, stdin string) (any, error)
+	SandboxCopy(ctx context.Context, from, to string) (any, error)
+	SandboxList(ctx context.Context) (any, error)
+	SandboxRemove(ctx context.Context, id string) (any, error)
+}
+
+// sandboxes is c's SandboxController, or an error saying it has none.
+func sandboxes(c Controller) (SandboxController, error) {
+	sc, ok := c.(SandboxController)
+	if !ok {
+		return nil, fmt.Errorf("this tentmaker MCP server can't run sandboxes")
+	}
+	return sc, nil
+}
+
+func sandboxID(v any) error {
+	s := v.(string)
+	if !strings.HasPrefix(s, "sbx-") || len(s) > 64 {
+		return fmt.Errorf("%q is not a sandbox ID (they look like sbx-1a2b3c4d5e6f); list them with sandbox_ls", s)
+	}
+	return nil
+}
+
+func duration(v any) error {
+	s := v.(string)
+	if s == "" {
+		return nil
+	}
+	if d, err := time.ParseDuration(s); err != nil || d <= 0 {
+		return fmt.Errorf("%q is not a duration like 30m or 2h", s)
+	}
+	return nil
+}
+
+func command(v any) error {
+	l := v.([]any)
+	if len(l) == 0 {
+		return fmt.Errorf("give the command and its arguments, like [\"go\", \"test\", \"./...\"]")
+	}
+	if s, _ := l[0].(string); s == "" {
+		return fmt.Errorf("the first item is the program to run")
+	}
+	return nil
+}
 
 // sizeRe matches the sizes config.Size accepts: "4GiB", "4G", "4GB",
 // "512MiB", "0". The controller does the real parse.
@@ -479,6 +537,112 @@ var tools = []tool{
 			return c.DebugExec(ctx, a.str("id"), a.str("command"), int64(a.num("timeout_s")), int64(a.num("max_bytes")))
 		},
 	},
+	{
+		Name:  "sandbox_create",
+		Title: "Create a sandbox",
+		Description: "Create a throwaway sandbox on this device and return its id. It has the isolation a CI job gets " +
+			"(on Linux its own user, cgroup limits, network namespace and the job fence) and counts against the " +
+			"device's budget like a job; it fails with the reason when there is no room. It is deleted when its ttl " +
+			"runs out, on sandbox_rm, or when the service restarts. copy_dir copies a local folder's working tree " +
+			"into the sandbox's work folder first (uncommitted changes and untracked, non-ignored files; no .git).",
+		Props: []prop{
+			{Name: "os", Type: "string", Enum: []string{"linux", "macos", "windows"}, Default: "linux", Description: "The sandbox's OS."},
+			{Name: "device", Type: "string", Description: "The device to run it on; omit for this one.",
+				Check: func(v any) error {
+					if v.(string) == "" {
+						return nil
+					}
+					return hostName(v)
+				}},
+			{Name: "cpus", Type: "number", Description: "CPUs; omit for one job's.", Check: cpuCount},
+			{Name: "memory", Type: "string", Description: "Memory; omit for one job's. " + memoryHelp, Check: memorySize},
+			{Name: "ttl", Type: "string", Default: "30m", Description: "Time to live, like 30m or 2h.", Check: duration},
+			{Name: "copy_dir", Type: "string", Description: "An absolute local folder to copy in, like the repository you are working in."},
+		},
+		run: func(ctx context.Context, c Controller, a args) (any, error) {
+			sc, err := sandboxes(c)
+			if err != nil {
+				return nil, err
+			}
+			return sc.SandboxCreate(ctx, a.str("os"), a.str("device"), a.num("cpus"), a.str("memory"), a.str("ttl"), a.str("copy_dir"))
+		},
+	},
+	{
+		Name:  "sandbox_exec",
+		Title: "Run a command in a sandbox",
+		Description: "Run one command in a sandbox and return its exit_code, stdout and stderr (each capped at 1 MiB; " +
+			"*_truncated says when). The command is argv, not a shell line: use [\"sh\", \"-c\", \"...\"] for pipes. " +
+			"It runs in the sandbox's work folder unless dir says otherwise, and stops at timeout_s or when the " +
+			"sandbox expires. A non-zero exit_code is a normal result, not a tool error.",
+		Props: []prop{
+			{Name: "id", Type: "string", Required: true, Description: "The sandbox id from sandbox_create.", Check: sandboxID},
+			{Name: "command", Type: "array", Required: true, Description: "The program and its arguments.", Check: command},
+			{Name: "dir", Type: "string", Description: "The folder to run in, relative to the work folder or absolute."},
+			{Name: "timeout_s", Type: "number", Description: "Stop the command after this many seconds; omit to run until the sandbox expires.",
+				Check: func(v any) error {
+					if f := v.(float64); f < 0 || math.IsInf(f, 0) || math.IsNaN(f) {
+						return fmt.Errorf("must be 0 or more")
+					}
+					return nil
+				}},
+			{Name: "stdin", Type: "string", Description: "Text to pass on stdin."},
+		},
+		run: func(ctx context.Context, c Controller, a args) (any, error) {
+			sc, err := sandboxes(c)
+			if err != nil {
+				return nil, err
+			}
+			return sc.SandboxExec(ctx, a.str("id"), a.strs("command"), a.str("dir"), a.num("timeout_s"), a.str("stdin"))
+		},
+	},
+	{
+		Name:  "sandbox_cp",
+		Title: "Copy files to or from a sandbox",
+		Description: "Copy a file or folder between this machine and a sandbox. Write the sandbox side as ID:PATH. " +
+			"Into a sandbox: from is a local path and to is ID:FOLDER; it lands in FOLDER under its own name. Out of " +
+			"a sandbox: from is ID:PATH and to is a local folder. Out of a sandbox, only regular files and folders " +
+			"are written, never links.",
+		Props: []prop{
+			{Name: "from", Type: "string", Required: true, Description: "A local path, or ID:PATH in a sandbox.", Check: nonEmpty},
+			{Name: "to", Type: "string", Required: true, Description: "ID:FOLDER in a sandbox, or a local folder.", Check: nonEmpty},
+		},
+		run: func(ctx context.Context, c Controller, a args) (any, error) {
+			sc, err := sandboxes(c)
+			if err != nil {
+				return nil, err
+			}
+			return sc.SandboxCopy(ctx, a.str("from"), a.str("to"))
+		},
+	},
+	{
+		Name:        "sandbox_ls",
+		Title:       "List sandboxes",
+		Description: "List your sandboxes on this device (every sandbox when the server runs as root) with platform, limits, expiry and state. Read-only.",
+		ReadOnly:    true, Idempotent: true,
+		run: func(ctx context.Context, c Controller, a args) (any, error) {
+			sc, err := sandboxes(c)
+			if err != nil {
+				return nil, err
+			}
+			return sc.SandboxList(ctx)
+		},
+	},
+	{
+		Name:        "sandbox_rm",
+		Title:       "Remove a sandbox",
+		Description: "Stop a sandbox and delete everything in it. Copy out what you need first with sandbox_cp.",
+		Props: []prop{
+			{Name: "id", Type: "string", Required: true, Description: "The sandbox id.", Check: sandboxID},
+		},
+		Destructive: true, Idempotent: true,
+		run: func(ctx context.Context, c Controller, a args) (any, error) {
+			sc, err := sandboxes(c)
+			if err != nil {
+				return nil, err
+			}
+			return sc.SandboxRemove(ctx, a.str("id"))
+		},
+	},
 }
 
 func toolByName(name string) (tool, bool) {
@@ -522,6 +686,8 @@ func (t tool) check(raw map[string]any) (args, error) {
 				v = float64(0)
 			case p.Type == "boolean":
 				v = false
+			case p.Type == "array":
+				v = []any{}
 			}
 		}
 		if !typeOK(p.Type, v) {
@@ -564,6 +730,17 @@ func typeOK(typ string, v any) bool {
 	case "boolean":
 		_, ok := v.(bool)
 		return ok
+	case "array":
+		l, ok := v.([]any)
+		if !ok {
+			return false
+		}
+		for _, x := range l {
+			if _, ok := x.(string); !ok {
+				return false
+			}
+		}
+		return true
 	}
 	return false
 }
@@ -585,6 +762,9 @@ func toolList() []map[string]any {
 		var required []string
 		for _, p := range t.Props {
 			s := map[string]any{"type": p.Type, "description": p.Description}
+			if p.Type == "array" {
+				s["items"] = map[string]any{"type": "string"}
+			}
 			if len(p.Enum) > 0 {
 				s["enum"] = p.Enum
 			}
