@@ -311,6 +311,10 @@ commands fall back to computing what they can locally and say "service not runni
 POST /v1/pr {repo, head, base, title, body} opens or updates a pull request with the device's
 stored GitHub token, for a repo this device serves, and returns {number, url, created}.
 
+The sandbox routes (`/v1/sandboxes...`, see DESIGN.md) need the `Tentmaker-Client` header on
+every request, so a web page can't drive them, and refuse CI jobs like every route. The
+caller's uid or SID owns what it creates; the token or an admin caller sees everything.
+
 The source archive relay listens apart, on 127.0.0.1:7435, and serves only GET
 /v1/relay/<id> (everything else is 404). CI jobs reach 7435. The caller check, not the fence, keeps them off
 the control API: Windows Firewall doesn't filter loopback.

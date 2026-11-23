@@ -408,10 +408,11 @@ func (c *Client) authorize(req *http.Request) error {
 func answerErr(resp *http.Response, data []byte) error {
 	var e struct {
 		Error string `json:"error"`
+		Fix   string `json:"fix"`
 	}
 	_ = json.Unmarshal(data, &e)
 	if e.Error == "" {
 		e.Error = resp.Status
 	}
-	return &Error{Status: resp.StatusCode, Message: e.Error}
+	return &Error{Status: resp.StatusCode, Message: e.Error, Fix: e.Fix}
 }

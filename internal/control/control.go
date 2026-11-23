@@ -235,6 +235,9 @@ func NewServer(h Handler, token string, ident Identify, log *slog.Logger) *Serve
 			s.reply(w, res, err)
 		}))
 	}
+	if sh, ok := h.(SandboxHandler); ok {
+		s.sandboxRoutes(sh)
+	}
 	return s
 }
 
@@ -427,6 +430,7 @@ var ErrNotRunning = errors.New("service not running")
 type Error struct {
 	Status  int
 	Message string
+	Fix     string // what to do about it, when the daemon said
 }
 
 func (e *Error) Error() string { return e.Message }
