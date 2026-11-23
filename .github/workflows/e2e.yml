@@ -248,7 +248,9 @@ jobs:
             { echo "::error::--copy put the wrong tree in: $ls"; exit 1; }
           rc=0; sudo tentmaker sandbox exec "$id" -- sh -c 'echo to-stderr >&2; exit 7' || rc=$?
           test "$rc" = 7 || { echo "::error::exec exited $rc, want 7"; exit 1; }
-          sudo tentmaker sandbox exec "$id" --json -- sh -c 'exit 3' | jq -e '.exit_code == 3' >/dev/null
+          rc=0; sudo tentmaker sandbox exec "$id" --json -- sh -c 'exit 3' >"$RUNNER_TEMP/exec3.json" || rc=$?
+          test "$rc" = 3 && jq -e '.exit_code == 3' "$RUNNER_TEMP/exec3.json" >/dev/null ||
+            { echo "::error::exec --json exited $rc: $(cat "$RUNNER_TEMP/exec3.json")"; exit 1; }
           got=$(echo piped | sudo tentmaker sandbox exec -i "$id" -- cat)
           test "$got" = piped || { echo "::error::stdin gave $got"; exit 1; }
           # Copies both ways.
