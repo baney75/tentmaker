@@ -36,7 +36,7 @@ sandbox's work folder first: in a Git work tree, uncommitted changes and
 untracked files Git doesn't ignore, and no .git.
 
 exec streams the command's output and exits with its exit code. Commands run
-in the sandbox's work folder unless --dir says otherwise. -i passes stdin.
+in the sandbox's work folder, or in --dir, a folder under it. -i passes stdin.
 With --json it prints one object with the exit code and the output (each
 stream capped at 1 MiB).
 
@@ -241,7 +241,7 @@ func (a *app) cmdSandboxExec(args []string) (any, error) {
 		}
 	}
 	f := a.flags("sandbox exec", usageSandbox)
-	dir := f.String("dir", "", "the folder to run in (default: the work folder)")
+	dir := f.String("dir", "", "the folder to run in, relative to the work folder (default: the work folder)")
 	timeout := f.Duration("timeout", 0, "stop the command after this long (default: when the sandbox expires)")
 	stdin := f.Bool("i", false, "pass stdin to the command")
 	pos, err := a.parse(f, args)
