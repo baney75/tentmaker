@@ -160,7 +160,8 @@ func New(o Options) *Client
 func (c *Client) CheapPolls() bool   // core.CheapPoller: limit unknown, past its reset, or a quarter (at least 400) left
 func (c *Client) PollDelay() time.Duration // core.PollPacer: 0 while cheap; else the rest spread to the reset, at most 1 min
 func (c *Client) APIStats() core.APIStats  // core.APICounter: requests, 304s, billed, rate limited since start
-type RateLimitError struct { Until time.Time } // matches core.ErrRateLimited
+type RateLimitError = core.RateLimitError       // Forge "github"; matches core.ErrRateLimited
+func RateLimitWait(status int, h http.Header, body []byte, now time.Time) (time.Duration, bool) // is a 403/429 a rate limit, and how long to wait
 func (c *Client) SetForkApproval(ctx context.Context, repo string) error       // require approval for all outside contributors (public) / disable fork PR workflows (private)
 func (c *Client) SetReadOnlyToken(ctx context.Context, repo string) error      // default GITHUB_TOKEN read-only
 func MigrateWorkflow(src []byte, platform string) (out []byte, report []string, changed bool, err error)
@@ -175,7 +176,29 @@ func TokenFromGH(ctx context.Context) (string, error)                          /
 
 // forgejo (also Gitea)
 func New(o Options) *Client
+
+// core: rate limits, shared by every forge
+type RateLimitError struct { Forge string; Until time.Time; Err error } // matches ErrRateLimited, unwraps to Err
+type RateLimited struct { Message, Fix string; Until time.Time; Wait time.Duration }
+func (RateLimited) RetryAfterS() int
+func AsRateLimited(err error, now time.Time, again string) (RateLimited, bool)
 ```
+
+Rate limit or permission (issue #23). A forge that refuses a call for its rate limit is not
+refusing the token: the token works again after the reset. So no forge client, CLI command or
+doctor check reports a rate limit as a token or permission problem, and no fix for one says to
+make a new token. GitHub refuses with 403 or 429: `X-RateLimit-Remaining: 0` is the primary limit
+(it resets at `X-RateLimit-Reset`); `Retry-After`, or only "rate limit" in the message (then at
+least a minute), is a secondary limit; any other 403 is a permission refusal. GitLab and Forgejo
+refuse with 429 (`Retry-After`, or GitLab's `RateLimit-Reset`). Each client returns a
+`*core.RateLimitError` for these, also when a short wait is still a rate limit after every try.
+`AsRateLimited` turns one into the words a person or agent reads: "GitHub rate limit reached for
+this token; it resets at 05:18 UTC (in 12 min)" (to the second under 5 minutes, else to the minute
+rounded up, so waiting until it is never early), a fix that says the token is fine, to wait until
+then and run it again, and to use a token not shared with other workflows if it keeps happening,
+and the wait in seconds. `CheckRepo` returns a rate limit as its error, never as a `Problems`
+entry, since a missing permission it can't read is not one it lacks. A rate limited call adds no
+work: the broker polls again after the reset (fail closed).
 
 GitHub details ported from fleet-ci (`fleet_ci.py` class `GitHub`): ETag conditional GETs (a 304
 costs no rate limit), list runs with `status=queued` and `status=in_progress` (both at once),
@@ -183,7 +206,9 @@ refetch jobs of an in-progress run at most every 15 s unless the run changed, ig
 than 24 h, `POST /repos/{o}/{r}/actions/runners/generate-jitconfig` with `runner_group_id` 1,
 delete runners, cancel runs. A job's `FromFork` is true when the run's `head_repository.full_name`
 differs from the repo. Retries: 3 tries with jittered backoff on 5xx and network errors; never
-retry a 4xx except 429/403-rate-limit.
+retry a 4xx except 429/403-rate-limit. A 403 a caller expects (a rerun of a run still going) is
+never matched by a rate limited 403. Forgejo sleeps through a 429 of at most 5 s
+(`forgejo.InlineWait`) and fails a longer one at once with the reset, like GitHub.
 
 Rate limit (issue #23). The client never sleeps toward a reset; that held the broker's tick and
 stopped every pickup for up to an hour when five devices shared one workflow token. A rate limit

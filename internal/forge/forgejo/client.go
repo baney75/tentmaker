@@ -60,6 +60,10 @@ const (
 	HTTPTimeout = 30 * time.Second
 	// Tries is how many times a request is sent before giving up.
 	Tries = 3
+	// InlineWait is the longest 429 wait a call sleeps through itself; a
+	// longer one fails the call at once with core.ErrRateLimited, so a
+	// rate limit never holds the broker's tick until the reset.
+	InlineWait = 5 * time.Second
 	// RunMaxAge: runs older than this are ignored.
 	RunMaxAge = 24 * time.Hour
 	// MaxDescription caps a commit status description.
@@ -111,11 +115,15 @@ type Client struct {
 	token    string
 	flavor   string
 	runs     map[string]runInfo // "repo#id" -> run details
+	// limitedUntil: a 429 said to wait this long; calls fail fast with a
+	// *core.RateLimitError until then instead of asking again.
+	limitedUntil time.Time
 }
 
 var (
 	_ core.Forge       = (*Client)(nil)
 	_ core.StatusForge = (*Client)(nil)
+	_ core.PollPacer   = (*Client)(nil)
 )
 
 // New returns a Client.
@@ -237,7 +245,9 @@ type response struct {
 }
 
 // do sends a request with retries: 3 tries with jittered backoff on 5xx
-// and network errors, a wait on 429; other 4xx are final.
+// and network errors, a wait of at most InlineWait on 429; other 4xx are
+// final. A 429 that asks for longer, or is still there after every try,
+// is a *core.RateLimitError.
 func (c *Client) do(ctx context.Context, method, path string, body any, accept string) (response, error) {
 	var payload []byte
 	if body != nil {
@@ -247,6 +257,12 @@ func (c *Client) do(ctx context.Context, method, path string, body any, accept s
 		}
 		payload = b
 	}
+	c.mu.Lock()
+	until := c.limitedUntil
+	c.mu.Unlock()
+	if c.now().Before(until) {
+		return response{}, &core.RateLimitError{Forge: "forgejo", Until: until}
+	}
 	var lastErr error
 	for try := 0; try < Tries; try++ {
 		res, wait, err := c.once(ctx, method, path, payload, accept)
@@ -254,6 +270,18 @@ func (c *Client) do(ctx context.Context, method, path string, body any, accept s
 			return res, nil
 		}
 		lastErr = err
+		if statusOf(err) == http.StatusTooManyRequests && (wait > InlineWait || try == Tries-1) {
+			if wait <= 0 {
+				wait = core.RateLimitUnknownWait
+			}
+			until := c.now().Add(wait)
+			c.mu.Lock()
+			if until.After(c.limitedUntil) {
+				c.limitedUntil = until
+			}
+			c.mu.Unlock()
+			return response{}, &core.RateLimitError{Forge: "forgejo", Until: until, Err: err}
+		}
 		if ctx.Err() != nil || wait < 0 || try == Tries-1 {
 			break
 		}
@@ -265,6 +293,17 @@ func (c *Client) do(ctx context.Context, method, path string, body any, accept s
 		}
 	}
 	return response{}, lastErr
+}
+
+// PollDelay implements core.PollPacer: while a 429's wait runs, the broker
+// waits it out instead of polling into the limit every tick.
+func (c *Client) PollDelay() time.Duration {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if d := c.limitedUntil.Sub(c.now()); d > 0 {
+		return d
+	}
+	return 0
 }
 
 func (c *Client) once(ctx context.Context, method, path string, payload []byte, accept string) (response, time.Duration, error) {

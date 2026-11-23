@@ -29,6 +29,20 @@ type Finding struct {
 	Status string `json:"status"` // ok, warn, fail
 	What   string `json:"what"`
 	Fix    string `json:"fix,omitempty"`
+	// RetryAfterS is set when a forge rate limit stopped the check: run
+	// doctor again in this many seconds.
+	RetryAfterS int `json:"retry_after_s,omitempty"`
+}
+
+// rateLimitFinding is the finding for a forge check a rate limit stopped,
+// or false when err is not a rate limit. It names the limit and its reset,
+// never a permission: the token is fine.
+func rateLimitFinding(check, status, repo string, err error, now time.Time) (Finding, bool) {
+	rl, ok := core.AsRateLimited(err, now, "run tentmaker doctor again")
+	if !ok {
+		return Finding{}, false
+	}
+	return Finding{Check: check, Status: status, What: repo + ": " + rl.Message, Fix: rl.Fix, RetryAfterS: rl.RetryAfterS()}, true
 }
 
 // Report is doctor's answer.
@@ -67,7 +81,8 @@ type DoctorInput struct {
 	// can). Either empty skips the check.
 	Binary        string
 	BinaryProblem func(path string) (string, error)
-	// Now is the clock for the first-job check (default time.Now).
+	// Now is the clock for the first-job check and rate limit resets
+	// (default time.Now).
 	Now func() time.Time
 }
 
@@ -233,6 +248,14 @@ func checkExecutors(ctx context.Context, in DoctorInput) []Finding {
 	return out
 }
 
+// doctorNow is in.Now, else the clock.
+func doctorNow(in DoctorInput) time.Time {
+	if in.Now != nil {
+		return in.Now()
+	}
+	return time.Now()
+}
+
 func checkForges(ctx context.Context, in DoctorInput) []Finding {
 	if in.SkipForges != "" {
 		if len(in.Config.Repos) == 0 {
@@ -257,6 +280,12 @@ func checkForges(ctx context.Context, in DoctorInput) []Finding {
 			continue
 		}
 		info, err := f.CheckRepo(ctx, r.Name)
+		if rf, ok := rateLimitFinding("forge", Fail, r.Name, err, doctorNow(in)); ok {
+			// Fail: the repo's settings went unchecked, so doctor can't
+			// call them fine.
+			out = append(out, rf)
+			continue
+		}
 		if err != nil {
 			out = append(out, Finding{Check: "forge", Status: Fail, What: fmt.Sprintf("%s: can't read the repo: %v", r.Name, err),
 				Fix: "check the repo name and that the token can read it: sudo tentmaker connect " + ForgeConfig(cfg, name).Kind})
@@ -313,6 +342,10 @@ func checkFirstJob(ctx context.Context, in DoctorInput) []Finding {
 			continue
 		}
 		fj, err := fr.FirstJob(ctx, r.Name)
+		if rf, ok := rateLimitFinding("first-job", Warn, r.Name, err, now()); ok {
+			out = append(out, rf)
+			continue
+		}
 		if err != nil {
 			out = append(out, Finding{Check: "first-job", Status: Warn, What: fmt.Sprintf("%s: can't list its runners and recent jobs: %v", r.Name, err),
 				Fix: "give the token Administration: read and Actions: read on " + r.Name + ", then sudo tentmaker connect github"})

@@ -250,7 +250,7 @@ func (c *Client) QueuedJobs(ctx context.Context, repo string) ([]core.Job, error
 
 // CheckRepo reads visibility, the default branch, the fork policy and what
 // the token may do. Anything it can't read becomes a Problem; only an
-// unreadable repo is an error.
+// unreadable repo or a rate limit (core.ErrRateLimited) is an error.
 func (c *Client) CheckRepo(ctx context.Context, repo string) (core.RepoInfo, error) {
 	rp, err := repoPath(repo)
 	if err != nil {
@@ -269,6 +269,9 @@ func (c *Client) CheckRepo(ctx context.Context, repo string) (core.RepoInfo, err
 	policy, err := c.forkPolicy(ctx, rp, info.Public)
 	info.ForkPolicy = policy
 	switch {
+	case errors.Is(err, core.ErrRateLimited):
+		// A rate limit says nothing about what the token may do.
+		return core.RepoInfo{}, err
 	case err != nil:
 		info.Problems = append(info.Problems, fmt.Sprintf("%s: cannot read the fork pull request policy (Administration: read): %v", repo, err))
 	case policy == "unknown":
@@ -279,7 +282,9 @@ func (c *Client) CheckRepo(ctx context.Context, repo string) (core.RepoInfo, err
 		{"self-hosted runners (Administration: read)", rp + "/actions/runners?per_page=1"},
 	} {
 		var discard json.RawMessage
-		if err := c.getJSON(ctx, chk.path, true, &discard); err != nil {
+		if err := c.getJSON(ctx, chk.path, true, &discard); errors.Is(err, core.ErrRateLimited) {
+			return core.RepoInfo{}, err
+		} else if err != nil {
 			info.Problems = append(info.Problems, fmt.Sprintf("%s: cannot read %s: %v", repo, chk.what, err))
 		}
 	}

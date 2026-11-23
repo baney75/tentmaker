@@ -213,12 +213,40 @@ type cliError struct {
 	code int
 	msg  string
 	fix  string
+	// retryAfter: a forge rate limit refused the call; run it again in
+	// this many seconds. 0 for every other failure.
+	retryAfter int
 }
 
 func (e *cliError) Error() string { return e.msg }
 
 func fail(fix, format string, a ...any) error {
 	return &cliError{code: ExitFailed, msg: fmt.Sprintf(format, a...), fix: fix}
+}
+
+// forgeFail is fail for an error from a forge call. A rate limit gets its
+// own message and fix (the token is fine; wait for the reset, then run it
+// again) and retryAfter, never the permission fix a refused call otherwise
+// gets: a first-time user would throw away a working token.
+func (a *app) forgeFail(err error, fix, format string, args ...any) error {
+	if ce := a.rateLimitFail(err); ce != nil {
+		return ce
+	}
+	return fail(fix, format, args...)
+}
+
+// rateLimitFail is the cliError for a forge rate limit, or nil when err is
+// not one.
+func (a *app) rateLimitFail(err error) *cliError {
+	now := time.Now
+	if a.env != nil && a.env.Now != nil {
+		now = a.env.Now
+	}
+	rl, ok := core.AsRateLimited(err, now(), "run the same command again")
+	if !ok {
+		return nil
+	}
+	return &cliError{code: ExitFailed, msg: rl.Message, fix: rl.Fix, retryAfter: rl.RetryAfterS()}
 }
 
 func usage(fix, format string, a ...any) error {
@@ -374,7 +402,9 @@ type exitCoder interface{ exitCode() int }
 func (a *app) fail(err error) int {
 	var ce *cliError
 	if !errors.As(err, &ce) {
-		ce = &cliError{code: ExitFailed, msg: err.Error()}
+		if ce = a.rateLimitFail(err); ce == nil {
+			ce = &cliError{code: ExitFailed, msg: err.Error()}
+		}
 	}
 	if errors.Is(err, flag.ErrHelp) {
 		return ExitOK
@@ -384,7 +414,10 @@ func (a *app) fail(err error) int {
 			OK    bool   `json:"ok"`
 			Error string `json:"error"`
 			Fix   string `json:"fix"`
-		}{false, ce.msg, ce.fix})
+			// RetryAfterS is set only for a forge rate limit: an agent
+			// waits this many seconds and runs the same command again.
+			RetryAfterS int `json:"retry_after_s,omitempty"`
+		}{false, ce.msg, ce.fix, ce.retryAfter})
 		fmt.Fprintln(a.env.Stdout, string(b))
 	} else {
 		fmt.Fprintln(a.env.Stderr, "tentmaker: "+ce.msg)

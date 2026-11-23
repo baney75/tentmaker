@@ -516,7 +516,7 @@ func (a *app) repoAdd(ctx context.Context, o repoAddOpts) (repoAddView, error) {
 		info, err := f.CheckRepo(cctx, o.Name)
 		cancel()
 		if err != nil {
-			return v, fail("check the name and that the token can read it: sudo tentmaker connect "+o.Forge, "can't read %s: %v", o.Name, err)
+			return v, a.forgeFail(err, "check the name and that the token can read it: sudo tentmaker connect "+o.Forge, "can't read %s: %v", o.Name, err)
 		}
 		v.Checked, v.Public, v.ForkPolicy, branch = true, info.Public, info.ForkPolicy, info.DefaultBranch
 		v.Notes = append(v.Notes, info.Problems...)
@@ -540,7 +540,7 @@ func (a *app) repoAdd(ctx context.Context, o repoAddOpts) (repoAddView, error) {
 				err := fa.SetForkApproval(cctx, o.Name)
 				cancel()
 				if err != nil {
-					return v, fail("give the token Administration: read and write, then rerun", "set fork approval on %s: %v", o.Name, err)
+					return v, a.forgeFail(err, "give the token Administration: read and write, then rerun", "set fork approval on %s: %v", o.Name, err)
 				}
 				v.ForkApprovalSet = true
 			}
@@ -848,7 +848,7 @@ func (a *app) storeToken(ctx context.Context, kind, rawURL, tok string) (secret,
 	login, err = a.env.VerifyToken(vctx, kind, rawURL, tok)
 	cancel()
 	if err != nil {
-		return "", "", fail(tokenHelp(kind, ""), "the %s token did not work: %v", kind, err)
+		return "", "", a.forgeFail(err, tokenHelp(kind, ""), "the %s token did not work: %v", kind, err)
 	}
 	secret = daemon.SecretName(kind, rawURL)
 	if err := a.env.Secrets.Set(secret, []byte(tok)); err != nil {
