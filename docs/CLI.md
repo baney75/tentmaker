@@ -222,7 +222,7 @@ Steps, each reported as one line on a TTY and as an entry in `steps` with `--jso
 
 `setup --json` adds `timings`, the wall time of each phase in order, and `total_ms`, their sum:
 `check`, `wizard`, `token`, `save`, the executor install as `sandbox.<phase>` (Linux:
-`preflight`, `user`, `dirs`, `runner`, `files`, `net`, `user-manager`, `podman`, `podman.info`,
+`preflight`, `user`, `dirs`, `runner`, `files`, `net`, `user-manager`, `podman`, `podman.check`,
 `runner.wait`, `baseline`, where the actions/runner download starts at `runner`, overlaps the
 phases after it, and `runner.wait` is what is left of it;
 macOS: `preflight`, `tart`, `softnet`, `vms`, `images`; Windows: `preflight`, `dirs`, `user`,
