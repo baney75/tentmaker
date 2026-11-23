@@ -58,6 +58,7 @@ const testNetnsPID = 4242
 
 // testPausePID is podman's fake pause process.
 const testPausePID = 4343
+const testBootID = "6c3f0c52-0b5e-4d41-9a50-0b9f5e2a7c11"
 
 // testPodnetPID holds the fake network namespace podman's namespaces and
 // the runner's user manager (testManagerPID) share.
@@ -318,6 +319,8 @@ func newEnv(t *testing.T) *env {
 		must(t, os.MkdirAll(filepath.Join(p.Proc, pid, "ns"), 0o755))
 		must(t, os.Symlink(ns, filepath.Join(p.Proc, pid, "ns", "user")))
 	}
+	must(t, os.MkdirAll(filepath.Join(p.Proc, "sys", "kernel", "random"), 0o755))
+	must(t, os.WriteFile(filepath.Join(p.Proc, "sys", "kernel", "random", "boot_id"), []byte(testBootID+"\n"), 0o644))
 	// Its uid map: the runner's uid and the subordinate range installed()
 	// writes.
 	must(t, os.WriteFile(filepath.Join(p.Proc, strconv.Itoa(testPausePID), "uid_map"), []byte("         0       1234          1\n         1     100000      65536\n"), 0o644))

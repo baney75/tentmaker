@@ -271,7 +271,13 @@ one runs cold at `jobs/<name>` as before.
   `pause.pid` files in the runtime dir, as a reboot would: podman 4.9 with no `alive` file joins
   the pid in `pause.pid` without checking it and fails on a stale one. Then it checks that `podman info` reports that graphroot, both from podman's CLI and from
   the service behind `DOCKER_HOST` (`podman --remote` on the socket), and removes
-  every container, pod, volume and network a past job left in the store; images stay. The job
+  every container, pod, volume and network a past job left in the store; images stay. Any of
+  those steps failing, a prune included, counts as a failed bind. Only then is the record
+  rewritten as verified, with the boot id (`/proc/sys/kernel/random/boot_id`). A record that is
+  not verified in this boot (a bind in progress, a bind whose way back failed, a reboot, an
+  unreadable record) means podman's state is unknown: every `Start`, cold jobs too, first starts
+  podman unbound when the device is idle and fails when it can't, so no job runs until an
+  unbind or a reset succeeds. The job
   gets `CONTAINERS_STORAGE_CONF` so its own `podman` uses the same store. Later jobs of the repo
   use the bound store; `Reset` (when nothing runs) starts podman unbound again and only then
   wipes the default store. A job that finds the device busy, or a bind that fails, runs without

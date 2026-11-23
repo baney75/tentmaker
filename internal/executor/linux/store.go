@@ -78,6 +78,35 @@ type storeRec struct {
 	Forge string `json:"forge"`
 	Repo  string `json:"repo"`
 	Key   string `json:"key"`
+	// Verified is set only once checkStore passed for this bind, and Boot
+	// is the boot it passed in. Any other record is a bind in progress, a
+	// bind whose way back failed, or one a reboot undid: podman's state is
+	// unknown, and no job starts until podman is back unbound.
+	Verified bool   `json:"verified,omitempty"`
+	Boot     string `json:"boot,omitempty"`
+}
+
+// bootID names this boot, or "" when it can't be read.
+func (e *Executor) bootID() string {
+	b, err := os.ReadFile(filepath.Join(e.p.Proc, "sys", "kernel", "random", "boot_id"))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
+}
+
+// verified says whether r is a bind checkStore passed in this boot.
+func (e *Executor) verified(r storeRec) bool {
+	boot := e.bootID()
+	return r.Verified && boot != "" && r.Boot == boot
+}
+
+func (e *Executor) writeStoreRec(r storeRec) error {
+	data, err := json.Marshal(r)
+	if err != nil {
+		return err
+	}
+	return config.WriteAtomic(e.storeStatePath(), data, 0o600)
 }
 
 // boundStore reads which repo's store podman may have bound. The record is
@@ -109,7 +138,7 @@ func (e *Executor) storeFor(name string) string {
 		return ""
 	}
 	b, bound, err := e.boundStore()
-	if err != nil || !bound || b.Key != r.Key {
+	if err != nil || !bound || b.Key != r.Key || !e.verified(b) {
 		return ""
 	}
 	p, err := e.cache.ContainersPath(core.CacheRepo{Forge: r.Forge, Repo: r.Repo})
@@ -164,19 +193,31 @@ func (e *Executor) idleLocked(ctx context.Context, name string) bool {
 }
 
 // claimStore gives a job with a repo cache its repo's container store:
-// already bound, or bound now when the device is idle. Any failure leaves
-// the job without it (it is only faster). An error means podman could not
-// be brought back unbound, and the job must not run.
+// already bound, or bound now when the device is idle. A failed bind
+// leaves the job without it (it is only faster). An error means podman's
+// state is unknown (a record that isn't a verified bind, and podman could
+// not be brought back unbound), and the job must not run: that holds for
+// every job, cold ones too, until an unbind or a reset succeeds.
 func (e *Executor) claimStore(ctx context.Context, spec core.ExecSpec, uid, gid int) error {
-	r, ok, err := e.slotOf(spec.Name)
-	if err != nil || !ok {
-		return nil
-	}
 	e.podMu.Lock()
 	defer e.podMu.Unlock()
 	b, bound, err := e.boundStore()
-	if err != nil {
-		e.log.Warn("job runs without its container store", "name", spec.Name, "error", err)
+	if err != nil || (bound && !e.verified(b)) {
+		why := "the container store bind was never verified"
+		if err != nil {
+			why = err.Error()
+		}
+		if !e.idleLocked(ctx, spec.Name) {
+			return fmt.Errorf("podman's container store is in an unknown state (%s) and other jobs run; waiting for a reset", why)
+		}
+		e.log.Warn("podman restarts unbound: its container store is in an unknown state", "name", spec.Name, "error", why)
+		if err := e.unbindLocked(ctx, uid, gid); err != nil {
+			return err
+		}
+		bound = false
+	}
+	r, ok, err := e.slotOf(spec.Name)
+	if err != nil || !ok {
 		return nil
 	}
 	if bound && b.Key == r.Key {
@@ -193,16 +234,21 @@ func (e *Executor) claimStore(ctx context.Context, spec core.ExecSpec, uid, gid 
 		return nil
 	}
 	t0 := time.Now()
-	data, _ := json.Marshal(storeRec{Forge: r.Forge, Repo: r.Repo, Key: r.Key})
-	if err := config.WriteAtomic(e.storeStatePath(), data, 0o600); err != nil {
+	rec := storeRec{Forge: r.Forge, Repo: r.Repo, Key: r.Key}
+	if err := e.writeStoreRec(rec); err != nil {
 		e.log.Warn("job runs without its container store", "name", spec.Name, "error", err)
 		return nil
 	}
 	why := ""
 	if err := e.startPodman(ctx, uid, gid, src); err != nil {
 		why = err.Error()
-	} else {
-		why = e.checkStore(ctx, uid)
+	} else if why = e.checkStore(ctx, uid); why == "" {
+		rec.Verified, rec.Boot = true, e.bootID()
+		if rec.Boot == "" {
+			why = "can't read the boot id"
+		} else if err := e.writeStoreRec(rec); err != nil {
+			why = err.Error()
+		}
 	}
 	if why == "" {
 		e.log.Info("container store bound", "name", spec.Name, "repo", r.Repo, "took", time.Since(t0).Round(time.Millisecond).String())
@@ -243,7 +289,11 @@ func (e *Executor) checkStore(ctx context.Context, uid int) string {
 		{"podman", "volume", "prune", "-f"},
 		{"podman", "network", "prune", "-f"},
 	} {
-		e.h.Run(ctx, e.asRunner(uid, 10*time.Minute, args...)) // checked below
+		// A volume or network prune that fails leaves what a past job made
+		// for this one to find, and nothing lists it afterwards.
+		if res, err := e.h.Run(ctx, e.asRunner(uid, 10*time.Minute, args...)); err != nil {
+			return fmt.Sprintf("%s: %v: %s", strings.Join(args, " "), err, trunc(strings.TrimSpace(res.Stderr), 300))
+		}
 	}
 	if res, err := e.h.Run(ctx, e.asRunner(uid, time.Minute, "podman", "ps", "-aq")); err != nil || strings.TrimSpace(res.Stdout) != "" {
 		return "containers left in the store"

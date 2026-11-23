@@ -27,6 +27,8 @@ type storeHost struct {
 	podns     int
 	// remoteFail makes podman's service (podman --remote) fail.
 	remoteFail bool
+	// pruneFail makes podman volume prune fail.
+	pruneFail bool
 	// atPodns records, at each PodnsUnit start, which of podman's
 	// libpod/tmp files are present (stale is set by the test).
 	stale   []string
@@ -64,6 +66,8 @@ func storeTestEnv(t *testing.T) (*env, *storeHost) {
 			return Result{Stdout: out}, nil
 		case strings.Contains(a, "systemctl --user list-units"):
 			return Result{Stdout: "podman.socket loaded active listening y\n"}, nil
+		case sh.pruneFail && strings.Contains(a, "podman volume prune"):
+			return Result{Code: 125, Stderr: "volume in use"}, errors.New("exit status 125")
 		case sh.remoteFail && strings.Contains(a, "podman --remote"):
 			return Result{Code: 125, Stderr: "Cannot connect to Podman"}, errors.New("exit status 125")
 		case strings.Contains(a, "info --format"):
@@ -298,18 +302,96 @@ func TestContainerStoreBindFailsClosed(t *testing.T) {
 	if err := v2.e.Start(ctx, cachedSpec("chk-app", core.KindCheck, "acme/app")); err == nil {
 		t.Fatal("a job started while podman could not leave the store")
 	}
-	v2.f.mu.Lock()
-	defer v2.f.mu.Unlock()
-	for _, c := range v2.f.cmds {
-		if c.Path == "systemd-run" && slices.Contains(c.Args, "--unit="+unitName("chk-app")) {
-			t.Fatal("the job's unit started")
+	jobStarted := func(name string) bool {
+		v2.f.mu.Lock()
+		defer v2.f.mu.Unlock()
+		for _, c := range v2.f.cmds {
+			if c.Path == "systemd-run" && slices.Contains(c.Args, "--unit="+unitName(name)) {
+				return true
+			}
 		}
+		return false
+	}
+	if jobStarted("chk-app") {
+		t.Fatal("the job's unit started")
 	}
 	if _, ok, _ := v2.e.slotOf("chk-app"); ok {
 		t.Fatal("the failed job kept its slot")
 	}
 	if _, bound, _ := v2.e.boundStore(); !bound {
 		t.Fatal("the record of a store that may still be bound was dropped")
+	}
+	// While podman still can't come back unbound, no later job runs: not
+	// another job of the same repo (its record is no verified bind), and
+	// not a cold one.
+	for _, s := range []core.ExecSpec{cachedSpec("chk-app2", core.KindCheck, "acme/app"), spec("chk-cold", core.KindCheck)} {
+		if err := v2.e.Start(ctx, s); err == nil {
+			t.Fatalf("%s started while podman's store state is unknown", s.Name)
+		}
+		if jobStarted(s.Name) {
+			t.Fatalf("%s's unit started", s.Name)
+		}
+	}
+	// Once podman comes back unbound, jobs run again.
+	sh2.mu.Lock()
+	sh2.podnsFail = 0
+	sh2.mu.Unlock()
+	must(t, v2.e.Start(ctx, spec("chk-cold2", core.KindCheck)))
+	if _, bound, _ := v2.e.boundStore(); bound {
+		t.Fatal("the record survived a successful unbind")
+	}
+	if c := findUnit(t, v2.f, unitName("chk-cold2")); strings.Contains(strings.Join(c.Args, " "), v2.e.storeMount()) {
+		t.Fatalf("a cold job names the store: %q", c.Args)
+	}
+}
+
+// A verified bind is good only for the boot it was checked in: after a
+// reboot podman's namespaces are new, so the next job restarts podman
+// before it uses the store again.
+func TestContainerStoreRecheckedAfterReboot(t *testing.T) {
+	v, _ := storeTestEnv(t)
+	ctx := context.Background()
+	must(t, v.e.Start(ctx, cachedSpec("chk-app", core.KindCheck, "acme/app")))
+	b, bound, err := v.e.boundStore()
+	must(t, err)
+	if !bound || !v.e.verified(b) {
+		t.Fatalf("record %+v after a good bind, want verified", b)
+	}
+	must(t, os.WriteFile(filepath.Join(v.o.Paths.Proc, "sys", "kernel", "random", "boot_id"), []byte("another-boot\n"), 0o644))
+	if v.e.storeFor("chk-app") != "" {
+		t.Fatal("a bind from another boot still names the store")
+	}
+	must(t, v.e.Start(ctx, cachedSpec("chk-app2", core.KindCheck, "acme/app")))
+	starts := podnsStarts(v.f)
+	if len(starts) != 3 || strings.Contains(strings.Join(starts[1], " "), "BindPaths=") ||
+		!strings.Contains(strings.Join(starts[2], " "), "BindPaths=") {
+		t.Fatalf("podns starts %q, want bind, unbind after the reboot, bind again", starts)
+	}
+	if b, _, _ := v.e.boundStore(); b.Boot != "another-boot" || !b.Verified {
+		t.Fatalf("record %+v after the rebind", b)
+	}
+}
+
+// A cleanup that fails (a volume prune) fails the bind even when no
+// container is left: the job runs without the store and podman unbound.
+func TestContainerStoreCleanupFailureFailsBind(t *testing.T) {
+	v, sh := storeTestEnv(t)
+	sh.pruneFail = true
+	ctx := context.Background()
+	must(t, v.e.Start(ctx, cachedSpec("chk-app", core.KindCheck, "acme/app")))
+	starts := podnsStarts(v.f)
+	if len(starts) != 2 || strings.Contains(strings.Join(starts[1], " "), "BindPaths=") {
+		t.Fatalf("podns starts %q, want a bind then an unbound start", starts)
+	}
+	job := findUnit(t, v.f, unitName("chk-app"))
+	if strings.Contains(strings.Join(job.Args, " "), v.e.storeMount()) || unitEnv(job)["CONTAINERS_STORAGE_CONF"] != "" {
+		t.Fatalf("job uses a store whose cleanup failed: %q", job.Args)
+	}
+	if _, bound, _ := v.e.boundStore(); bound {
+		t.Fatal("record left after a failed bind")
+	}
+	if !strings.Contains(v.logs.String(), "volume in use") {
+		t.Fatalf("the log lacks the prune's reason:\n%s", v.logs.String())
 	}
 }
 
