@@ -38,6 +38,7 @@ type Device struct {
 	Worker      *dispatch.WorkerStatus `json:"worker"`
 	Broker      *dispatch.BrokerStatus `json:"broker"`
 	Problems    []core.Problem         `json:"problems"`
+	Wake        *mesh.WakeStatus       `json:"wake"`
 }
 
 // ParseDevice reads a Status as JSON. ok is false when raw isn't one.

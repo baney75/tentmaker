@@ -89,14 +89,19 @@ type Options struct {
 	Version    string
 	Log        *slog.Logger
 
-	Power       core.PowerSource
-	Idle        core.IdleSource
-	Probe       func(stateDir string) guards.Probe
-	Executors   ExecutorFactory
-	Binary      func(core.Platform) (string, error) // default NewBinary
-	NewForge    ForgeFactory
-	Secrets     secrets.Store
-	Tailscale   mesh.Tailscale
+	Power     core.PowerSource
+	Idle      core.IdleSource
+	Probe     func(stateDir string) guards.Probe
+	Executors ExecutorFactory
+	Binary    func(core.Platform) (string, error) // default NewBinary
+	NewForge  ForgeFactory
+	Secrets   secrets.Store
+	Tailscale mesh.Tailscale
+	// LAN finds this device's LAN interface for Wake-on-LAN; default
+	// mesh.ProbeLAN.
+	LAN func() (mesh.LAN, error)
+	// WakeSender sends Wake-on-LAN magic packets; default mesh.UDPSender.
+	WakeSender  mesh.Sender
 	ControlAddr string // default control.DefaultAddr; "-" serves no control API
 	// Identify names each control API caller; default
 	// control.HostIdentify(RunnerUser). A CI job gets 403.
@@ -161,6 +166,12 @@ func (o *Options) defaults() {
 	}
 	if o.Tailscale == nil {
 		o.Tailscale = mesh.NewTailscaleCLI()
+	}
+	if o.LAN == nil {
+		o.LAN = mesh.ProbeLAN
+	}
+	if o.WakeSender == nil {
+		o.WakeSender = mesh.UDPSender{}
 	}
 	if o.ControlAddr == "" {
 		o.ControlAddr = control.DefaultAddr
@@ -323,7 +334,10 @@ type Daemon struct {
 	build   *buildcache.Cache     // served by actions; nil with it
 	// tally keeps the job counters /metrics exports. It lives as long as
 	// the daemon, so a rebuilt history (apply) never resets them.
-	tally    *observe.Tally
+	tally *observe.Tally
+	// wakes keeps the Wake-on-LAN records and counters across mesh
+	// rebuilds, like tally.
+	wakes    *mesh.WakeLog
 	restart  chan struct{}
 	exitErr  error
 	exitOnce sync.Once
@@ -344,6 +358,7 @@ func New(o Options) *Daemon {
 		restart:   make(chan struct{}),
 		guard:     updateGuard{fs: osStateFS{}, dir: o.Paths.State},
 		tally:     observe.NewTally(dispatch.ReportBudget),
+		wakes:     mesh.NewWakeLog(),
 	}
 	// Only the Linux executor can name a job by its connection.
 	if o.CacheAddr != "-" && runtime.GOOS == "linux" {
@@ -706,16 +721,23 @@ func (d *Daemon) apply(cfg config.Config) {
 		oldComp.stop()
 		if cfg.Mesh.Enabled {
 			var src core.WorkSource
+			var needs func() []mesh.WakeNeed
 			if hasBroker {
 				src = brokerProxy{d}
+				needs = d.wakeNeeds
 			}
 			n := mesh.New(mesh.Options{
 				Device: cfg.Device, Pool: cfg.Mesh.Pool, Port: cfg.Mesh.Port, Members: cfg.Mesh.Members, Viewers: cfg.Mesh.Viewers,
 				Tailscale: d.o.Tailscale, Broker: src, Version: d.o.Version,
-				Status: func() any { return d.Status(context.Background()) },
-				Runs:   runsSource{d},
-				Views:  d.LocalViews(),
-				Log:    log,
+				Status:    func() any { return d.Status(context.Background()) },
+				Runs:      runsSource{d},
+				Views:     d.LocalViews(),
+				Wake:      d.wakeInfo,
+				Sender:    d.o.WakeSender,
+				WakeNeeds: needs,
+				WakeLog:   d.wakes,
+				StateDir:  cfg.StateDir,
+				Log:       log,
 			})
 			nc := startComp(d.runCtx, log, "mesh", n.Run)
 			d.mu.Lock()
@@ -1187,6 +1209,10 @@ func (d *Daemon) Status(ctx context.Context) Status {
 	s.Mesh = d.meshStatus(ctx, cfg)
 	if s.Mesh.Warning != "" {
 		s.Warnings = append(s.Warnings, s.Mesh.Warning)
+	}
+	if n := d.currentNode(); n != nil {
+		ws := n.WakeStatus()
+		s.Wake = &ws
 	}
 	s.Next = NextStep(s)
 	rt := readRuntime(started, d.o.Now())

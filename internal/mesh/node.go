@@ -67,6 +67,24 @@ type Options struct {
 	Version   string
 	Platforms []core.Platform
 
+	// Wake reads this device's Wake-on-LAN facts (its LAN, power, opt-out,
+	// labels), at join and on each heartbeat, for its /v1/hello. nil: this
+	// device reports none and sends no magic packets.
+	Wake func(ctx context.Context) WakeInfo
+	// Sender sends magic packets, for this device's own wakes and for
+	// /v1/wake. nil: it sends none.
+	Sender Sender
+	// WakeNeeds lists queued jobs no awake device can take (the local
+	// broker's). nil: this device never decides to wake one.
+	WakeNeeds func() []WakeNeed
+	// WakeLog keeps wake records and counters across Node rebuilds; nil
+	// makes a new one.
+	WakeLog *WakeLog
+	// StateDir keeps the known pool devices (mesh-devices.json), so a
+	// sleeping device is still known after a restart. "" keeps them in
+	// memory.
+	StateDir string
+
 	Log *slog.Logger
 }
 
@@ -90,20 +108,28 @@ type Node struct {
 	helloTimeout  time.Duration
 	callTimeout   time.Duration
 	statusTimeout time.Duration
+	wakeTickEvery time.Duration
 	peerURL       func(p Peer) string
 	listen        func(network, addr string) (net.Listener, error)
 
-	selfMu   sync.Mutex
-	self     Peer
-	selfAt   time.Time
-	selfOK   bool
-	boundMu  sync.Mutex
-	bound    []string
-	peersMu  sync.Mutex
-	peers    map[string]*peerState // by tailnet node ID
-	discMu   sync.Mutex
-	discAt   time.Time
-	refusals refusalLog
+	selfMu    sync.Mutex
+	self      Peer
+	selfAt    time.Time
+	selfOK    bool
+	boundMu   sync.Mutex
+	bound     []string
+	peersMu   sync.Mutex
+	peers     map[string]*peerState // by tailnet node ID
+	discMu    sync.Mutex
+	discAt    time.Time
+	discFirst time.Time // the first discovery that listed the tailnet
+	refusals  refusalLog
+
+	known    knownTable
+	wakes    *WakeLog
+	wakeMu   sync.Mutex
+	selfWake *WakeInfo
+	sentAt   map[string]time.Time // magic packets this device sent, by device
 }
 
 // New returns a Node. It does nothing until Run, Brokers, Claim or Pool.
@@ -129,9 +155,16 @@ func New(o Options) *Node {
 		helloTimeout:  5 * time.Second,
 		callTimeout:   3 * time.Second,
 		statusTimeout: 2 * time.Second,
+		wakeTickEvery: wakeTickEvery,
 		listen:        net.Listen,
 		peers:         map[string]*peerState{},
+		wakes:         o.WakeLog,
+		sentAt:        map[string]time.Time{},
 	}
+	if n.wakes == nil {
+		n.wakes = NewWakeLog()
+	}
+	n.loadKnown()
 	for _, m := range o.Members {
 		if m = strings.ToLower(strings.TrimSpace(m)); m != "" {
 			n.members[m] = true
@@ -186,6 +219,9 @@ func pickIP(ips []netip.Addr) netip.Addr {
 // peer list fresh. If tailscale is not up it retries every 15 s and logs
 // once; it returns only when ctx ends.
 func (n *Node) Run(ctx context.Context) error {
+	if n.o.WakeNeeds != nil {
+		go n.wakeLoop(ctx)
+	}
 	down := false
 	for {
 		ips, lns, err := n.listenTailnet(ctx)
@@ -270,6 +306,8 @@ func (n *Node) serve(ctx context.Context, ips []netip.Addr, lns []net.Listener) 
 		n.boundMu.Unlock()
 	}()
 
+	// Join: record this device's wake facts before the first hello.
+	n.refreshWake(ctx)
 	n.discover(ctx)
 	t := time.NewTicker(n.discoverEvery)
 	defer t.Stop()
@@ -295,6 +333,7 @@ func (n *Node) serve(ctx context.Context, ips []netip.Addr, lns []net.Listener) 
 		}
 		fails = 0
 		n.leases.prune(n.now())
+		n.refreshWake(ctx) // heartbeat
 		n.discover(ctx)
 	}
 }
@@ -405,6 +444,8 @@ func (n *Node) handler() http.Handler {
 			n.route(w, r, http.MethodGet, n.handleRunTests)
 		case "/v1/rerun":
 			n.route(w, r, http.MethodPost, n.handleRerun)
+		case "/v1/wake":
+			n.route(w, r, http.MethodPost, n.handleWake)
 		default:
 			if ref, ok := strings.CutPrefix(r.URL.Path, "/v1/archive/"); ok {
 				n.route(w, r, http.MethodGet, func(w http.ResponseWriter, r *http.Request) { n.handleArchive(w, r, ref) })
@@ -646,6 +687,9 @@ type helloResponse struct {
 	Version   string          `json:"version"`
 	Broker    bool            `json:"broker"`
 	Platforms []core.Platform `json:"platforms"`
+	// Wake is this device's Wake-on-LAN facts; absent from an older
+	// Tentmaker or one with no Options.Wake.
+	Wake *WakeInfo `json:"wake,omitempty"`
 }
 
 func (n *Node) hello() helloResponse {
@@ -655,6 +699,7 @@ func (n *Node) hello() helloResponse {
 		Version:   n.o.Version,
 		Broker:    n.o.Broker != nil,
 		Platforms: n.o.Platforms,
+		Wake:      n.selfWakeInfo(),
 	}
 }
 

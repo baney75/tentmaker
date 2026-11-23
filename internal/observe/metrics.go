@@ -11,6 +11,7 @@ import (
 	"github.com/baney75/tentmaker/internal/budget"
 	"github.com/baney75/tentmaker/internal/core"
 	"github.com/baney75/tentmaker/internal/guards"
+	"github.com/baney75/tentmaker/internal/mesh"
 	"github.com/baney75/tentmaker/internal/runs"
 )
 
@@ -152,6 +153,13 @@ func Metrics(in MetricsInput) []byte {
 			if a := b.API[f]; !a.RateReset.IsZero() {
 				m.sample("tentmaker_forge_api_rate_reset_timestamp_seconds", float64(a.RateReset.Unix()), "device", dev, "forge", f)
 			}
+		}
+	}
+
+	if wk := s.Wake; wk != nil {
+		m.family("tentmaker_wakes_total", "counter", "Wake-on-LAN wakes this device decided since the daemon started, by result: sent or failed when it asked, then online or timeout (no answer in 3 minutes) for each one sent.")
+		for _, r := range mesh.WakeResults {
+			m.sample("tentmaker_wakes_total", float64(wk.Counts[r]), "device", dev, "result", r)
 		}
 	}
 

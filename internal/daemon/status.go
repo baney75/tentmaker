@@ -8,6 +8,7 @@ import (
 	"github.com/baney75/tentmaker/internal/budget"
 	"github.com/baney75/tentmaker/internal/core"
 	"github.com/baney75/tentmaker/internal/dispatch"
+	"github.com/baney75/tentmaker/internal/mesh"
 )
 
 // Status is the daemon's view for `tentmaker status`, the control API and
@@ -29,10 +30,13 @@ type Status struct {
 	Worker      *dispatch.WorkerStatus `json:"worker,omitempty"`
 	Broker      *dispatch.BrokerStatus `json:"broker,omitempty"`
 	Mesh        MeshStatus             `json:"mesh"`
-	Warnings    []string               `json:"warnings"`
-	Problems    []core.Problem         `json:"problems"`
-	LastError   string                 `json:"last_error,omitempty"`
-	Next        string                 `json:"next,omitempty"`
+	// Wake is this device's LAN and the Wake-on-LAN state of the pool
+	// devices it knows; absent when the mesh is off.
+	Wake      *mesh.WakeStatus `json:"wake,omitempty"`
+	Warnings  []string         `json:"warnings"`
+	Problems  []core.Problem   `json:"problems"`
+	LastError string           `json:"last_error,omitempty"`
+	Next      string           `json:"next,omitempty"`
 	// Runtime is the daemon process itself; absent when the service isn't
 	// running and status was computed locally.
 	Runtime *RuntimeStatus `json:"runtime,omitempty"`

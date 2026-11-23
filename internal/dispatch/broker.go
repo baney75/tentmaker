@@ -79,6 +79,12 @@ type Broker struct {
 	// reports are ended runner jobs whose forge result is still to read;
 	// memory only.
 	reports []*reportReq
+	// started is when this broker was built: a runner job queued before it
+	// waits from here (Waiting).
+	started time.Time
+	// waitSince is when each waiting check job was first seen, by
+	// checkKey; memory only.
+	waitSince map[string]time.Time
 }
 
 type repoState struct {
@@ -176,6 +182,9 @@ type deviceRec struct {
 	QuarantineSent bool      `json:"quarantine_sent,omitempty"`
 	Stop           []string  `json:"stop,omitempty"`
 	Free           int       `json:"-"`
+	// labels and platforms are what its last request asked for (Waiting).
+	labels    []string
+	platforms []core.Platform
 }
 
 type statusPost struct {
@@ -211,19 +220,21 @@ func NewBroker(o BrokerOptions) *Broker {
 		name = "local"
 	}
 	b := &Broker{
-		o:        o,
-		log:      o.Log.With("component", "broker"),
-		now:      o.Now,
-		name:     name,
-		idleTTL:  o.Config.Job.IdleTTL.D(),
-		infos:    map[string]*infoCache{},
-		grants:   map[string]*grantRec{},
-		devices:  map[string]*deviceRec{},
-		plans:    map[string][]core.CheckJob{},
-		archives: map[string]*archiveRec{},
-		noted:    map[string]string{},
-		retries:  map[string]*checkRetry{},
+		o:         o,
+		log:       o.Log.With("component", "broker"),
+		now:       o.Now,
+		name:      name,
+		idleTTL:   o.Config.Job.IdleTTL.D(),
+		infos:     map[string]*infoCache{},
+		grants:    map[string]*grantRec{},
+		devices:   map[string]*deviceRec{},
+		plans:     map[string][]core.CheckJob{},
+		archives:  map[string]*archiveRec{},
+		noted:     map[string]string{},
+		retries:   map[string]*checkRetry{},
+		waitSince: map[string]time.Time{},
 	}
+	b.started = b.now()
 	if b.idleTTL <= 0 {
 		b.idleTTL = 90 * time.Second
 	}
@@ -287,6 +298,7 @@ func (b *Broker) Work(ctx context.Context, req core.WorkRequest) (core.WorkRespo
 		b.log.Info("device back online", "device", req.Device)
 	}
 	dev.LastSeen, dev.Offline, dev.Free = now, false, req.Free
+	dev.labels, dev.platforms = append([]string(nil), req.Labels...), append([]core.Platform(nil), req.Platforms...)
 
 	// Results first, so an ended check job with a result posts that result.
 	for _, r := range req.Results {

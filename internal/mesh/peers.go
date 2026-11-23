@@ -60,6 +60,12 @@ func (n *Node) discover(ctx context.Context) {
 	n.discMu.Lock()
 	defer n.discMu.Unlock()
 	n.discAt = n.now()
+	listed := false
+	defer func() {
+		if listed && n.discFirst.IsZero() {
+			n.discFirst = n.discAt
+		}
+	}()
 
 	self, err := n.selfPeer(ctx, false)
 	if err != nil {
@@ -73,6 +79,7 @@ func (n *Node) discover(ctx context.Context) {
 		n.log.Debug("mesh: can't list tailnet peers", "err", err)
 		return
 	}
+	listed = true
 
 	type found struct {
 		p     Peer
@@ -119,7 +126,6 @@ func (n *Node) discover(ctx context.Context) {
 	wg.Wait()
 
 	n.peersMu.Lock()
-	defer n.peersMu.Unlock()
 	next := map[string]*peerState{}
 	for _, f := range cands {
 		st, had := n.peers[f.p.ID]
@@ -142,9 +148,12 @@ func (n *Node) discover(ctx context.Context) {
 			st.base, st.hello, st.ips = f.base, f.hello, f.p.IPs
 			n.okLocked(st, f.d)
 			next[f.p.ID] = st
+			n.noteKnown(f.p.ID, f.hello, now)
 		}
 	}
 	n.peers = next
+	n.peersMu.Unlock()
+	n.saveKnown(now)
 }
 
 // ensureFresh runs discovery if nothing has for one discovery period, so

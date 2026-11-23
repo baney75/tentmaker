@@ -36,6 +36,11 @@ type nodeSpec struct {
 	user   int64 // 0 = alice (1001)
 	online *bool
 	runs   RunsSource
+	// Wake-on-LAN.
+	wake   *WakeInfo
+	sender Sender
+	needs  func() []WakeNeed
+	state  string
 }
 
 // member is one device in a test cluster: a Node behind a loopback server
@@ -111,6 +116,10 @@ func newCluster(t *testing.T, specs ...nodeSpec) []*member {
 			opts.Broker = m.spec.broker
 		}
 		opts.Runs = m.spec.runs
+		if w := m.spec.wake; w != nil {
+			opts.Wake = func(context.Context) WakeInfo { return *w }
+		}
+		opts.Sender, opts.WakeNeeds, opts.StateDir = m.spec.sender, m.spec.needs, m.spec.state
 		m.node = New(opts)
 		m.node.now = clk.Now
 		m.node.callTimeout = 2 * time.Second

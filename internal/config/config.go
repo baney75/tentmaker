@@ -227,6 +227,9 @@ type Mesh struct {
 	// that ACL tag (a Prometheus on tag:monitoring), or a node's MagicDNS
 	// name or stable node ID.
 	Viewers []string `toml:"viewers" json:"viewers"`
+	// Wake lets the pool wake this device with Wake-on-LAN when a queued
+	// job fits it and no awake device can take it. false opts out.
+	Wake bool `toml:"wake" json:"wake"`
 }
 
 // Update is how Tentmaker updates itself.
@@ -333,7 +336,7 @@ func Default(totalMemory int64, cpus int) Config {
 		},
 		Forges:    map[string]Forge{"github": {Kind: "github", URL: "https://api.github.com"}},
 		DenyRepos: []string{},
-		Mesh:      Mesh{Enabled: true, Pool: "default", Port: 7433},
+		Mesh:      Mesh{Enabled: true, Pool: "default", Port: 7433, Wake: true},
 		Update:    Update{Channel: "stable", Auto: true},
 		Sandbox:   Sandbox{Users: []string{}, MaxTTL: Duration(4 * time.Hour)},
 		CacheMax:  10 * GiB,

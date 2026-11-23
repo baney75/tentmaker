@@ -321,3 +321,22 @@ func fmtDur(d time.Duration) string {
 	}
 	return b.String()
 }
+
+// OffAt reports whether schedule puts the budget at "off" at t, read in a
+// zone offsetS seconds east of UTC. The mesh asks it for a sleeping
+// device, from the schedule and offset it last announced, so it never
+// wakes a device into a window that admits no work.
+func OffAt(schedule []config.Window, offsetS int, t time.Time) bool {
+	e := &Engine{cfg: config.Config{Budget: config.Budget{Schedule: schedule}}, loc: time.FixedZone("", offsetS)}
+	w, ok := e.window(t)
+	return ok && strings.EqualFold(w.Profile, Off)
+}
+
+// PluggedSlots is how many jobs cfg's budget fits on a device that is
+// plugged in, with no guard tripped: the larger of the everyday and boost
+// profiles. The mesh uses it to tell whether a sleeping device is worth
+// waking for a job.
+func PluggedSlots(cfg config.Config) int {
+	e := &Engine{cfg: cfg}
+	return max(slots(e.limit(Everyday), cfg.Job), slots(e.limit(Boost), cfg.Job))
+}
