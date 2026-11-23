@@ -32,6 +32,7 @@ import (
 	"github.com/baney75/tentmaker/internal/guards"
 	"github.com/baney75/tentmaker/internal/mesh"
 	"github.com/baney75/tentmaker/internal/power"
+	"github.com/baney75/tentmaker/internal/sandbox"
 	"github.com/baney75/tentmaker/internal/secrets"
 	"github.com/baney75/tentmaker/internal/service"
 	"github.com/baney75/tentmaker/internal/update"
@@ -88,7 +89,10 @@ type Env struct {
 	NewForge    daemon.ForgeFactory
 	VerifyToken func(ctx context.Context, kind, baseURL, token string) (string, error)
 
-	Control       *control.Client
+	Control *control.Client
+	// GitLsFiles lists a work tree's files for sandbox create --copy
+	// (default: the host's git).
+	GitLsFiles    sandbox.GitLister
 	Updater       Updater
 	Tailscale     mesh.Tailscale
 	RemoteInstall func(ctx context.Context, host string, args mesh.InstallArgs) error
@@ -318,6 +322,7 @@ func init() {
 		"update":    {"tentmaker update [--channel stable|dev] [--check] [--force] [--json]", (*app).cmdUpdate},
 		"rollback":  {"tentmaker rollback [--json]", (*app).cmdRollback},
 		"uninstall": {"tentmaker uninstall [--purge] [--yes] [--json]", (*app).cmdUninstall},
+		"sandbox":   {usageSandbox, (*app).cmdSandbox},
 		"mcp":       {"tentmaker mcp\n\nStdio MCP server for agents. Register it with: claude mcp add tentmaker -- tentmaker mcp", (*app).cmdMCP},
 		"version":   {"tentmaker version [--json]", (*app).cmdVersion},
 		"daemon":    {"tentmaker daemon\n\nRun by the service. Not for people.", (*app).cmdDaemon},
@@ -355,6 +360,8 @@ Usage:
   tentmaker update [--check]      update to the newest release
   tentmaker rollback              go back to the previous version
   tentmaker uninstall [--purge]
+  tentmaker sandbox create|exec|cp|ls|rm
+                                  throwaway sandboxes for agents
   tentmaker mcp                   MCP server for agents
   tentmaker version
 

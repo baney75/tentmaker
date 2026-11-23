@@ -186,6 +186,81 @@ jobs:
           test -s "$RUNNER_TEMP/logs.txt" || { echo "::error::no log lines"; exit 1; }
           sudo tentmaker logs -n 50 --json | jq -e '.lines | length > 0' >/dev/null
 
+      # Sandboxes for agents: time from create to the first exec's answer,
+      # exit codes, copies both ways, the fence, access and removal.
+      - name: sandboxes (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -o pipefail
+          ms() { echo $(( $(date +%s%N) / 1000000 )); }
+          proj=$RUNNER_TEMP/proj
+          mkdir -p "$proj" && cd "$proj"
+          git init -q . && echo committed >a.txt && git add a.txt
+          git -c user.name=e2e -c user.email=e2e@example.invalid commit -qm one
+          echo changed >a.txt && echo new >untracked.txt && echo secret >ignored.txt && echo ignored.txt >.gitignore
+          # A caller not listed in [sandbox] users is refused with a fix.
+          rc=0; tentmaker sandbox ls --json >"$RUNNER_TEMP/sbx-refused.json" || rc=$?
+          cat "$RUNNER_TEMP/sbx-refused.json"
+          test "$rc" = 1 && jq -e '.fix | test("sandbox")' "$RUNNER_TEMP/sbx-refused.json" >/dev/null ||
+            { echo "::error::an unlisted user was not refused with a fix"; exit 1; }
+
+          t0=$(ms)
+          sudo tentmaker sandbox create --ttl 10m --json | tee "$RUNNER_TEMP/sbx.json"
+          t1=$(ms)
+          id=$(jq -r .id "$RUNNER_TEMP/sbx.json")
+          out=$(sudo tentmaker sandbox exec "$id" -- echo hello)
+          t2=$(ms)
+          test "$out" = hello || { echo "::error::first exec said $out"; exit 1; }
+          sudo tentmaker sandbox rm "$id" --json | jq -e '.removed == [$id]' --arg id "$id" >/dev/null
+          # Second run: --copy of the work tree, then the rest.
+          t3=$(ms)
+          id=$(sudo tentmaker sandbox create --ttl 10m --copy . --json | jq -r .id)
+          t4=$(ms)
+          sudo tentmaker sandbox exec "$id" -- true
+          t5=$(ms)
+          {
+            echo "### Sandbox timing (GitHub-hosted $ImageOS)"
+            echo "| | create | first exec | create to first exec |"
+            echo "| --- | ---: | ---: | ---: |"
+            echo "| empty | $((t1 - t0)) ms | $((t2 - t1)) ms | $((t2 - t0)) ms |"
+            echo "| --copy of a work tree | $((t4 - t3)) ms | $((t5 - t4)) ms | $((t5 - t3)) ms |"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "TM_SANDBOX_MS=$((t2 - t0))"
+
+          ls=$(sudo tentmaker sandbox exec "$id" -- sh -c 'ls -A | LC_ALL=C sort | tr "\n" " "; cat a.txt')
+          test "$ls" = ".gitignore a.txt untracked.txt changed" ||
+            { echo "::error::--copy put the wrong tree in: $ls"; exit 1; }
+          rc=0; sudo tentmaker sandbox exec "$id" -- sh -c 'echo to-stderr >&2; exit 7' || rc=$?
+          test "$rc" = 7 || { echo "::error::exec exited $rc, want 7"; exit 1; }
+          sudo tentmaker sandbox exec "$id" --json -- sh -c 'exit 3' | jq -e '.exit_code == 3' >/dev/null
+          got=$(echo piped | sudo tentmaker sandbox exec -i "$id" -- cat)
+          test "$got" = piped || { echo "::error::stdin gave $got"; exit 1; }
+          # Copies both ways.
+          mkdir -p "$RUNNER_TEMP/in/sub" && echo inside >"$RUNNER_TEMP/in/sub/f.txt"
+          sudo tentmaker sandbox cp "$RUNNER_TEMP/in" "$id:dropped" --json | jq -e '.bytes > 0' >/dev/null
+          sudo tentmaker sandbox exec "$id" -- sh -c 'cat dropped/in/sub/f.txt; echo made >dropped/in/sub/g.txt'
+          mkdir -p "$RUNNER_TEMP/out"
+          sudo tentmaker sandbox cp "$id:dropped/in" "$RUNNER_TEMP/out"
+          test "$(cat "$RUNNER_TEMP/out/in/sub/g.txt")" = made || { echo "::error::cp out lost a file"; exit 1; }
+          # The job fence: the internet works, cloud metadata and the LAN don't.
+          sudo tentmaker sandbox exec "$id" -- curl -fsS --max-time 20 -o /dev/null https://github.com ||
+            { echo "::error::a sandbox could not reach the internet"; exit 1; }
+          if sudo tentmaker sandbox exec "$id" -- curl -sS --max-time 5 -o /dev/null http://169.254.169.254/; then
+            echo "::error::a sandbox reached the cloud metadata address"; exit 1
+          fi
+          # A sandbox counts against the budget like a job.
+          tentmaker status --json | jq '.worker.slots // .slots'
+          sudo tentmaker sandbox ls --json | jq -e --arg id "$id" '[.sandboxes[] | select(.id == $id)] | length == 1' >/dev/null
+          sudo tentmaker sandbox rm "$id" --json | jq -e '.removed == [$id]' --arg id "$id" >/dev/null
+          sudo tentmaker sandbox ls --json | jq -e '.sandboxes | length == 0' >/dev/null
+          # Nothing is left: no units, slices or job dirs.
+          if systemctl list-units --all --no-legend 'tentmaker-*sbx-*' | grep -q .; then
+            systemctl list-units --all 'tentmaker-*sbx-*'; echo "::error::rm left units behind"; exit 1
+          fi
+          if sudo find /var/lib/tentmaker -maxdepth 3 -name 'sbx-*' | grep .; then
+            echo "::error::rm left files behind"; exit 1
+          fi
+
       - name: a real check job (Linux)
         id: job
         if: runner.os == 'Linux' && env.TM_SMOKE == 'true'
