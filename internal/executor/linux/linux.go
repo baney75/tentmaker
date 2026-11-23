@@ -127,6 +127,9 @@ type Options struct {
 	// CacheMax caps the repo caches under <CacheDir>/repos (config
 	// cache_max); 0 means repocache.DefaultMax, below 0 turns them off.
 	CacheMax int64
+	// Phase, when set, is called as Install starts each of its phases
+	// (setup times them). It must not block.
+	Phase func(name string)
 }
 
 // Executor is the linux-podman executor.

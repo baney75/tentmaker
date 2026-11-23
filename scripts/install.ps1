@@ -20,7 +20,8 @@
     $env:TENTMAKER_INSTALL_DIR = 'D:\Tools\Tentmaker'
     $env:TENTMAKER_NO_SETUP    = '1'         # only install the binary
     $env:TENTMAKER_YES         = '1'         # run tentmaker setup --yes
-    $env:TENTMAKER_SETUP_ARGS  = '--json --memory 4GiB --boost-memory 12GiB --repo owner/name'
+    $env:TENTMAKER_SETUP_ARGS  = '--memory 4GiB --boost-memory 12GiB --repo owner/name'
+    $env:TENTMAKER_JSON        = '1'         # for agents: one JSON line of output
 
   From a checkout of your repo, this sets up the machine and opens a pull
   request that moves Windows CI onto it (setup runs in the current folder):
@@ -51,6 +52,11 @@
   Run `tentmaker setup --yes` after installing, with -SetupArgs.
 .PARAMETER SetupArgs
   Extra arguments for `tentmaker setup`.
+.PARAMETER Json
+  For agents: the only output is one JSON line, setup's result with -Yes,
+  else what was installed and the next step; a failure writes
+  {"ok":false,"error":...,"fix":...} before it throws. On too when
+  -SetupArgs holds --json.
 #>
 
 function Install-Tentmaker {
@@ -61,8 +67,12 @@ function Install-Tentmaker {
         [string]$InstallDir = $(if ($env:TENTMAKER_INSTALL_DIR) { $env:TENTMAKER_INSTALL_DIR } else { Join-Path $env:ProgramFiles 'Tentmaker' }),
         [switch]$NoSetup = $(@('1', 'true', 'yes') -contains "$env:TENTMAKER_NO_SETUP".ToLowerInvariant()),
         [switch]$Yes = $(@('1', 'true', 'yes') -contains "$env:TENTMAKER_YES".ToLowerInvariant()),
-        [string[]]$SetupArgs = $(if ($env:TENTMAKER_SETUP_ARGS) { @($env:TENTMAKER_SETUP_ARGS -split '\s+' | Where-Object { $_ }) } else { @() })
+        [string[]]$SetupArgs = $(if ($env:TENTMAKER_SETUP_ARGS) { @($env:TENTMAKER_SETUP_ARGS -split '\s+' | Where-Object { $_ }) } else { @() }),
+        [switch]$Json = $(@('1', 'true', 'yes') -contains "$env:TENTMAKER_JSON".ToLowerInvariant())
     )
+    if ($SetupArgs -contains '--json') { $Json = [switch]$true } elseif ($Json) { $SetupArgs = @('--json') + $SetupArgs }
+    # Once setup runs it prints the JSON line, even when it fails.
+    $setupRan = $false
 
     # Scoped to this function, so a piped run doesn't change the caller's session.
     $ErrorActionPreference = 'Stop'
@@ -73,10 +83,22 @@ function Install-Tentmaker {
     $rawInstall = 'irm https://raw.githubusercontent.com/baney75/tentmaker/main/scripts/install.ps1 | iex'
 
     function Say([string]$msg) { Write-Host "tentmaker-install: $msg" }
+    $emitted = @{ done = $false }
     function Fail([string]$msg, [string]$fix) {
+        if ($Json -and -not $setupRan) {
+            Write-Output ([ordered]@{ ok = $false; error = $msg; fix = $fix } | ConvertTo-Json -Compress)
+            $emitted.done = $true
+        }
         $text = "tentmaker-install: error: $msg"
         if ($fix) { $text += "`ntentmaker-install: fix: $fix" }
         throw $text
+    }
+    # Any other error (a folder this user can't write) still gets one line.
+    trap {
+        if ($Json -and -not $setupRan -and -not $emitted.done) {
+            Write-Output ([ordered]@{ ok = $false; error = "$($_.Exception.Message)"; fix = "fix the error above and run the installer again, from an Administrator PowerShell or with TENTMAKER_INSTALL_DIR set to a folder you can write" } | ConvertTo-Json -Compress)
+        }
+        break
     }
 
     if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
@@ -332,8 +354,12 @@ function Install-Tentmaker {
             }
             Say "running: tentmaker setup --yes $($SetupArgs -join ' ')"
             $ErrorActionPreference = 'Continue'
+            $setupRan = $true
+            # One JSON line even when an agent's console is a terminal.
+            $env:TENTMAKER_JSON_ONELINE = '1'
             & $target setup --yes @SetupArgs
             $code = $LASTEXITCODE
+            Remove-Item Env:TENTMAKER_JSON_ONELINE -ErrorAction SilentlyContinue
             $ErrorActionPreference = 'Stop'
             if ($code -ne 0) {
                 Fail "setup failed (exit $code)" "fix the error above, then run: tentmaker setup --yes $($SetupArgs -join ' ')"
@@ -344,6 +370,9 @@ function Install-Tentmaker {
             $next = ("tentmaker setup " + ($SetupArgs -join ' ')).TrimEnd()
             Say "next step${hint}: $next"
             Say '  (an agent can run: tentmaker setup --yes --json --memory 4GiB --boost-memory 12GiB --repo owner/name)'
+            if ($Json) {
+                Write-Output ([ordered]@{ ok = $true; installed = $target; version = $installedVersion; next = ("tentmaker setup --yes " + ($SetupArgs -join ' ')).TrimEnd() } | ConvertTo-Json -Compress)
+            }
         }
     } finally {
         if ($staged -and (Test-Path -LiteralPath $staged)) { Remove-Item -LiteralPath $staged -Force -ErrorAction SilentlyContinue }

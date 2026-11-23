@@ -463,3 +463,16 @@ func TestStartRewritesStaleNetRules(t *testing.T) {
 		must(t, v.e.checkNet(ctx, testSID))
 	}
 }
+
+// TestInstallPhases: setup's timings name the Windows install phases.
+func TestInstallPhases(t *testing.T) {
+	v := newEnv(t)
+	var phases []string
+	v.o.Phase = func(name string) { phases = append(phases, name) }
+	if err := Install(context.Background(), v.o); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(phases, " "), "dirs user net files runner"; got != want {
+		t.Errorf("phases %q, want %q", got, want)
+	}
+}

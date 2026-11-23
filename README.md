@@ -41,6 +41,14 @@ From a checkout of your GitHub repo, on Linux or macOS:
 curl -fsSL https://raw.githubusercontent.com/baney75/tentmaker/main/scripts/install.sh | sh -s -- --yes -- --repo-here --pr
 ```
 
+On Windows, in an Administrator PowerShell:
+
+```powershell
+$env:TENTMAKER_YES='1'; $env:TENTMAKER_SETUP_ARGS='--repo-here --pr'; irm https://raw.githubusercontent.com/baney75/tentmaker/main/scripts/install.ps1 | iex
+```
+
+It asks nothing. An agent adds `--json` (`sh -s -- --yes --json -- --repo-here --pr`, or `$env:TENTMAKER_JSON='1'`) and gets exactly one JSON line on stdout: `ok`, the `next` step, and how long each phase took. A failure is one line too, `{"ok":false,"error":...,"fix":...}`, with the command that fixes it. See [Install](docs/BENCHMARKS.md#install) for how long it takes.
+
 What just happened:
 
 1. The installer put `tentmaker` on this machine and ran `sudo tentmaker setup --yes` with the repo of this checkout's `origin` and your `gh` sign-in.

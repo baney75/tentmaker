@@ -92,6 +92,39 @@ type setupView struct {
 	Doctor  *daemon.Report `json:"doctor,omitempty"`
 	PR      *migratePRView `json:"pr,omitempty"` // with --pr
 	Next    string         `json:"next"`
+	// Timings is how long each phase took, in order; they add up to TotalMS.
+	Timings []setupTiming `json:"timings"`
+	TotalMS int64         `json:"total_ms"`
+}
+
+// setupTiming is one phase of setup and its wall time. Executor phases are
+// "sandbox.<name>", the service is "service.install" then "service.wait".
+type setupTiming struct {
+	Phase string `json:"phase"`
+	MS    int64  `json:"ms"`
+}
+
+// stopwatch splits setup's wall time into phases: each lap ends the phase
+// running since the last one.
+type stopwatch struct {
+	now         func() time.Time
+	start, mark time.Time
+	v           *setupView
+}
+
+func newStopwatch(now func() time.Time, v *setupView) *stopwatch {
+	if now == nil {
+		now = time.Now
+	}
+	t := now()
+	return &stopwatch{now: now, start: t, mark: t, v: v}
+}
+
+func (s *stopwatch) lap(phase string) {
+	t := s.now()
+	s.v.Timings = append(s.v.Timings, setupTiming{Phase: phase, MS: t.Sub(s.mark).Milliseconds()})
+	s.mark = t
+	s.v.TotalMS = t.Sub(s.start).Milliseconds()
 }
 
 func (v setupView) exitCode() int {
@@ -152,7 +185,8 @@ func (a *app) cmdSetup(args []string) (any, error) {
 	if err := a.needRoot(); err != nil {
 		return nil, err
 	}
-	v := &setupView{OK: true, Config: a.env.ConfigPath, Forge: o.forge, Repos: []string{}, Steps: []setupStep{}}
+	v := &setupView{OK: true, Config: a.env.ConfigPath, Forge: o.forge, Repos: []string{}, Steps: []setupStep{}, Timings: []setupTiming{}}
+	sw := newStopwatch(a.env.Now, v)
 	switch a.env.GOOS {
 	case "linux", "darwin", "windows":
 	default:
@@ -181,6 +215,7 @@ func (a *app) cmdSetup(args []string) (any, error) {
 		o.repos = append(o.repos, r)
 	}
 
+	sw.lap("check")
 	// Step 2: flags over the existing values, then the wizard.
 	if err := a.applySetupFlags(f, o, &cfg); err != nil {
 		return nil, err
@@ -201,18 +236,27 @@ func (a *app) cmdSetup(args []string) (any, error) {
 		v.Repos = append(v.Repos, r.Name)
 	}
 
+	sw.lap("wizard")
 	// Step 3: the forge token.
 	if err := a.setupToken(o, interactive, &cfg, v); err != nil {
 		return nil, err
 	}
+	sw.lap("token")
 
 	// Step 4: save, then the sandbox.
 	if err := a.saveConfig(cfg); err != nil {
 		return nil, err
 	}
+	sw.lap("save")
 	rc := a.resolved(cfg)
 	binary := daemon.NewBinary(daemon.BinaryOptions{Version: a.env.Version, CacheDir: rc.CacheDir, Executable: a.env.Executable})
-	if err := a.env.InstallExecutors(a.ctx, rc, binary, InstallOptions{MacOSGuests: o.macOSGuests}); err != nil {
+	phase := "sandbox.preflight"
+	err = a.env.InstallExecutors(a.ctx, rc, binary, InstallOptions{MacOSGuests: o.macOSGuests, Phase: func(name string) {
+		sw.lap(phase)
+		phase = "sandbox." + name
+	}})
+	sw.lap(phase)
+	if err != nil {
 		a.step(v, "save", daemon.OK, "config saved to %s", a.env.ConfigPath)
 		a.step(v, "sandbox", daemon.Fail, "%v", err)
 	} else {
@@ -224,16 +268,17 @@ func (a *app) cmdSetup(args []string) (any, error) {
 	v.Service = "not installed"
 	if o.noService {
 		a.step(v, "service", "skip", "--no-service")
-	} else if err := a.setupService(v); err != nil {
+	} else if err := a.setupService(v, sw); err != nil {
 		a.step(v, "service", daemon.Fail, "%v", err)
 	}
 
 	// Step 6: doctor and the next step.
 	dv := a.doctorData(a.ctx)
+	sw.lap("doctor")
 	v.Doctor = &dv.Report
 	switch {
 	case !dv.OK:
-		a.step(v, "doctor", daemon.Warn, "%d problem(s), %d warning(s); run `tentmaker doctor` for the fixes", dv.Problems, dv.Warnings)
+		a.step(v, "doctor", daemon.Warn, "%d problem(s), %d warning(s); first fix: %s", dv.Problems, dv.Warnings, orRunDoctor(dv.FirstFix))
 	case dv.Warnings > 0:
 		a.step(v, "doctor", daemon.Warn, "%d warning(s); run `tentmaker doctor`", dv.Warnings)
 	default:
@@ -243,9 +288,10 @@ func (a *app) cmdSetup(args []string) (any, error) {
 	// Step 7, with --pr: move this checkout's workflows onto the pool.
 	if o.pr {
 		a.setupPR(v, dv)
+		sw.lap("pr")
 	}
 	v.Next = setupNext(*v, cfg)
-	a.out("\nnext: %s\n", v.Next)
+	a.out("\nsetup took %.1fs\nnext: %s\n", float64(v.TotalMS)/1000, v.Next)
 	return *v, nil
 }
 
@@ -293,10 +339,25 @@ func macGuestsOff(goos string, r daemon.Report) string {
 	return ""
 }
 
+// orRunDoctor is fix, or the command that lists every fix.
+func orRunDoctor(fix string) string {
+	if fix == "" {
+		return "run `tentmaker doctor`"
+	}
+	return fix
+}
+
 func setupNext(v setupView, cfg config.Config) string {
 	switch {
 	case !v.OK:
+		for _, s := range v.Steps {
+			if s.Status == daemon.Fail {
+				return "fix the failed " + s.Step + " step (" + s.Detail + ") and run `sudo tentmaker setup` again"
+			}
+		}
 		return "fix the failed step above and run `sudo tentmaker setup` again"
+	case v.Doctor != nil && !v.Doctor.OK:
+		return orRunDoctor(firstFix(*v.Doctor)) + "; then check with `sudo tentmaker doctor`"
 	case v.PR != nil && v.PR.PR != nil:
 		return "review and merge the pull request: " + v.PR.PR.URL + "; then `tentmaker doctor` checks that the first job reached your runner"
 	case len(cfg.Repos) == 0:
@@ -950,16 +1011,20 @@ func (a *app) serviceSpec() (service.Spec, string, error) {
 	return spec, note, nil
 }
 
-func (a *app) setupService(v *setupView) error {
+func (a *app) setupService(v *setupView, sw *stopwatch) error {
+	defer sw.lap("service.wait")
 	spec, note, err := a.serviceSpec()
 	if err != nil {
+		sw.lap("service.install")
 		return err
 	}
 	v.Binary = spec.Binary
 	if note != "" {
 		a.step(v, "binary", daemon.Warn, "%s", note)
 	}
-	if err := a.env.Service.Install(a.ctx, spec); err != nil {
+	err = a.env.Service.Install(a.ctx, spec)
+	sw.lap("service.install")
+	if err != nil {
 		return fmt.Errorf("install the service: %v", err)
 	}
 	v.Service = "installed"

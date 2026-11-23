@@ -108,17 +108,20 @@ type InstallOptions struct {
 	// MacOSGuests pulls the macOS VM image even when free disk doesn't
 	// cover it with the usual margin (setup --macos-guests).
 	MacOSGuests bool
+	// Phase is called as the executor install starts each phase, for
+	// setup's timings. Nil skips it.
+	Phase func(name string)
 }
 
 // installExecutors runs this OS's executor Install.
 func installExecutors(ctx context.Context, goos string, cfg config.Config, binary func(core.Platform) (string, error), o InstallOptions) error {
 	switch goos {
 	case "linux":
-		return linux.Install(ctx, linux.Options{StateDir: cfg.StateDir, CacheDir: cfg.CacheDir, Binary: binary, AllowLAN: cfg.Guards.AllowLAN})
+		return linux.Install(ctx, linux.Options{StateDir: cfg.StateDir, CacheDir: cfg.CacheDir, Binary: binary, AllowLAN: cfg.Guards.AllowLAN, Phase: o.Phase})
 	case "darwin":
-		return darwin.Install(ctx, darwin.Options{StateDir: cfg.StateDir, CacheDir: cfg.CacheDir, Binary: binary, MacOSGuests: o.MacOSGuests})
+		return darwin.Install(ctx, darwin.Options{StateDir: cfg.StateDir, CacheDir: cfg.CacheDir, Binary: binary, MacOSGuests: o.MacOSGuests, Phase: o.Phase})
 	case "windows":
-		return windows.Install(ctx, windows.Options{BaseDir: windowsBaseDir(config.Path()), StateDir: cfg.StateDir, CacheDir: cfg.CacheDir, Binary: binary, AllowLAN: cfg.Guards.AllowLAN})
+		return windows.Install(ctx, windows.Options{BaseDir: windowsBaseDir(config.Path()), StateDir: cfg.StateDir, CacheDir: cfg.CacheDir, Binary: binary, AllowLAN: cfg.Guards.AllowLAN, Phase: o.Phase})
 	}
 	return fmt.Errorf("Tentmaker has no sandbox for %s", goos)
 }

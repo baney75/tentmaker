@@ -218,6 +218,7 @@ func Install(ctx context.Context, o Options) error {
 	}
 
 	// The user: no sudo, no docker group, a root-owned home.
+	e.phase("user")
 	if _, _, err := h.LookupUser(User); err != nil {
 		if err := run(Cmd{Path: "useradd", Args: []string{"--home-dir", e.root, "--no-create-home", "--shell", "/usr/sbin/nologin", "--user-group", User}}); err != nil {
 			return fmt.Errorf("create user %s: %v", User, err)
@@ -254,6 +255,7 @@ func Install(ctx context.Context, o Options) error {
 	// Directories. Only jobs' own dirs, podman's storage and systemd's state
 	// are the runner's; everything on the paths systemd and podman read
 	// config from is root's.
+	e.phase("dirs")
 	type dir struct {
 		path     string
 		mode     os.FileMode
@@ -317,9 +319,20 @@ func Install(ctx context.Context, o Options) error {
 		}
 	}
 
-	if err := e.installRunner(ctx, pin); err != nil {
-		return err
-	}
+	// The runner download is network-bound and nothing until the baseline
+	// reads it, so it overlaps files, net, the user manager and podman.
+	e.phase("runner")
+	runnerCtx, cancelRunner := context.WithCancel(ctx)
+	runnerErr := make(chan error, 1)
+	go func() { runnerErr <- e.installRunner(runnerCtx, pin) }()
+	runnerDone := false
+	defer func() {
+		cancelRunner()
+		if !runnerDone {
+			<-runnerErr
+		}
+	}()
+	e.phase("files")
 	if err := writeRoot(h, e.jobScript(), []byte(jobRunnerScript), 0o755); err != nil {
 		return err
 	}
@@ -382,6 +395,7 @@ func Install(ctx context.Context, o Options) error {
 	if err := run(Cmd{Path: "systemctl", Args: []string{"daemon-reload"}}); err != nil {
 		return err
 	}
+	e.phase("net")
 	if err := e.netnsTools(); err != nil {
 		return err
 	}
@@ -393,6 +407,7 @@ func Install(ctx context.Context, o Options) error {
 			return err
 		}
 	}
+	e.phase("user-manager")
 	if err := run(Cmd{Path: "loginctl", Args: []string{"enable-linger", User}}); err != nil {
 		return err
 	}
@@ -412,16 +427,26 @@ func Install(ctx context.Context, o Options) error {
 		}
 		e.o.Sleep(250 * time.Millisecond)
 	}
+	e.phase("podman")
 	for _, args := range [][]string{
 		{"systemctl", "--user", "daemon-reload"},
 		{"systemctl", "--user", "set-environment", "XDG_CONFIG_HOME=" + filepath.Join(e.root, ".config")},
 		{"systemctl", "--user", "restart", "podman.socket"},
 		{"podman", "info"},
 	} {
+		if args[0] == "podman" {
+			e.phase("podman.info")
+		}
 		if err := run(e.asRunner(uid, 2*time.Minute, args...)); err != nil {
 			return fmt.Errorf("rootless podman for %s: %v", User, err)
 		}
 	}
+	e.phase("runner.wait")
+	runnerDone = true
+	if err := <-runnerErr; err != nil {
+		return err
+	}
+	e.phase("baseline")
 	units, err := e.userUnits(ctx, uid)
 	if err != nil {
 		return err
@@ -441,6 +466,13 @@ func Install(ctx context.Context, o Options) error {
 	}
 	e.log.Info("installed", "executor", Name, "runner", pin.Version, "arch", pin.Arch)
 	return nil
+}
+
+// phase reports the start of an install phase to Options.Phase.
+func (e *Executor) phase(name string) {
+	if e.o.Phase != nil {
+		e.o.Phase(name)
+	}
 }
 
 // installRunner puts the pinned, checksummed runner under Opt, root-owned

@@ -30,6 +30,16 @@ env:
   TM_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
   # Fork PRs get a read-only token and Tentmaker refuses forks anyway.
   TM_SMOKE: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+  # Install budgets: the one-liner's wall time, from its start until setup
+  # returns (service answering, doctor run), on GitHub's hosted runners.
+  # Each is the median before the speedups plus 25%, rounded up to a second:
+  # Linux 15.5 s, Windows 14.1 s. macOS leaves out the guest image pull
+  # (setup.sandbox.images), whose time is ghcr.io's and swung 32 to 144 s
+  # over 20 runs; the rest took 3.0 s. See docs/BENCHMARKS.md, "Install".
+  TM_INSTALL_BUDGET_MS_LINUX: "20000"
+  TM_INSTALL_BUDGET_MS_MACOS: "4000"
+  TM_INSTALL_BUDGET_EXCLUDES_MACOS: setup.sandbox.images
+  TM_INSTALL_BUDGET_MS_WINDOWS: "18000"
 
 jobs:
   unix:
@@ -67,14 +77,6 @@ jobs:
           done
           echo "::error::the release server did not start"; cat "$RUNNER_TEMP/http.log"; exit 1
 
-      - name: install with the one-liner
-        run: |
-          curl -fsSL --max-time 60 "http://127.0.0.1:$TM_PORT/install.sh" |
-            sudo env TENTMAKER_DOWNLOAD_BASE="http://127.0.0.1:$TM_PORT" sh
-          command -v tentmaker
-          got=$(tentmaker version --json | jq -r .version)
-          test "$got" = "$TM_VERSION" || { echo "::error::installed $got, want $TM_VERSION"; exit 1; }
-
       # The runner image leaves /home/linuxbrew world-readable, and setup
       # refuses a host where the CI user could read a home. This is the fix
       # setup and doctor print.
@@ -82,14 +84,26 @@ jobs:
         if: runner.os == 'Linux'
         run: for h in /home/*; do sudo chmod o-rwx "$h"; done
 
-      - name: setup
+      # The quick start an agent runs: one command that downloads, verifies,
+      # installs and runs setup, printing one JSON line. Its wall time is
+      # the install phase scripts/bench install reports and gates.
+      - name: install and set up with the one-liner
         id: setup
         run: |
+          mark() { printf '%s %s %s\n' "$1" "$2" "$(perl -MTime::HiRes=time -e 'printf "%.3f", time')" >>"$RUNNER_TEMP/install-marks"; }
           rc=0
-          sudo tentmaker setup --yes --json --no-mesh --no-gh --memory 2GiB --boost-memory 4GiB >"$RUNNER_TEMP/setup.json" || rc=$?
+          mark command begin
+          curl -fsSL --max-time 60 "http://127.0.0.1:$TM_PORT/install.sh" |
+            sudo env TENTMAKER_DOWNLOAD_BASE="http://127.0.0.1:$TM_PORT" sh -s -- --yes -- --json --no-mesh --no-gh --memory 2GiB --boost-memory 4GiB >"$RUNNER_TEMP/setup.json" || rc=$?
+          mark command end
           cat "$RUNNER_TEMP/setup.json"
-          test "$rc" = 0 || { echo "::error::setup exited $rc"; exit 1; }
+          test "$rc" = 0 || { echo "::error::the one-liner exited $rc"; exit 1; }
+          test "$(wc -l <"$RUNNER_TEMP/setup.json")" -eq 1 || { echo "::error::the one-liner did not print exactly one JSON line"; exit 1; }
+          command -v tentmaker
+          got=$(tentmaker version --json | jq -r .version)
+          test "$got" = "$TM_VERSION" || { echo "::error::installed $got, want $TM_VERSION"; exit 1; }
           jq -e '.ok == true' "$RUNNER_TEMP/setup.json" >/dev/null || { echo "::error::setup ok is not true"; exit 1; }
+          jq -e '(.next | length) > 0 and (.timings | length) > 0' "$RUNNER_TEMP/setup.json" >/dev/null || { echo "::error::setup has no next step or no timings"; exit 1; }
           if [ "$RUNNER_OS" = macOS ]; then
             # A hosted Mac has far less than the ~130 GiB the macOS image
             # plus a job need, so setup skips the macOS guests, succeeds,
@@ -173,6 +187,7 @@ jobs:
           sudo tentmaker logs -n 50 --json | jq -e '.lines | length > 0' >/dev/null
 
       - name: a real check job (Linux)
+        id: job
         if: runner.os == 'Linux' && env.TM_SMOKE == 'true'
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -191,17 +206,26 @@ jobs:
           branch="tm-e2e/$GITHUB_RUN_ID.$GITHUB_RUN_ATTEMPT/linux"
           timeout 30 gh api "repos/$REPO/git/refs" -f "ref=refs/heads/$branch" -f "sha=$sha" >/dev/null
           echo "TM_E2E_BRANCH=$branch" >>"$GITHUB_ENV"
+          mark() { printf '%s %s %s\n' "$1" "$2" "$(perl -MTime::HiRes=time -e 'printf "%.3f", time')" >>"$RUNNER_TEMP/install-marks"; }
+          mark connect begin
           printf %s "$GITHUB_TOKEN" | sudo tentmaker connect github --token-stdin --json | tee "$RUNNER_TEMP/connect.json"
           jq -e '.ok == true' "$RUNNER_TEMP/connect.json" >/dev/null || { echo "::error::connect failed"; exit 1; }
           # An author with no PRs keeps this run off other PRs' heads.
           sudo tentmaker repo add "$REPO" --mode checks --allow-public --workflow .github/workflows/tentmaker-smoke.yml --branch "$branch" --author tentmaker-e2e-nobody --json | tee "$RUNNER_TEMP/repo.json"
           jq -e '.ok == true' "$RUNNER_TEMP/repo.json" >/dev/null || { echo "::error::repo add failed"; exit 1; }
+          mark connect end
           echo "waiting for $ctx on $sha (branch $branch, a copy of $TM_SHA)"
           deadline=$((SECONDS + 360))
           while :; do
-            # Only a status set during this run counts.
-            st=$(timeout 30 gh api "repos/$REPO/commits/$sha/statuses?per_page=100" \
-              --jq "[.[] | select(.context == \"$ctx\" and .created_at >= \"$start\")][0] | if . == null then \"none\" else \"\(.state) \(.created_at) \(.description)\" end") || st="api-error"
+            # Only a status set during this run counts. The last answer is
+            # kept: its pending and success times are the job's pickup and
+            # green for the install report, at no extra API call.
+            if timeout 30 gh api "repos/$REPO/commits/$sha/statuses?per_page=100" >"$RUNNER_TEMP/statuses.json"; then
+              st=$(jq -r --arg ctx "$ctx" --arg start "$start" \
+                '[.[] | select(.context == $ctx and .created_at >= $start)][0] | if . == null then "none" else "\(.state) \(.created_at) \(.description)" end' "$RUNNER_TEMP/statuses.json") || st="api-error"
+            else
+              st="api-error"
+            fi
             echo "$(date -u +%T) $ctx: $st"
             case $st in
               success*) break ;;
@@ -217,6 +241,30 @@ jobs:
           sudo grep -q '^state: success' "$log" || { echo "::error::$log does not record success"; exit 1; }
           sudo grep -q 'TENTMAKER=1 GITHUB_ACTIONS=unset' "$log" ||
             { echo "::error::$log does not show TENTMAKER=1 GITHUB_ACTIONS=unset"; exit 1; }
+
+      # Per-phase wall time from the one-liner to the first green job, as a
+      # job summary table and an artifact, and the install budget gate.
+      - name: install timings
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        env:
+          JOB_OK: ${{ steps.job.outcome == 'success' }}
+          TM_INSTALL_BUDGET_MS: ${{ runner.os == 'macOS' && env.TM_INSTALL_BUDGET_MS_MACOS || env.TM_INSTALL_BUDGET_MS_LINUX }}
+          TM_INSTALL_BUDGET_EXCLUDES: ${{ runner.os == 'macOS' && env.TM_INSTALL_BUDGET_EXCLUDES_MACOS || '' }}
+        run: |
+          os=$(printf %s "$RUNNER_OS" | tr '[:upper:]' '[:lower:]')
+          set --
+          if [ "$JOB_OK" = true ]; then set -- -statuses "$RUNNER_TEMP/statuses.json" -ctx tentmaker/smoke; fi
+          go run ./scripts/bench install -os "$os" -marks "$RUNNER_TEMP/install-marks" -setup "$RUNNER_TEMP/setup.json" "$@" \
+            -budget-ms "$TM_INSTALL_BUDGET_MS" -budget-excludes "$TM_INSTALL_BUDGET_EXCLUDES" \
+            -json "$RUNNER_TEMP/install-timings/install-$os.json" -md "$GITHUB_STEP_SUMMARY"
+
+      - name: upload install timings
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: install-timings-${{ runner.os }}
+          path: ${{ runner.temp }}/install-timings/
+          if-no-files-found: warn
 
       - name: dump on failure
         if: failure()
@@ -300,9 +348,16 @@ jobs:
           scripts/build.sh "$TM_VERSION"
 
       # The runner ends a step's processes with the step, so the release
-      # server and the install share one.
-      - name: serve dist/ as a fake release and install with the one-liner
+      # server and the install share one. The install is the quick start an
+      # agent runs: one command that downloads, verifies, installs and runs
+      # setup, printing one JSON line; scripts/bench install times it.
+      - name: serve dist/ as a fake release, install and set up with the one-liner
+        id: setup
         run: |
+          function Mark([string]$name, [string]$edge) {
+            $t = ([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() / 1000).ToString('F3', [Globalization.CultureInfo]::InvariantCulture)
+            Add-Content -Path "$env:RUNNER_TEMP\install-marks" -Value "$name $edge $t"
+          }
           $srv = Join-Path $env:RUNNER_TEMP 'srv'
           New-Item -ItemType Directory -Force -Path "$srv\latest\download" | Out-Null
           Copy-Item dist\* "$srv\latest\download\"
@@ -316,21 +371,27 @@ jobs:
           if (-not $up) { Write-Output "::error::the release server did not start"; Get-Content "$env:RUNNER_TEMP\http.err"; exit 1 }
 
           $env:TENTMAKER_DOWNLOAD_BASE = "http://127.0.0.1:$env:TM_PORT"
-          irm -TimeoutSec 60 "http://127.0.0.1:$env:TM_PORT/install.ps1" | iex
+          $env:TENTMAKER_YES = '1'
+          $env:TENTMAKER_SETUP_ARGS = '--json --no-mesh --no-gh --memory 2GiB --boost-memory 4GiB'
+          $lines = $null
+          Mark command begin
+          try {
+            $lines = @(irm -TimeoutSec 60 "http://127.0.0.1:$env:TM_PORT/install.ps1" | iex)
+          } catch {
+            Write-Output "::error::the one-liner failed: $_"; exit 1
+          }
+          Mark command end
           Stop-Process -Id $server.Id -ErrorAction SilentlyContinue
+          $out = $lines -join "`n"
+          Write-Output $out
+          if ($lines.Count -ne 1) { Write-Output "::error::the one-liner printed $($lines.Count) lines, not one JSON line"; exit 1 }
+          Set-Content -Path "$env:RUNNER_TEMP\setup.json" -Value $out -NoNewline
           # A new terminal sees the machine PATH; later steps get it here.
           Add-Content -Path $env:GITHUB_PATH -Value (Join-Path $env:ProgramFiles 'Tentmaker')
           $got = ((& "$env:ProgramFiles\Tentmaker\tentmaker.exe" version --json) -join "`n" | ConvertFrom-Json).version
           if ($got -ne $env:TM_VERSION) { Write-Output "::error::installed $got, want $env:TM_VERSION"; exit 1 }
-
-      - name: setup
-        id: setup
-        run: |
-          $out = (tentmaker setup --yes --json --no-mesh --no-gh --memory 2GiB --boost-memory 4GiB) -join "`n"
-          $rc = $LASTEXITCODE
-          Write-Output $out
-          if ($rc -ne 0) { Write-Output "::error::setup exited $rc"; exit 1 }
           $v = $out | ConvertFrom-Json
+          if (-not $v.next -or @($v.timings).Count -eq 0) { Write-Output "::error::setup has no next step or no timings"; exit 1 }
           if (-not $v.ok) { Write-Output "::error::setup ok is not true"; exit 1 }
           if ($v.service -ne 'running') { Write-Output "::error::setup says the service is $($v.service)"; exit 1 }
           if ($v.doctor.version -ne $env:TM_VERSION) { Write-Output "::error::setup's doctor reports another version"; exit 1 }
@@ -390,6 +451,7 @@ jobs:
           if (@($v.lines).Count -eq 0) { Write-Output "::error::no log lines in --json"; exit 1 }
 
       - name: a real check job (Windows)
+        id: job
         if: env.TM_SMOKE == 'true'
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -411,6 +473,11 @@ jobs:
           $body = @{ ref = "refs/heads/$branch"; sha = $sha } | ConvertTo-Json
           Invoke-RestMethod -TimeoutSec 30 -Method Post -Headers $headers -ContentType 'application/json' -Body $body "$api/git/refs" | Out-Null
           Add-Content -Path $env:GITHUB_ENV -Value "TM_E2E_BRANCH=$branch"
+          function Mark([string]$name, [string]$edge) {
+            $t = ([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() / 1000).ToString('F3', [Globalization.CultureInfo]::InvariantCulture)
+            Add-Content -Path "$env:RUNNER_TEMP\install-marks" -Value "$name $edge $t"
+          }
+          Mark connect begin
           $c = ($env:GITHUB_TOKEN | tentmaker connect github --token-stdin --json) -join "`n"
           Write-Output $c
           if (-not ($c | ConvertFrom-Json).ok) { Write-Output "::error::connect failed"; exit 1 }
@@ -418,12 +485,17 @@ jobs:
           $r = (tentmaker repo add $env:REPO --mode checks --allow-public --workflow .github/workflows/tentmaker-smoke.yml --branch $branch --author tentmaker-e2e-nobody --json) -join "`n"
           Write-Output $r
           if (-not ($r | ConvertFrom-Json).ok) { Write-Output "::error::repo add failed"; exit 1 }
+          Mark connect end
           Write-Output "waiting for $ctx on $sha (branch $branch, a copy of $env:TM_SHA)"
           $deadline = [DateTime]::UtcNow.AddMinutes(6)
           while ($true) {
             $st = $null
             try {
-              $all = Invoke-RestMethod -TimeoutSec 30 -Headers $headers "$api/commits/$sha/statuses?per_page=100"
+              # The last answer is kept, raw: its pending and success times
+              # are the job's pickup and green for the install report.
+              $resp = Invoke-WebRequest -UseBasicParsing -TimeoutSec 30 -Headers $headers "$api/commits/$sha/statuses?per_page=100"
+              Set-Content -Path "$env:RUNNER_TEMP\statuses.json" -Value $resp.Content -NoNewline
+              $all = $resp.Content | ConvertFrom-Json
               # Only a status set during this run counts.
               $st = @($all | Where-Object {
                   $_.context -eq $ctx -and
@@ -448,6 +520,27 @@ jobs:
           Get-Content $log
           if (-not (Select-String -Path $log -Pattern '^state: success' -Quiet)) { Write-Output "::error::$log does not record success"; exit 1 }
           if (-not (Select-String -Path $log -Pattern 'TENTMAKER=1 GITHUB_ACTIONS=unset' -SimpleMatch -Quiet)) { Write-Output "::error::$log does not show TENTMAKER=1 GITHUB_ACTIONS=unset"; exit 1 }
+
+      # Per-phase wall time from the one-liner to the first green job, as a
+      # job summary table and an artifact, and the install budget gate.
+      - name: install timings
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        env:
+          JOB_OK: ${{ steps.job.outcome == 'success' }}
+        run: |
+          $more = @()
+          if ($env:JOB_OK -eq 'true') { $more = @('-statuses', "$env:RUNNER_TEMP\statuses.json", '-ctx', 'tentmaker/smoke-windows') }
+          go run ./scripts/bench install -os windows -marks "$env:RUNNER_TEMP\install-marks" -setup "$env:RUNNER_TEMP\setup.json" @more `
+            -budget-ms $env:TM_INSTALL_BUDGET_MS_WINDOWS -json "$env:RUNNER_TEMP\install-timings\install-windows.json" -md $env:GITHUB_STEP_SUMMARY
+          exit $LASTEXITCODE
+
+      - name: upload install timings
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: install-timings-${{ runner.os }}
+          path: ${{ runner.temp }}/install-timings/
+          if-no-files-found: warn
 
       - name: dump on failure
         if: failure()

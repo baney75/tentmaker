@@ -311,6 +311,7 @@ func Install(ctx context.Context, o Options) error {
 	}
 
 	// Tart.
+	e.phase("tart")
 	tartDir := filepath.Join(e.o.LibDir, "tart-"+TartVersion)
 	if _, err := os.Stat(filepath.Join(tartDir, "tart.app", "Contents", "MacOS", "tart")); err != nil {
 		tarball := filepath.Join(e.o.CacheDir, "dist", "tart-"+TartVersion+".tar.gz")
@@ -341,6 +342,7 @@ func Install(ctx context.Context, o Options) error {
 	}
 
 	// Softnet: setuid root so Tart can start it for --net-softnet.
+	e.phase("softnet")
 	snTar := filepath.Join(e.o.CacheDir, "dist", "softnet-"+SoftnetVersion+".tar.gz")
 	if err := fetchVerified(ctx, t, SoftnetURL, snTar, e.o.Pins.SoftnetSHA256); err != nil {
 		return fmt.Errorf("softnet %s: %w", SoftnetVersion, err)
@@ -375,6 +377,7 @@ func Install(ctx context.Context, o Options) error {
 	}
 
 	// No job VM survives an install.
+	e.phase("vms")
 	if vms, err := e.localVMs(ctx); err != nil {
 		return err
 	} else {
@@ -389,12 +392,13 @@ func Install(ctx context.Context, o Options) error {
 
 	// Pull the pinned images (each is large), then delete older pulls of
 	// exactly the same repositories.
+	e.phase("images")
 	for _, plat := range sortedKeys(want) {
 		img := want[plat]
 		if img == "" {
 			continue
 		}
-		if _, err := t.Run(ctx, e.tart(6*time.Hour, "pull", img)); err != nil {
+		if _, err := t.Run(ctx, e.tart(6*time.Hour, "pull", "--concurrency", pullConcurrency, img)); err != nil {
 			return fmt.Errorf("pull %s: %v", img, err)
 		}
 	}
@@ -412,6 +416,18 @@ func Install(ctx context.Context, o Options) error {
 	}
 	e.log.Info("installed", "executor", Name, "tart", TartVersion, "softnet", SoftnetVersion, "guests", strings.Join(sortedKeys(want), ","))
 	return nil
+}
+
+// pullConcurrency is how many image layers tart fetches at once. Tart's
+// default is 4; the Linux guest image is tens of GiB in many layers, and
+// the pull is most of a fresh macOS setup.
+const pullConcurrency = "8"
+
+// phase reports the start of an install phase to Options.Phase.
+func (e *Executor) phase(name string) {
+	if e.o.Phase != nil {
+		e.o.Phase(name)
+	}
 }
 
 // supersededImages are pulls of a pinned image's repository (as

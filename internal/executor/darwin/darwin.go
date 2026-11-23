@@ -90,6 +90,9 @@ type Options struct {
 	Tools Tools
 	Now   func() time.Time
 	Sleep func(time.Duration)
+	// Phase, when set, is called as Install starts each of its phases
+	// (setup times them). It must not block.
+	Phase func(name string)
 }
 
 // Pins are the checksums Install verifies downloads against.

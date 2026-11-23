@@ -87,6 +87,27 @@ try {
         Pass 'sha mismatch refuses'
     } else { Bad "tampered archive: threw=$threw" }
 
+    # 4b. -Json: one JSON line of output, on success and on failure.
+    $env:TENTMAKER_DOWNLOAD_BASE = Join-Path $work 'good'
+    try {
+        $lines = @(& $installer -InstallDir (Join-Path $work 'install4') -NoSetup -Json 6>$null)
+        $v = $lines[0] | ConvertFrom-Json
+        if ($lines.Count -eq 1 -and $v.ok -eq $true -and $v.next -eq 'tentmaker setup --yes --json') { Pass '-Json prints one line with the next step' } else { Bad "-Json printed: $($lines -join ' | ')" }
+    } catch { Bad "-Json threw: $_" }
+    $env:TENTMAKER_DOWNLOAD_BASE = Join-Path $work 'bad'
+    $lines = @()
+    try { & $installer -InstallDir (Join-Path $work 'install5') -NoSetup -Json 6>$null | ForEach-Object { $lines += $_ } } catch { $msg = "$_" }
+    $v = if ($lines.Count -eq 1) { $lines[0] | ConvertFrom-Json } else { $null }
+    if ($v -and $v.ok -eq $false -and $v.error -match 'checksum mismatch' -and $v.fix) { Pass '-Json failure is one JSON line' } else { Bad "-Json failure printed: $($lines -join ' | ')" }
+    # An error Fail does not raise (a file where the folder goes) is one line too.
+    $env:TENTMAKER_DOWNLOAD_BASE = Join-Path $work 'good'
+    $blocker = Join-Path $work 'install6'
+    Set-Content -LiteralPath $blocker -Value 'not a folder'
+    $lines = @()
+    try { & $installer -InstallDir $blocker -NoSetup -Json 6>$null | ForEach-Object { $lines += $_ } } catch { $msg = "$_" }
+    $v = if ($lines.Count -eq 1) { $lines[0] | ConvertFrom-Json } else { $null }
+    if ($v -and $v.ok -eq $false -and $v.error -and $v.fix) { Pass '-Json unexpected error is one JSON line' } else { Bad "-Json unexpected error printed: $($lines -join ' | ')" }
+
     # 5. Bad channel.
     $threw = $false
     try { & $installer -InstallDir $dir3 -NoSetup -Channel beta } catch { $threw = $true }
