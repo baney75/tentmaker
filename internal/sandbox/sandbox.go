@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"os/user"
 	"path"
+	"regexp"
 	"strings"
 	"time"
 
@@ -184,10 +185,13 @@ func NewID() (string, error) {
 	return Prefix + hex.EncodeToString(b[:]), nil
 }
 
-// ValidID reports whether s can be a sandbox id.
-func ValidID(s string) bool {
-	return strings.HasPrefix(s, Prefix) && core.NamePattern.MatchString(s)
-}
+// idPattern is a sandbox id exactly: Prefix and 12 lowercase hex digits,
+// the shape NewID makes and the Linux executor accepts (isSandboxName).
+var idPattern = regexp.MustCompile(`^` + Prefix + `[0-9a-f]{12}$`)
+
+// ValidID reports whether s is a sandbox id. Nothing else may go into a
+// sandbox URL, a unit name or a log line as one.
+func ValidID(s string) bool { return idPattern.MatchString(s) }
 
 // Create places one sandbox on this device and waits until it runs.
 func (m *Manager) Create(ctx context.Context, c Caller, req CreateRequest) (Info, error) {

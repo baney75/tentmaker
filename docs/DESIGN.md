@@ -885,7 +885,9 @@ it into DIR (made if missing) with `tar` run inside the sandbox as its user; `GE
 `path=PATH` answers a frame stream of `tar -c` of PATH. The client extracts it with `os.Root`:
 only regular files and folders, never links, nothing outside the destination, at most 2 GiB.
 Errors are `{"error", "fix"}` with a status: 400 bad request, 403 not allowed, 404 no such
-sandbox, 409 no room or not running, 501 not supported, 503 no worker.
+sandbox, 409 no room or not running, 501 not supported, 503 no worker. A sandbox id is exactly
+`sbx-` and 12 lowercase hex digits (`sandbox.ValidID`, the executor's rule); the CLI, the MCP
+tools and the Manager refuse any other string before it reaches a URL or a unit name.
 
 **CLI and MCP.** `tentmaker sandbox create|exec|cp|ls|rm` and the MCP tools `sandbox_create`,
 `sandbox_exec`, `sandbox_cp`, `sandbox_ls`, `sandbox_rm` call the same functions. `create

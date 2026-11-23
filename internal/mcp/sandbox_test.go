@@ -108,3 +108,35 @@ func TestSandboxExecSchemaIsAnArrayOfStrings(t *testing.T) {
 	}
 	t.Fatal("no sandbox_exec tool")
 }
+
+// A sandbox id goes into a /v1/sandboxes/{id} URL, so only the exact shape
+// the executor accepts passes: anything else could name another route.
+func TestSandboxToolsRefuseInexactIDs(t *testing.T) {
+	fc := &fakeSandboxes{}
+	s, _ := start(t, fc)
+	for i, id := range []string{
+		"sbx-../../v1/pause",
+		"sbx-0123456789ab/exec",
+		"sbx-0123456789AB",
+		"sbx-0123456789abc",
+		"sbx-0123456789a",
+		"sbx-",
+		"sbx-0123456789ab\n",
+		"sbx-0123456789ab?x=1",
+		"tm-0123456789ab",
+	} {
+		for j, tl := range []string{"sandbox_exec", "sandbox_rm"} {
+			a := map[string]any{"id": id}
+			if tl == "sandbox_exec" {
+				a["command"] = []any{"true"}
+			}
+			_, rerr := s.tool(10+2*i+j, tl, a)
+			if rerr == nil || !strings.Contains(rerr.Message, "not a sandbox ID") {
+				t.Errorf("%s %q: error %+v, want a refusal", tl, id, rerr)
+			}
+		}
+	}
+	if fc.last() != "" {
+		t.Fatalf("a tool ran with a bad id: %s", fc.last())
+	}
+}

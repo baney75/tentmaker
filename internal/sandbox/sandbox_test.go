@@ -161,3 +161,16 @@ func TestManagerCopyArgv(t *testing.T) {
 		t.Fatalf("windows copy: %v", err)
 	}
 }
+
+func TestValidIDIsExact(t *testing.T) {
+	id, err := NewID()
+	if err != nil || !ValidID(id) {
+		t.Fatalf("NewID made %q (%v), which ValidID refuses", id, err)
+	}
+	for _, s := range []string{"sbx-../../v1/pause", "sbx-0123456789AB", "sbx-0123456789abc", "sbx-0123456789a",
+		"sbx-", "sbx-0123456789ab/x", "sbx-aaaa-bbbbbbb", "tm-0123456789ab", ""} {
+		if ValidID(s) {
+			t.Errorf("ValidID(%q) = true", s)
+		}
+	}
+}

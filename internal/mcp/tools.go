@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/baney75/tentmaker/internal/runs"
+	"github.com/baney75/tentmaker/internal/sandbox"
 )
 
 // prop is one tool argument.
@@ -86,7 +87,7 @@ func sandboxes(c Controller) (SandboxController, error) {
 
 func sandboxID(v any) error {
 	s := v.(string)
-	if !strings.HasPrefix(s, "sbx-") || len(s) > 64 {
+	if !sandbox.ValidID(s) {
 		return fmt.Errorf("%q is not a sandbox ID (they look like sbx-1a2b3c4d5e6f); list them with sandbox_ls", s)
 	}
 	return nil
