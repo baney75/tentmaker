@@ -87,52 +87,37 @@ func TestTrustedGuestGetsOnlyListedVouchedJobs(t *testing.T) {
 	}
 }
 
-func TestPublicGuestGetsOnlyForkPRsWithoutCacheOrSecrets(t *testing.T) {
+// Public lending is off (issue #61): a public guest gets no runner, even
+// for an opted-in repo's fork PR, so it can never hold a runner that takes
+// a push job and its GITHUB_TOKEN, and an owner's device still gets the
+// push job queued beside the fork PR (review of #60 first-F1, first-F2).
+func TestPublicGuestGetsNoWorkAndOwnersKeepThePush(t *testing.T) {
 	pub := "baney75/public"
-	pubNo := "baney75/public-not-lent"
-	r := newRig(t,
-		config.Repo{Name: pub, Mode: "runner", AllowPublic: true, LendPublic: true},
-		config.Repo{Name: pubNo, Mode: "runner", AllowPublic: true},
-		runnerRepo(repoApp))
+	r := newRig(t, config.Repo{Name: pub, Mode: "runner", AllowPublic: true, LendPublic: true})
 	r.forge.SetRepo(core.RepoInfo{Repo: pub, DefaultBranch: "main", Public: true, ForkPolicy: "approve_all"})
-	r.forge.SetRepo(core.RepoInfo{Repo: pubNo, DefaultBranch: "main", Public: true, ForkPolicy: "approve_all"})
-	r.forge.SetRepo(core.RepoInfo{Repo: repoApp, DefaultBranch: "main", ForkPolicy: "off"})
 	w := r.addWorker("bob-pc", 10)
-	src := &lentSource{inner: r.broker, lend: core.Lend{Trust: core.TrustPublic}}
-	w.sources = []core.WorkSource{src}
-
-	forkPR := func(j *core.Job) { j.FromFork, j.Event, j.HeadBranch = true, core.EventPullRequest, "patch-1" }
-	good := r.addJob(pub, forkPR)
-	r.addJob(pub)                                                                                // a push: may use secrets
-	r.addJob(pub, func(j *core.Job) { j.FromFork, j.Event = true, core.EventPullRequestTarget }) // runs with secrets
-	r.addJob(pubNo, forkPR)                                                                      // repo did not opt in
-	r.addJob(repoApp, forkPR)                                                                    // private
+	w.sources = []core.WorkSource{&lentSource{inner: r.broker, lend: core.Lend{Trust: core.TrustPublic}}}
+	r.addJob(pub, func(j *core.Job) { j.FromFork, j.Event, j.HeadBranch = true, core.EventPullRequest, "patch-1" })
+	push := r.addJob(pub)
 
 	r.tick()
 	r.run(10*time.Second, 2*time.Second)
-	got := grantedJobs(r)
-	if len(got) != 1 || !got[good.ID] {
-		t.Fatalf("public guest granted %v, want only the opted-in public repo's fork PR %d", got, good.ID)
+	if got := grantedJobs(r); len(got) != 0 {
+		t.Fatalf("public guest granted %v", got)
 	}
-	offs := src.offers()
-	if len(offs) != 1 {
-		t.Fatalf("offers %d", len(offs))
-	}
-	if offs[0].Cache || offs[0].Actions != nil {
-		t.Fatalf("a public guest got a cache grant: cache %v actions %+v", offs[0].Cache, offs[0].Actions)
-	}
-	if n := len(started(w.ex)); n != 1 {
+	if n := len(started(w.ex)); n != 0 {
 		t.Fatalf("public guest started %d runners", n)
 	}
-	// An owner's device still never runs a fork's job.
-	alpha := r.addWorker("alpha", 10)
+	r.addWorker("alpha", 10)
 	r.run(10*time.Second, 2*time.Second)
+	if got := grantedJobs(r); !got[push.ID] {
+		t.Fatalf("the owner's device did not get the push job: %v", got)
+	}
 	for _, g := range r.broker.Status().Runners {
-		if g.Device == "alpha" && g.Repo != repoApp && g.Repo != pub {
-			t.Fatalf("owner device took %+v", g)
+		if g.Device == "bob-pc" {
+			t.Fatalf("public guest holds %+v", g)
 		}
 	}
-	_ = alpha
 }
 
 func TestRevokedGuestGetsNoWork(t *testing.T) {

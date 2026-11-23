@@ -908,8 +908,7 @@ func (b *Broker) realizeCheck(ctx context.Context, req core.WorkRequest, rec *gr
 }
 
 // lendRepoRefusalLocked says why a device lent with l gets no job of repo
-// r, or "". trusted: repos on its list. public: public repos whose config
-// sets lend_public.
+// r, or "". trusted: repos on its list. public: none yet (issue #61).
 func (b *Broker) lendRepoRefusalLocked(r *repoState, l core.Lend) string {
 	switch l.Trust {
 	case core.TrustTrusted:
@@ -918,14 +917,7 @@ func (b *Broker) lendRepoRefusalLocked(r *repoState, l core.Lend) string {
 		}
 		return ""
 	case core.TrustPublic:
-		c := b.infos[r.key()]
-		switch {
-		case !r.cfg.LendPublic:
-			return "the repo does not set lend_public"
-		case c == nil || c.err != "" || !c.public:
-			return "a public lent device runs only public repos"
-		}
-		return ""
+		return core.PublicLendOff
 	}
 	return "trust " + l.Trust + " gets no work"
 }

@@ -125,7 +125,10 @@ func TestUsedOrExpiredCodeRefused(t *testing.T) {
 		t.Fatalf("second use: %d %q", used.Code, errText(used))
 	}
 
-	_, sec2 := mkInvite(t, n, core.TrustPublic, nil, time.Minute)
+	if _, err := n.Invite(context.Background(), core.TrustPublic, nil, time.Minute); err == nil || !strings.Contains(err.Error(), "#61") {
+		t.Fatalf("a public invite: %v", err)
+	}
+	_, sec2 := mkInvite(t, n, core.TrustTrusted, nil, time.Minute)
 	clk.Add(2 * time.Minute)
 	exp := do(t, n.handler(), "POST", "/v1/join", bobAddr, joinBody(t, joinRequest{Code: sec2}), "")
 	if exp.Code != http.StatusForbidden || errText(exp) != badCodeAnswer {
@@ -388,7 +391,7 @@ func TestGuestTableSharedAmongOwnerDevices(t *testing.T) {
 	desk, laptop, guest := ms[0], ms[1], ms[2]
 	desk.node.Brokers(ctx) // discover laptop, so the join is pushed to it
 	guest.node.hostURL = func(netip.AddrPort) string { return desk.srv.URL }
-	ic, err := desk.node.Invite(ctx, core.TrustPublic, nil, time.Hour)
+	ic, err := desk.node.Invite(ctx, core.TrustTrusted, nil, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -399,7 +402,7 @@ func TestGuestTableSharedAmongOwnerDevices(t *testing.T) {
 	for end := time.Now().Add(5 * time.Second); len(laptop.node.guestList(false)) == 0 && time.Now().Before(end); {
 		time.Sleep(5 * time.Millisecond)
 	}
-	if g := laptop.node.guestList(false); len(g) != 1 || g[0].Trust != core.TrustPublic {
+	if g := laptop.node.guestList(false); len(g) != 1 || g[0].Trust != core.TrustTrusted {
 		t.Fatalf("laptop's guests %+v", g)
 	}
 	if _, err := laptop.node.RevokeGuest(ctx, guest.id); err != nil {

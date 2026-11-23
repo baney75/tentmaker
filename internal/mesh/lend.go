@@ -358,8 +358,11 @@ type InviteCode struct {
 // this device's tailnet address and 160 random bits; only their SHA-256 is
 // kept, with the expiry, trust and repos.
 func (n *Node) Invite(ctx context.Context, trust string, repos []string, ttl time.Duration) (InviteCode, error) {
+	if trust == core.TrustPublic {
+		return InviteCode{}, errors.New(core.PublicLendOff)
+	}
 	if !core.ValidLendTrust(trust) {
-		return InviteCode{}, fmt.Errorf("trust must be %s or %s", core.TrustTrusted, core.TrustPublic)
+		return InviteCode{}, fmt.Errorf("trust must be %s", core.TrustTrusted)
 	}
 	if ttl == 0 {
 		ttl = DefaultInviteTTL

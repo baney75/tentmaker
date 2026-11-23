@@ -778,7 +778,7 @@ The broker ticks every second and a repo is due 100 ms early, so a 1 s poll does
 `BrokerStatus.API` holds each `core.APICounter` forge's `APIStats` by forge name.
 on `Work`, matches queued jobs (oldest first) to the request: a job matches when it asks for
 `tentmaker` and every label it asks for is in the worker's labels for one of its platforms;
-refuses forks (except to a public lent device, below), denied repos (`deny_repo_patterns`), public repos without `allow_public`, and runs
+refuses forks, denied repos (`deny_repo_patterns`), public repos without `allow_public`, and runs
 whose head repo differs; claims through `Claimer`; grants a runner; records (runner, device, job,
 time) in its state. It monitors every granted runner: busy on an unidentifiable job for 30 s,
 idle past `idle_ttl`, or busy on a fork job means `Stop` to that worker on its next request (and
@@ -788,10 +788,9 @@ deleted. Never grants more runners for one job than one per worker.
 Lent devices (Mesh: lent devices). `Work` reads the caller's lend (`core.CallerLend`, set by the
 mesh from its guest table); a revoked one gets no grants. A trusted lend gets a job only of a repo
 on its list, never a fork's or `pull_request_target` job, and only where `runnerCacheSafeLocked`
-vouches no fork can reach the runner; a check job only of a listed repo. A public lend gets no
-check job, and a runner only for a fork's `pull_request` job of a repo the forge says is public
-and whose config sets `lend_public` (which needs `allow_public` and runner mode); the other job
-rules (status, labels, age) still apply. Before it registers a runner, `realize` checks the offer
+vouches no fork can reach the runner; a check job only of a listed repo. A public lend gets
+nothing for now: `lendRepoRefusalLocked` answers `core.PublicLendOff`, and `Invite` and the CLI
+refuse `--trust public` (issue #61). The public rules below are built and tested but unreachable. Before it registers a runner, `realize` checks the offer
 with `core.LendRefusal` and drops the grant on a refusal; a public grant never carries `Cache` or
 `Actions`. The grant records the lend (`grantRec.Lend`). When the forge reports the job a runner
 took, `takenRefusal` stops it, cancels the run, deletes the runner and quarantines the device
@@ -802,10 +801,11 @@ rules on its side (`core.LendRefusal` on every offer from a `core.LentSource` wh
 nil, and `core.TakenRefusal` on each confirmed job), forces `Cache` off and `Actions` nil for a
 public lend, and asks a revoked source for nothing, so neither side trusts the other.
 
-Residual risk, public trust: a JIT runner takes any queued job its labels fit, so a public lent
-runner can take a push job of the same repo before the broker sees it and stops it. That is why
-public needs the repo's own `lend_public` opt-in: set it only on a repo where no job a Tentmaker
-runner could take uses a secret.
+Why public is off: a JIT runner takes any queued job its labels fit, and a public lent device is
+root on its own machine with the JIT config. It could take a push job of the same repo before the
+broker sees it, and every job carries a `GITHUB_TOKEN` a workflow's `permissions:` can make
+writable, so stopping it after it starts is too late (review of #60, first-F1 and first-F2).
+Public comes back only with a runner the forge itself keeps from non-fork jobs (issue #61).
 
 Each grant records the tailnet node that asked for it: `core.CallerNode(ctx)`, the WhoIs stable
 node ID the mesh puts in the context with `core.WithCallerNode`, or "" for the broker's own
@@ -1282,7 +1282,7 @@ look awake), and of two such records the one with wake facts wins.
 ### Lent devices
 
 Another tailnet user can lend a device to a pool without a hand-edited `members` list.
-`tentmaker invite [--trust trusted|public] [--repos owner/a,owner/b] [--ttl 24h]` asks the
+`tentmaker invite [--trust trusted] [--repos owner/a,owner/b] [--ttl 24h]` asks the
 daemon (`POST /v1/invite` on the control API, token only) for a one-time code
 `tm1-<secret>@<tailnet ip>:<port>`: 160 random bits, lowercase base32, and this device's peer
 API address. The CLI prints it once on stdout. Only its SHA-256 is kept, with the trust, repos,
@@ -1331,7 +1331,7 @@ Trust levels (enforced in Dispatch, on both sides):
 - trusted: the invite's repos (every repo when it lists none). Only jobs no fork can reach (a
   runner of a private repo whose fork PR workflows are off, or a check job), never a fork's,
   `pull_request_target` or otherwise untrusted job.
-- public: only fork `pull_request` jobs of public repos that set `lend_public`, with no cache of
+- public: off until issue #61. As built: only fork `pull_request` jobs of public repos that set `lend_public`, with no cache of
   any kind: no repo cache, no Actions cache, no build cache, so nothing it writes is read by an
   owner device. GitHub gives a fork's `pull_request` run no repo secrets.
 

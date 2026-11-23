@@ -40,7 +40,7 @@ tentmaker devices [--json]        Every device in the pool: owner login, trust, 
                                   online or asleep, lent or not.
 tentmaker devices remove NAME     Revoke a lent device at once (needs root).
 tentmaker devices add HOST [--channel stable|dev] [--memory S] [--boost-memory S] [--repo R]...
-tentmaker invite [--trust trusted|public] [--repos owner/a,owner/b] [--ttl 24h]
+tentmaker invite [--trust trusted] [--repos owner/a,owner/b] [--ttl 24h]
                                   A one-time code that lends another user's device to this
                                   pool, printed once (needs root).
 tentmaker join                    Lend this device to a pool: the code is read from the

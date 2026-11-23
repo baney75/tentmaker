@@ -13,7 +13,7 @@ import (
 	"github.com/baney75/tentmaker/internal/mesh"
 )
 
-const usageInvite = `tentmaker invite [--trust trusted|public] [--repos owner/a,owner/b] [--ttl 24h] [--json]
+const usageInvite = `tentmaker invite [--trust trusted] [--repos owner/a,owner/b] [--ttl 24h] [--json]
 
 Makes a one-time code that lends another tailnet user's device to this
 pool. Give the code to them; on their device they run: sudo tentmaker join
@@ -21,8 +21,7 @@ The code is shown once and works once, until --ttl (1m to 30d) runs out.
 
   --trust trusted   runs jobs of --repos (every repo when none are listed),
                     never a fork, pull_request_target or untrusted job
-  --trust public    runs only fork pull_request jobs of public repos that
-                    set lend_public, with no secrets and no cache writes`
+  --trust public    off until issue #61`
 
 const usageJoin = `tentmaker join [--json]
 
@@ -58,8 +57,11 @@ func (a *app) cmdInvite(args []string) (any, error) {
 	if len(pos) > 0 {
 		return nil, usage("usage: "+usageInvite, "unexpected argument %q", pos[0])
 	}
+	if *trust == core.TrustPublic {
+		return nil, usage("use --trust trusted", "%s", core.PublicLendOff)
+	}
 	if !core.ValidLendTrust(*trust) {
-		return nil, usage("use --trust trusted or public", "--trust %q is not trusted or public", *trust)
+		return nil, usage("use --trust trusted", "--trust %q is not trusted", *trust)
 	}
 	var list []string
 	for _, r := range strings.Split(*repos, ",") {

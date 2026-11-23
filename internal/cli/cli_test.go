@@ -299,6 +299,7 @@ var usageCases = [][]string{
 	{"invite", "--trust", "owner"},
 	{"invite", "--ttl", "90d"},
 	{"invite", "--trust", "public", "--repos", "a/b"},
+	{"invite", "--trust", "public"},
 	{"devices", "add"},
 	{"devices", "add", "h", "--channel", "nightly"},
 	{"devices", "add", "h", "--memory", "lots"},

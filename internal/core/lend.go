@@ -36,8 +36,15 @@ type Lend struct {
 	Repos []string `json:"repos,omitempty"`
 }
 
-// ValidLendTrust reports whether t is a trust level an invite can carry.
+// ValidLendTrust reports whether t is a trust level stored state may carry.
 func ValidLendTrust(t string) bool { return t == TrustTrusted || t == TrustPublic }
+
+// PublicLendOff is why no invite or grant carries public trust yet: a JIT
+// runner takes any queued job its labels fit, and every job gets a
+// GITHUB_TOKEN a workflow can make writable, so a device its owner
+// controls could take a push job's token before the broker sees it
+// (issue #61, review of #60 first-F1 and first-F2).
+const PublicLendOff = "public lending is off until issue #61: a public runner could take a push job and its GITHUB_TOKEN"
 
 // AllowsRepo reports whether repo is in the lend's repo list (any repo when
 // the list is empty). Names compare without case, as forges do.
