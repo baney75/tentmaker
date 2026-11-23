@@ -162,8 +162,7 @@ func TestMCPSandboxCopyOutStaysUnderRoot(t *testing.T) {
 			t.Fatalf("cp out to %q: %s holds %q %v", to, landed, b, err)
 		}
 	}
-	// A symlink at a name the copy writes is neither written through nor
-	// replaced: an agent's copy only adds files (review r2 second-second-F1).
+	// A symlink at a name the copy writes is kept (r2 second-second-F1).
 	if res, ok := call("sandbox_cp", map[string]any{"from": id + ":inbox", "to": "trap"}); ok || !strings.Contains(mustJSON(res), "already exists") {
 		t.Fatalf("cp out over trap: ok %v %s", ok, mustJSON(res))
 	}
@@ -175,9 +174,7 @@ func TestMCPSandboxCopyOutStaysUnderRoot(t *testing.T) {
 	}
 }
 
-// An agent's copy out never writes a .git folder, whose config and hooks
-// run code on the next git command, and never replaces an existing file
-// such as a Makefile (review r2 second-second-F1).
+// An agent's copy out never writes .git and never replaces a file (r2 second-second-F1).
 func TestMCPSandboxCopyOutOnlyAddsFilesOutsideGit(t *testing.T) {
 	f := newFixture(t)
 	serveSandboxes(t, f, control.Caller{Admin: true, ID: "0"})

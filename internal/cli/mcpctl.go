@@ -514,9 +514,7 @@ func underRoot(root, dst string) (string, error) {
 	}
 	p := dst
 	if !filepath.IsAbs(p) {
-		// On Windows "/x" and "C:x" are not absolute, yet they name a
-		// drive, not a folder under the root: refuse them rather than
-		// guess.
+		// Windows "/x" and "C:x" name a drive, not a folder under the root.
 		if filepath.VolumeName(p) != "" || strings.HasPrefix(p, "/") || strings.HasPrefix(p, `\`) {
 			return "", refuse()
 		}
