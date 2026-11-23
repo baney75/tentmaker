@@ -43,13 +43,13 @@ var workspaces = []string{"runner/_work", "work"}
 var runnerCredentials = []string{"runner/.runner", "runner/.credentials", "runner/.credentials_rsaparams"}
 
 // Streamer is a Host that can run a command with its input and output
-// joined to the caller's, for an interactive debug shell and for a debug
-// command's output.
+// joined to the caller's: an interactive debug shell, a debug command's
+// output, and a sandbox's commands.
 type Streamer interface {
-	// Stream runs c with stdin and stdout (stderr too) until it exits, ctx
-	// ends or c.Timeout passes, and returns its exit code. A non-zero exit
-	// is not an error.
-	Stream(ctx context.Context, c Cmd, stdin io.Reader, stdout io.Writer) (int, error)
+	// Stream runs c with stdin, stdout and stderr (the same writer twice to
+	// join them) until it exits, ctx ends or c.Timeout passes, and returns
+	// its exit code. A non-zero exit is not an error.
+	Stream(ctx context.Context, c Cmd, stdin io.Reader, stdout, stderr io.Writer) (int, error)
 }
 
 // TestResults implements dispatch.TestCollector: the JUnit reports a job
@@ -221,7 +221,7 @@ func (e *Executor) DebugExec(ctx context.Context, name, command string, spec cor
 	script := "exec 2>&1\n" + command + "\n"
 	start := time.Now()
 	code, err := s.Stream(ctx, Cmd{Path: "systemd-run", Args: args, Timeout: spec.Timeout + 30*time.Second},
-		strings.NewReader(script), out)
+		strings.NewReader(script), out, out)
 	timedOut := ctx.Err() != nil || time.Since(start) >= spec.Timeout || e.unitResult(context.WithoutCancel(ctx), unit) == "timeout"
 	e.stopUnits(context.WithoutCancel(ctx), unit)
 	if err != nil && !timedOut {
@@ -240,7 +240,7 @@ func (e *Executor) DebugShell(ctx context.Context, name string, spec core.DebugS
 	unit := debugUnit(name)
 	args := e.debugArgs(name, unit, spec, true, uid, gid, pid,
 		"/bin/sh", "-c", "command -v bash >/dev/null 2>&1 && exec bash -i; exec sh -i")
-	_, err = s.Stream(ctx, Cmd{Path: "systemd-run", Args: args, Timeout: spec.Timeout + 30*time.Second}, stdin, stdout)
+	_, err = s.Stream(ctx, Cmd{Path: "systemd-run", Args: args, Timeout: spec.Timeout + 30*time.Second}, stdin, stdout, stdout)
 	// Ending systemd-run does not end the unit; this does.
 	e.stopUnits(context.WithoutCancel(ctx), unit)
 	if err != nil && ctx.Err() == nil {

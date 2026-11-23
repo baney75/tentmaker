@@ -59,6 +59,10 @@ type KeptJob struct {
 func (w *Worker) endedLocked(j *jobRec, res *core.CheckResult) {
 	w.dropRelaysLocked(j.Name)
 	w.revokeActions(j.Name)
+	w.st.Dirty = true
+	if j.Kind == core.KindSandbox {
+		return // no broker granted it
+	}
 	rep := w.reportLocked(j.Source)
 	rep.Ended = append(rep.Ended, j.Name)
 	if res != nil {

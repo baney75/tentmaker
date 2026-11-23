@@ -17,6 +17,7 @@ import (
 
 	"github.com/baney75/tentmaker/internal/config"
 	"github.com/baney75/tentmaker/internal/core"
+	"github.com/baney75/tentmaker/internal/runs"
 )
 
 // WorkerOptions configures a Worker.
@@ -173,6 +174,10 @@ type jobRec struct {
 	Usage    core.Usage `json:"usage,omitzero"`
 	// sampled is when Usage was last read; memory only.
 	sampled time.Time
+	// Expires and Owner are set on sandboxes (Kind core.KindSandbox): it is
+	// stopped and deleted at Expires, and Owner asked for it.
+	Expires time.Time `json:"expires,omitempty"`
+	Owner   string    `json:"owner,omitempty"`
 
 	// starting is set while the executor's Start runs, off the tick, so a
 	// slow boot never stops the worker's heartbeat. The job holds its slot
@@ -456,6 +461,13 @@ func (w *Worker) pollJobs(ctx context.Context, now time.Time) {
 			continue
 		}
 		delete(w.warned, j.Name)
+		if st == core.ExecRunning && j.Kind == core.KindSandbox {
+			if !now.Before(j.Expires) {
+				w.log.Info("sandbox time to live ran out; deleting it", "sandbox", j.Name)
+				w.stopJob(ctx, j, "its time to live ran out")
+			}
+			continue
+		}
 		if st == core.ExecRunning {
 			maxd := w.o.Config.Job.MaxDuration.D()
 			if maxd > 0 && now.Sub(j.Started) > maxd+overrunGrace {
@@ -494,13 +506,19 @@ func (w *Worker) finish(ctx context.Context, e *execInfo, j *jobRec, why string)
 	// The job's folder goes with Clean: read its log and use first. The
 	// record is kept after the worker's lock is released (defers run last
 	// in, first out).
-	hist := w.collect(ctx, e, j)
-	rec, log := w.endRecord(j, res, why, hist)
-	if w.keep(ctx, e, j, why, res, &rec) {
-		w.recordEnd(rec, log, hist)
-		return
+	// A sandbox is no CI job: it has no run to record and is never kept.
+	var hist collected
+	var rec runs.Record
+	var log []byte
+	if j.Kind != core.KindSandbox {
+		hist = w.collect(ctx, e, j)
+		rec, log = w.endRecord(j, res, why, hist)
+		if w.keep(ctx, e, j, why, res, &rec) {
+			w.recordEnd(rec, log, hist)
+			return
+		}
+		defer func() { w.recordEnd(rec, log, hist) }()
 	}
-	defer func() { w.recordEnd(rec, log, hist) }()
 	if e != nil {
 		cctx, cancel := context.WithTimeout(ctx, stopTimeout)
 		err := e.ex.Clean(cctx, j.Name)
@@ -797,7 +815,7 @@ func (w *Worker) freeLocked(d core.Decision, now time.Time) int {
 	if w.st.Paused || w.shutting || w.holds > 0 || !d.Admit {
 		return 0
 	}
-	free := d.Slots - len(w.st.Jobs)
+	free := d.Slots - w.usedSlotsLocked()
 	room := 0
 	for _, e := range w.execs {
 		if w.usableLocked(e, now) {
@@ -1280,6 +1298,7 @@ func (w *Worker) Shutdown(ctx context.Context) {
 	case <-done:
 	case <-ctx.Done():
 	}
+	w.stopSandboxes(ctx, "the daemon stopped")
 	now := w.now()
 	w.pollJobs(ctx, now)
 	w.exchange(ctx, now, d, false)
@@ -1318,6 +1337,10 @@ func (w *Worker) load() {
 	var jobs []*jobRec
 	for _, j := range st.Jobs {
 		if j != nil && core.NamePattern.MatchString(j.Name) {
+			if j.Kind == core.KindSandbox && j.Stopping == "" {
+				// A sandbox never outlives the daemon that served it.
+				j.Stopping, j.StopErr = "the daemon restarted", "not stopped yet"
+			}
 			jobs = append(jobs, j)
 		}
 	}
@@ -1398,6 +1421,8 @@ type RunningJob struct {
 	Started  time.Time `json:"started"`
 	// Starting is set while the executor's Start has not returned.
 	Starting bool `json:"starting,omitempty"`
+	// Expires is when a sandbox is deleted.
+	Expires time.Time `json:"expires,omitempty"`
 }
 
 // ExecutorStatus is one executor's health.
@@ -1435,14 +1460,15 @@ func (w *Worker) Status() WorkerStatus {
 		Paused: w.st.Paused, PauseReason: w.st.PauseReason, ShuttingDown: w.shutting, Dirty: w.st.Dirty,
 		LastReset: w.lastReset, LastErrors: w.errs.list(), Running: []RunningJob{}, Executors: []ExecutorStatus{},
 		Sources: []SourceStatus{}, LastTick: w.lastTick}
-	s.Slots = SlotStatus{Total: w.decision.Slots, Used: len(w.st.Jobs), Free: w.freeLocked(w.decision, now)}
+	s.Slots = SlotStatus{Total: w.decision.Slots, Used: w.usedSlotsLocked(), Free: w.freeLocked(w.decision, now)}
 	s.Kept = w.keptJobsLocked()
 	for _, j := range w.st.Jobs {
 		if j.kept() {
 			continue
 		}
 		s.Running = append(s.Running, RunningJob{Name: j.Name, Source: j.Source, Kind: j.Kind, Repo: j.Repo, Job: j.Job,
-			JobID: j.JobID, Executor: j.Executor, Platform: j.Platform.String(), Started: j.Started, Starting: j.starting})
+			JobID: j.JobID, Executor: j.Executor, Platform: j.Platform.String(), Started: j.Started, Starting: j.starting,
+			Expires: j.Expires})
 	}
 	for _, e := range w.execs {
 		_, n := w.inUse(e.name)

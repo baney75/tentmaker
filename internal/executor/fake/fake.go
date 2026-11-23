@@ -75,6 +75,10 @@ type Executor struct {
 	keepErr    error
 	debugExec  func(name, command string) (core.DebugResult, error)
 	debugCalls []DebugCall
+
+	execFn ExecFunc
+	execs  map[string][][]string
+	files  map[string]map[string]string // sandbox -> path -> content
 }
 
 var _ core.Executor = (*Executor)(nil)
@@ -476,6 +480,7 @@ func (e *Executor) Clean(ctx context.Context, name string) error {
 	}
 	delete(e.runs, name)
 	delete(e.kept, name)
+	delete(e.files, name)
 	return nil
 }
 

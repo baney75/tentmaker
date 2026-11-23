@@ -187,7 +187,33 @@ const (
 const (
 	KindRunner = "runner"
 	KindCheck  = "check"
+	// KindSandbox is an interactive sandbox an agent asked for: the job's
+	// isolation with no forge and no command, held open until its TTL
+	// (MaxDuration) ends or it is removed. Commands run in it through
+	// Sandboxer.Exec. Its Grant carries no secret.
+	KindSandbox = "sandbox"
 )
+
+// SandboxExec is one command to run in a sandbox. Argv is never a shell
+// line: the first element is the program. Dir is relative to the
+// sandbox's work folder ("" is the work folder itself). The command ends at
+// Timeout (0 means the sandbox's remaining life).
+type SandboxExec struct {
+	Argv    []string      `json:"argv"`
+	Dir     string        `json:"dir,omitempty"`
+	Timeout time.Duration `json:"timeout,omitempty"`
+}
+
+// Sandboxer is an executor that can run commands in a sandbox it started
+// with Kind KindSandbox. Exec runs req inside that sandbox's isolation (the
+// same user, limits, network namespace and fence as a job), streams the
+// command's output to stdout and stderr, feeds it stdin (nil means none),
+// and returns its exit code. An error means the command could not be run
+// or was cut off, not that it failed. Executors without it can't hold
+// sandboxes.
+type Sandboxer interface {
+	Exec(ctx context.Context, name string, req SandboxExec, stdin io.Reader, stdout, stderr io.Writer) (exitCode int, err error)
+}
 
 // ExecSpec is everything an executor needs to start one runner.
 //
@@ -197,7 +223,7 @@ const (
 // --out <dir>` inside the sandbox with the secret on stdin; check-run writes
 // <dir>/result.json (a CheckResult) and <dir>/log.txt.
 type ExecSpec struct {
-	Kind     string    // KindRunner (default when empty) or KindCheck
+	Kind     string    // KindRunner (default when empty), KindCheck or KindSandbox
 	Name     string    // runner name, matches NamePattern
 	Grant    Grant     // the single-use registration
 	Platform Platform  // what the job runs on
