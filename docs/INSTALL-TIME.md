@@ -41,8 +41,7 @@ What changed, phase by phase:
   `podman --version` on the runner's cold disk (0.1, 4.9 and 2.2 s in the three runs), the Linux
   sandbox phases went from 14.2 s to 7.8 and 8.7 s.
 - **Linux, podman**: split into `podman` (reload, environment, socket restart: 0.24 and 0.29 s)
-  and `podman.info` (5.2 and 5.9 s). `podman info` is the probe that rootless podman works, so it
-  stays; its first run on a fresh store is most of the time.
+  and `podman.info` (5.2 and 5.9 s), later `podman.check` (below).
 - **macOS, guest image pull** (`sandbox.images`): 91.5 s before, 78.5 and 62.8 s after, with
   `tart pull --concurrency 8` instead of Tart's default 4. The pull swung 32 to 144 s before, so
   two runs can't credit the change; the rest of macOS setup is 2 to 3 s.
@@ -56,6 +55,37 @@ What changed, phase by phase:
 
 `first_job_pickup` (1.2 to 7.6 s) and `first_job_green` (2 to 6 s, to the second) vary with
 GitHub's status API more than with Tentmaker.
+
+## The podman check
+
+On main at 6b5d736 the Linux install took 14.5 s, 11.0 s of it in `sandbox.podman.info`, the
+first `podman info` as the runner. Traced with `strace -f` on hosted runners, that call was:
+
+- about 5 s of `rpm -q -f` and `dpkg -S` for each helper binary (netavark, aardvark-dns,
+  slirp4netns, pasta, crun, conmon), which `podman info` runs only to print each one's package.
+  `dpkg -S` reads every installed package's file list, 0.6 to 1 s a binary on the runner image.
+- 1.5 to 8 s waiting on `storage.lock`, held by the podman in `tentmaker-podns.service` while it
+  sets up the fresh store. `startPodns` returns once `pause.pid` exists, before that is done.
+- about 0.5 s in `runuser`.
+
+Setup now checks with `podman ps --all --quiet` (phase `podman.check`), which sets up the same
+runtime (the pause process's user namespace, the store, the state database, conmon and the OCI
+runtime) and fails on the same breakage, without the package lookups.
+
+What is left is the store's first setup, which any real check needs. Its debug log puts all of it
+between two overlay probes ("test mount with multiple lowers succeeded" and the metacopy probe):
+2.3 to 2.6 s on a quiet disk, up to 7 s when the actions/runner download and extract are writing
+beside it. The probes mount and unmount overlay on the root file system, and those writes make
+them slower. Waiting for the runner first gave 2.3 and 2.6 s but put the runner's remaining 2.5 s
+on the path every time, so it stays parallel. Starting the runner before preflight's
+`podman --version` (1.2 to 2.4 s earlier) still spiked in 1 of 4 runs, against 2 of 4, too few to
+credit, so it was not kept.
+
+| run | install | podman phase |
+| --- | ---: | ---: |
+| main 6b5d736 ([45198819642](https://github.com/baney75/tentmaker/actions/runs/45198819642)) | 14.5 | `podman.info` 11.0 |
+| this change ([45229352649](https://github.com/baney75/tentmaker/actions/runs/45229352649), attempt 1) | 8.8 | `podman.check` 2.6 |
+| this change ([45229352649](https://github.com/baney75/tentmaker/actions/runs/45229352649), attempt 2) | 12.4 | `podman.check` 6.8 |
 
 ## Gate
 
