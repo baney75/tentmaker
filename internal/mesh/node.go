@@ -479,8 +479,7 @@ func (n *Node) handler() http.Handler {
 // serves.
 func isView(path string) bool { return path == "/metrics" || path == "/" || path == "/status" }
 
-// serveView serves a view to a caller authorize already let in, when the
-// Host header names this device.
+// serveView serves a view to a caller authorize already let in.
 func (n *Node) serveView(w http.ResponseWriter, r *http.Request) {
 	if n.o.Views == nil {
 		writeErr(w, http.StatusNotFound, "no such endpoint")
@@ -489,12 +488,6 @@ func (n *Node) serveView(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", http.MethodGet)
 		writeErr(w, http.StatusMethodNotAllowed, "use GET")
-		return
-	}
-	self, err := n.selfPeer(r.Context(), false)
-	if err != nil || !hostIsSelf(self, r.Host) {
-		n.refuse(r, "", "the Host header names another site")
-		writeErr(w, http.StatusForbidden, "use this device's tailnet address or name")
 		return
 	}
 	n.o.Views.ServeHTTP(w, r)
@@ -550,8 +543,9 @@ func (n *Node) authorize(w http.ResponseWriter, r *http.Request) (Identity, rela
 }
 
 // authorizeWith is authorize with admit as its last rule: a request from
-// this device itself, or one WhoIs can't name, is refused whatever admit
-// says.
+// this device itself, one whose Host header names another site, or one WhoIs
+// can't name, is refused whatever admit says. A page that rebinds its own
+// name to this device's tailnet address sends that name as Host.
 func (n *Node) authorizeWith(w http.ResponseWriter, r *http.Request, admit func(Peer, Identity) bool) (Identity, bool) {
 	ctx, cancel := context.WithTimeout(r.Context(), whoisTimeout)
 	defer cancel()
@@ -564,6 +558,11 @@ func (n *Node) authorizeWith(w http.ResponseWriter, r *http.Request, admit func(
 	if why := fromSelf(self, r.RemoteAddr); why != "" {
 		n.refuse(r, "", why)
 		writeErr(w, http.StatusForbidden, "forbidden")
+		return Identity{}, false
+	}
+	if !hostIsSelf(self, r.Host) {
+		n.refuse(r, "", "the Host header names another site")
+		writeErr(w, http.StatusForbidden, "use this device's tailnet address or name")
 		return Identity{}, false
 	}
 	id, err := n.o.Tailscale.WhoIs(ctx, r.RemoteAddr)

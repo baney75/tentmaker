@@ -75,6 +75,7 @@ func newCluster(t *testing.T, specs ...nodeSpec) []*member {
 			if from := r.Header.Get(testFromHeader); from != "" {
 				r.RemoteAddr = from + ":40000"
 			}
+			r.Host = m.ts.self.IPs[0].String() // peers dial this address in production
 			if m.hang.Load() && r.URL.Path == "/v1/status" {
 				<-r.Context().Done()
 				return
