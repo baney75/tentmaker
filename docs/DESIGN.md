@@ -1203,11 +1203,13 @@ Bodies are JSON, capped at 1 MiB, 10 s
 timeouts, except the archive stream (10 min, 2 GiB) and the run history answers. Peers
 are rediscovered every 30 s; a peer failing 3 calls in a row is skipped for a minute.
 
-`GET /metrics`, `GET /` and `GET /status` (`Options.Views`) pass the same self and `WhoIs` checks
-as every route, but not the pool-name check, since a browser or a Prometheus server is not a pool
-device. They also need a `Host` header naming this device (one of its tailnet IPs, its MagicDNS
-name or that name's first label), so a page on another site can't read them through DNS
-rebinding (403 otherwise). Any other method is 405. Besides the callers the other routes admit,
+Every route needs a `Host` header that is a Tailscale address (this device's, or a masquerade address
+a peer in another tailnet dials), its MagicDNS name or that name's first label, so a page on another
+site, whose `Host` is its own name, can't drive or read the API through DNS rebinding (403 otherwise).
+
+`GET /metrics`, `GET /` and `GET /status` (`Options.Views`) pass the same self, `Host` and `WhoIs`
+checks as every route, but not the pool-name check, since a browser or a Prometheus server is not a
+pool device. Any other method is 405. Besides the callers the other routes admit,
 these three routes admit a node `mesh.viewers` names (`Options.Viewers`): a tag the node carries
 (`tag:monitoring`), its MagicDNS name or that name's first label, or its stable node ID. A viewer
 reaches nothing else: status, runs, logs, work, claim, release, rerun and archive stay 403, and

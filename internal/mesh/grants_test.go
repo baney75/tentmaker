@@ -85,7 +85,7 @@ func TestReplacementHelloDoesNotInheritGrants(t *testing.T) {
 	}
 	archive := func(remote, ref string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest("GET", "/v1/archive/"+ref, nil)
-		req.RemoteAddr = remote
+		req.RemoteAddr, req.Host = remote, selfHost
 		req.Header.Set(poolHeader, "home")
 		req.Header.Set(deviceHeader, "a-worker")
 		rec := httptest.NewRecorder()

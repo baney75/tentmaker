@@ -169,10 +169,13 @@ func (b *fakeBroker) Work(ctx context.Context, req core.WorkRequest) (core.WorkR
 	}, nil
 }
 
+// selfHost is the Host header a caller of newFakeTS's device sends.
+const selfHost = "100.64.0.1:7433"
+
 func do(t *testing.T, h http.Handler, method, path, remote string, body io.Reader, pool string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(method, path, body)
-	req.RemoteAddr = remote
+	req.RemoteAddr, req.Host = remote, selfHost
 	if pool != "" {
 		req.Header.Set(poolHeader, pool)
 	}
@@ -248,7 +251,7 @@ func TestTaggedForbiddenUnlessMember(t *testing.T) {
 	}
 	// A tagged Self serves no one by "same user", even another tagged device.
 	ts2 := newFakeTS()
-	ts2.self = Peer{ID: "nSELF", UserID: 1003, LoginName: TaggedLogin, Tags: []string{"tag:ci"}, IPs: []netip.Addr{netip.MustParseAddr("100.64.0.9")}}
+	ts2.self = Peer{ID: "nSELF", UserID: 1003, LoginName: TaggedLogin, Tags: []string{"tag:ci"}, IPs: []netip.Addr{netip.MustParseAddr("100.64.0.1")}}
 	n = New(Options{Device: "ci", Pool: "home", Tailscale: ts2})
 	if rec := do(t, n.handler(), "GET", "/v1/hello", "100.64.0.6:1", nil, ""); rec.Code != 403 {
 		t.Errorf("tagged self, tagged caller: code %d", rec.Code)
@@ -314,7 +317,7 @@ func TestOversizedBody413(t *testing.T) {
 		// Without one (chunked).
 		req := httptest.NewRequest("POST", path, io.MultiReader(strings.NewReader(big)))
 		req.ContentLength = -1
-		req.RemoteAddr = "100.64.0.2:1"
+		req.RemoteAddr, req.Host = "100.64.0.2:1", selfHost
 		req.Header.Set(poolHeader, "home")
 		rr := httptest.NewRecorder()
 		n.handler().ServeHTTP(rr, req)
@@ -458,7 +461,7 @@ func TestWorkAndArchiveBindDeviceToCaller(t *testing.T) {
 	}
 	archive := func(remote, device string) int {
 		req := httptest.NewRequest("GET", "/v1/archive/"+ref, nil)
-		req.RemoteAddr = remote
+		req.RemoteAddr, req.Host = remote, selfHost
 		req.Header.Set(poolHeader, "home")
 		req.Header.Set(deviceHeader, device)
 		rec := httptest.NewRecorder()

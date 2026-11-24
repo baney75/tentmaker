@@ -72,7 +72,7 @@ func TestArchiveEndpointAuth(t *testing.T) {
 	knowPeer(n, "n2", "100.64.0.2", "w")
 	get := func(remote, pool, device string) int {
 		req, _ := http.NewRequest("GET", "/v1/archive/"+ref, nil)
-		req.RemoteAddr = remote
+		req.RemoteAddr, req.Host = remote, selfHost
 		if pool != "" {
 			req.Header.Set(poolHeader, pool)
 		}
@@ -98,7 +98,7 @@ func TestArchiveEndpointAuth(t *testing.T) {
 	// A broker that can't serve archives answers 404.
 	n2 := New(Options{Device: "alice-mac", Pool: "home", Tailscale: newFakeTS(), Broker: brokerOnly{fb}})
 	req, _ := http.NewRequest("GET", "/v1/archive/"+ref, nil)
-	req.RemoteAddr = "100.64.0.2:1"
+	req.RemoteAddr, req.Host = "100.64.0.2:1", selfHost
 	req.Header.Set(poolHeader, "home")
 	req.Header.Set(deviceHeader, "w")
 	rec := httptest.NewRecorder()

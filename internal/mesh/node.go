@@ -55,9 +55,8 @@ type Options struct {
 	// Views serves GET /metrics and the status page (GET / and GET
 	// /status) to the callers the rest of the peer API serves, and to
 	// Viewers. A browser or Prometheus sends no pool header, so these GETs
-	// need none; instead the Host header must name this device (one of its
-	// tailnet IPs or MagicDNS names), so a web page that rebinds its own
-	// name to a tailnet address can't read them. nil serves 404.
+	// need none. The Host check applies to them as to every route. nil
+	// serves 404.
 	Views http.Handler
 	// Viewers admits more tailnet nodes to Views alone, never to the rest
 	// of the peer API (work, claim, release, runs): an entry "tag:<name>"
@@ -479,8 +478,7 @@ func (n *Node) handler() http.Handler {
 // serves.
 func isView(path string) bool { return path == "/metrics" || path == "/" || path == "/status" }
 
-// serveView serves a view to a caller authorize already let in, when the
-// Host header names this device.
+// serveView serves a view to a caller authorize already let in.
 func (n *Node) serveView(w http.ResponseWriter, r *http.Request) {
 	if n.o.Views == nil {
 		writeErr(w, http.StatusNotFound, "no such endpoint")
@@ -491,17 +489,16 @@ func (n *Node) serveView(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusMethodNotAllowed, "use GET")
 		return
 	}
-	self, err := n.selfPeer(r.Context(), false)
-	if err != nil || !hostIsSelf(self, r.Host) {
-		n.refuse(r, "", "the Host header names another site")
-		writeErr(w, http.StatusForbidden, "use this device's tailnet address or name")
-		return
-	}
 	n.o.Views.ServeHTTP(w, r)
 }
 
+// tailscaleRanges are the addresses Tailscale assigns, masquerade ones too.
+var tailscaleRanges = []netip.Prefix{netip.MustParsePrefix("100.64.0.0/10"), netip.MustParsePrefix("fd7a:115c:a1e0::/48")}
+
 // hostIsSelf reports whether host (a Host header, port optional) is one of
-// self's tailnet IPs, its MagicDNS name or that name's first label.
+// self's tailnet IPs, its MagicDNS name or that name's first label. Any other
+// Tailscale address passes too: a peer in another tailnet may dial this device
+// by a masquerade address it doesn't know, and a rebinding page sends a name.
 func hostIsSelf(self Peer, host string) bool {
 	if h, _, err := net.SplitHostPort(host); err == nil {
 		host = h
@@ -511,7 +508,8 @@ func hostIsSelf(self Peer, host string) bool {
 		return false
 	}
 	if ip, err := netip.ParseAddr(host); err == nil {
-		return slices.Contains(self.IPs, ip.Unmap().WithZone(""))
+		ip = ip.Unmap().WithZone("")
+		return slices.Contains(self.IPs, ip) || slices.ContainsFunc(tailscaleRanges, func(p netip.Prefix) bool { return p.Contains(ip) })
 	}
 	dns := strings.ToLower(strings.TrimSuffix(self.DNSName, "."))
 	if dns == "" {
@@ -550,8 +548,9 @@ func (n *Node) authorize(w http.ResponseWriter, r *http.Request) (Identity, rela
 }
 
 // authorizeWith is authorize with admit as its last rule: a request from
-// this device itself, or one WhoIs can't name, is refused whatever admit
-// says.
+// this device itself, one whose Host header names another site, or one WhoIs
+// can't name, is refused whatever admit says. A page that rebinds its own
+// name to this device's tailnet address sends that name as Host.
 func (n *Node) authorizeWith(w http.ResponseWriter, r *http.Request, admit func(Peer, Identity) bool) (Identity, bool) {
 	ctx, cancel := context.WithTimeout(r.Context(), whoisTimeout)
 	defer cancel()
@@ -564,6 +563,11 @@ func (n *Node) authorizeWith(w http.ResponseWriter, r *http.Request, admit func(
 	if why := fromSelf(self, r.RemoteAddr); why != "" {
 		n.refuse(r, "", why)
 		writeErr(w, http.StatusForbidden, "forbidden")
+		return Identity{}, false
+	}
+	if !hostIsSelf(self, r.Host) {
+		n.refuse(r, "", "the Host header names another site")
+		writeErr(w, http.StatusForbidden, "use this device's tailnet address or name")
 		return Identity{}, false
 	}
 	id, err := n.o.Tailscale.WhoIs(ctx, r.RemoteAddr)

@@ -36,7 +36,7 @@ func FuzzHandlerBodies(f *testing.F) {
 		n := New(Options{Device: "alice-mac", Pool: "home", Tailscale: newFakeTS(), Broker: &fakeBroker{secret: []byte("s")}})
 		knowPeer(n, "n2", "100.64.0.2", "x")
 		req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body))
-		req.RemoteAddr = "100.64.0.2:40000"
+		req.RemoteAddr, req.Host = "100.64.0.2:40000", selfHost
 		req.Header.Set(poolHeader, "home")
 		if chunked {
 			req.ContentLength = -1 // unknown length: the MaxBytesReader path
