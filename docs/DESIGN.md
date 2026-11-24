@@ -1203,9 +1203,9 @@ Bodies are JSON, capped at 1 MiB, 10 s
 timeouts, except the archive stream (10 min, 2 GiB) and the run history answers. Peers
 are rediscovered every 30 s; a peer failing 3 calls in a row is skipped for a minute.
 
-Every route needs a `Host` header naming this device (one of its tailnet IPs, its MagicDNS name or
-that name's first label), so a page on another site can't drive the API or read it through DNS
-rebinding (403 otherwise).
+Every route needs a `Host` header that is a Tailscale address (this device's, or a masquerade address
+a peer in another tailnet dials), its MagicDNS name or that name's first label, so a page on another
+site, whose `Host` is its own name, can't drive or read the API through DNS rebinding (403 otherwise).
 
 `GET /metrics`, `GET /` and `GET /status` (`Options.Views`) pass the same self, `Host` and `WhoIs`
 checks as every route, but not the pool-name check, since a browser or a Prometheus server is not a

@@ -72,7 +72,7 @@ func TestViewsRefuseWhomThePeerAPIRefuses(t *testing.T) {
 // its own name as Host: refused, so it can't read the views.
 func TestViewsRefuseAForeignHost(t *testing.T) {
 	n, served := viewsNode()
-	for _, host := range []string{"evil.example", "evil.example:7433", "100.64.0.2:7433", "alice-mac.evil.example", "", "localhost:7433"} {
+	for _, host := range []string{"evil.example", "evil.example:7433", "10.0.0.5:7433", "alice-mac.evil.example", "", "localhost:7433"} {
 		if rec := getView(n, "/metrics", "100.64.0.2:4000", host); rec.Code != http.StatusForbidden {
 			t.Errorf("Host %q: %d, want 403", host, rec.Code)
 		}

@@ -55,9 +55,8 @@ type Options struct {
 	// Views serves GET /metrics and the status page (GET / and GET
 	// /status) to the callers the rest of the peer API serves, and to
 	// Viewers. A browser or Prometheus sends no pool header, so these GETs
-	// need none; instead the Host header must name this device (one of its
-	// tailnet IPs or MagicDNS names), so a web page that rebinds its own
-	// name to a tailnet address can't read them. nil serves 404.
+	// need none. The Host check applies to them as to every route. nil
+	// serves 404.
 	Views http.Handler
 	// Viewers admits more tailnet nodes to Views alone, never to the rest
 	// of the peer API (work, claim, release, runs): an entry "tag:<name>"
@@ -493,8 +492,13 @@ func (n *Node) serveView(w http.ResponseWriter, r *http.Request) {
 	n.o.Views.ServeHTTP(w, r)
 }
 
+// tailscaleRanges are the addresses Tailscale assigns, masquerade ones too.
+var tailscaleRanges = []netip.Prefix{netip.MustParsePrefix("100.64.0.0/10"), netip.MustParsePrefix("fd7a:115c:a1e0::/48")}
+
 // hostIsSelf reports whether host (a Host header, port optional) is one of
-// self's tailnet IPs, its MagicDNS name or that name's first label.
+// self's tailnet IPs, its MagicDNS name or that name's first label. Any other
+// Tailscale address passes too: a peer in another tailnet may dial this device
+// by a masquerade address it doesn't know, and a rebinding page sends a name.
 func hostIsSelf(self Peer, host string) bool {
 	if h, _, err := net.SplitHostPort(host); err == nil {
 		host = h
@@ -504,7 +508,8 @@ func hostIsSelf(self Peer, host string) bool {
 		return false
 	}
 	if ip, err := netip.ParseAddr(host); err == nil {
-		return slices.Contains(self.IPs, ip.Unmap().WithZone(""))
+		ip = ip.Unmap().WithZone("")
+		return slices.Contains(self.IPs, ip) || slices.ContainsFunc(tailscaleRanges, func(p netip.Prefix) bool { return p.Contains(ip) })
 	}
 	dns := strings.ToLower(strings.TrimSuffix(self.DNSName, "."))
 	if dns == "" {
